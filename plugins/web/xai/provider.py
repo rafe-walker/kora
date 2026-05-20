@@ -26,7 +26,7 @@ Optional knobs (under ``web.xai`` in ``config.yaml``)::
 
 Auth: reuses :func:`tools.xai_http.resolve_xai_http_credentials`, which
 prefers Hermes-managed xAI Grok OAuth (via ``hermes auth``) and falls back
-to ``XAI_API_KEY`` (resolved through ``~/.hermes/.env``, then
+to ``XAI_API_KEY`` (resolved through ``~/.kora/.env``, then
 ``os.environ``).
 """
 
@@ -64,7 +64,7 @@ _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
 def _load_xai_web_config() -> Dict[str, Any]:
     """Read ``web.xai`` from config.yaml (returns {} on miss)."""
     try:
-        from hermes_cli.config import load_config
+        from kora_cli.config import load_config
 
         cfg = load_config()
         web_section = cfg.get("web") if isinstance(cfg, dict) else None

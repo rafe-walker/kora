@@ -15,7 +15,7 @@
 Run:
 
 ```bash
-/home/nour/.hermes/hermes-agent/venv/bin/python - <<'PY'
+/home/nour/.kora/hermes-agent/venv/bin/python - <<'PY'
 from acp.schema import RequestPermissionRequest, ToolCallUpdate
 import acp, inspect
 print(RequestPermissionRequest.model_fields)

@@ -34,11 +34,11 @@ class TestWriteDenyExactPaths:
 
     def test_hermes_env(self):
         # ``.env`` under the active HERMES_HOME (profile-aware, not just
-        # ``~/.hermes``) must be write-denied. The hermetic test conftest
-        # points HERMES_HOME at a tempdir — resolve via get_hermes_home()
+        # ``~/.kora``) must be write-denied. The hermetic test conftest
+        # points HERMES_HOME at a tempdir — resolve via get_kora_home()
         # to match the denylist.
-        from hermes_constants import get_hermes_home
-        path = str(get_hermes_home() / ".env")
+        from kora_constants import get_kora_home
+        path = str(get_kora_home() / ".env")
         assert _is_write_denied(path) is True
 
     def test_shell_profiles(self):
@@ -84,5 +84,5 @@ class TestWriteAllowed:
         assert _is_write_denied("/home/user/project/main.py") is False
 
     def test_hermes_config_not_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", "config.yaml")
+        path = os.path.join(str(Path.home()), ".kora", "config.yaml")
         assert _is_write_denied(path) is False

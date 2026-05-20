@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 try:
-    from hermes_constants import get_hermes_home
+    from kora_constants import get_kora_home
 except ImportError:
     import os as _os
-    def get_hermes_home() -> Path:  # type: ignore[misc]
+    def get_kora_home() -> Path:  # type: ignore[misc]
         val = (_os.environ.get("HERMES_HOME") or "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else Path.home() / ".kora"
 
 try:
     from fastapi import APIRouter
@@ -143,15 +143,15 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 
 def state_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "state.json"
+    return get_kora_home() / "plugins" / "hermes-achievements" / "state.json"
 
 
 def snapshot_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
+    return get_kora_home() / "plugins" / "hermes-achievements" / "scan_snapshot.json"
 
 
 def checkpoint_path() -> Path:
-    return get_hermes_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
+    return get_kora_home() / "plugins" / "hermes-achievements" / "scan_checkpoint.json"
 
 
 def load_state() -> Dict[str, Any]:
@@ -585,7 +585,7 @@ def scan_sessions(
     at the end.
     """
     try:
-        from hermes_state import SessionDB
+        from kora_state import SessionDB
     except Exception as exc:
         return {"sessions": [], "aggregate": {}, "error": f"Could not import SessionDB: {exc}", "scan_meta": {"mode": "failed", "sessions_total": 0, "sessions_rescanned": 0, "sessions_reused": 0}}
 

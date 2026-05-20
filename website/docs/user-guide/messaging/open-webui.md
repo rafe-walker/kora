@@ -35,13 +35,13 @@ Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS
 If you want Hermes + Open WebUI wired together locally with a reusable launcher, run:
 
 ```bash
-cd ~/.hermes/hermes-agent
+cd ~/.kora/hermes-agent
 bash scripts/setup_open_webui.sh
 ```
 
 What the script does:
 
-- ensures `~/.hermes/.env` contains `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_KEY`, `API_SERVER_PORT`, and `API_SERVER_MODEL_NAME`
+- ensures `~/.kora/.env` contains `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_KEY`, `API_SERVER_PORT`, and `API_SERVER_MODEL_NAME`
 - restarts the Hermes gateway so the API server comes up
 - installs Open WebUI into `~/.local/open-webui-venv`
 - writes a launcher at `~/.local/bin/start-open-webui-hermes.sh`
@@ -75,7 +75,7 @@ hermes config set API_SERVER_ENABLED true
 hermes config set API_SERVER_KEY your-secret-key
 ```
 
-`hermes config set` auto-routes the flag to `config.yaml` and the secret to `~/.hermes/.env`. If the gateway is already running, restart it so the change takes effect:
+`hermes config set` auto-routes the flag to `config.yaml` and the secret to `~/.kora/.env`. If the gateway is already running, restart it so the change takes effect:
 
 ```bash
 hermes gateway stop && hermes gateway
@@ -279,14 +279,14 @@ To run separate Hermes instances per user — each with their own config, memory
 
 ```bash
 hermes profile create alice
-cat >> ~/.hermes/profiles/alice/.env <<EOF
+cat >> ~/.kora/profiles/alice/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8650
 API_SERVER_KEY=alice-secret
 EOF
 
 hermes profile create bob
-cat >> ~/.hermes/profiles/bob/.env <<EOF
+cat >> ~/.kora/profiles/bob/.env <<EOF
 API_SERVER_ENABLED=true
 API_SERVER_PORT=8651
 API_SERVER_KEY=bob-secret

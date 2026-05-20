@@ -93,7 +93,7 @@ This is the standalone command. The Zed registry's terminal-auth flow (`hermes a
 
 What it does:
 
-- Installs Node.js 22 LTS into `~/.hermes/node/` if missing
+- Installs Node.js 22 LTS into `~/.kora/node/` if missing
 - `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
 - Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
 
@@ -135,7 +135,7 @@ Zed v0.221.x and newer installs external agents through the official ACP Registr
 
 Prerequisites:
 
-- Configure Hermes provider credentials first with `hermes model`, or set them in `~/.hermes/.env` / `~/.hermes/config.yaml`.
+- Configure Hermes provider credentials first with `hermes model`, or set them in `~/.kora/.env` / `~/.kora/config.yaml`.
 - Install `uv` so the registry launcher can run `uvx --from 'hermes-agent[acp]==<version>' hermes-acp`.
 
 For local development before the registry entry is available, use a custom agent server in Zed settings:
@@ -183,10 +183,10 @@ The registry CI verifies that the pinned version exists on PyPI, so the manifest
 
 ACP mode uses the same Hermes configuration as the CLI:
 
-- `~/.hermes/.env`
-- `~/.hermes/config.yaml`
-- `~/.hermes/skills/`
-- `~/.hermes/state.db`
+- `~/.kora/.env`
+- `~/.kora/config.yaml`
+- `~/.kora/skills/`
+- `~/.kora/state.db`
 
 Provider resolution uses Hermes' normal runtime resolver, so ACP inherits the currently configured provider and credentials. Hermes also advertises a terminal auth method (`--setup`) for first-run registry clients; this opens Hermes' interactive model/provider setup.
 
@@ -264,7 +264,7 @@ ACP mode uses Hermes' existing provider setup. Configure credentials with:
 hermes model
 ```
 
-or by editing `~/.hermes/.env`. Registry clients can also trigger Hermes' terminal auth flow, which runs the same interactive provider/model setup.
+or by editing `~/.kora/.env`. Registry clients can also trigger Hermes' terminal auth flow, which runs the same interactive provider/model setup.
 
 ### Zed registry launcher cannot find uv
 

@@ -65,7 +65,7 @@ class TestDefaultAgentIdentityIsKora:
 class TestRepoRootSoulMd:
     """The repo ships `SOUL.md` at the root as a KR-1 scaffold.
 
-    The runtime `load_soul_md()` currently resolves `~/.hermes/SOUL.md`
+    The runtime `load_soul_md()` currently resolves `~/.kora/SOUL.md`
     (ST3 renames that to `~/.kora/SOUL.md`). For KR-1 ST2, the repo-root
     scaffold is purely informational — but it must agree with the
     embedded identity so an operator who copies it gets the same opener.

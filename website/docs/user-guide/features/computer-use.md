@@ -55,7 +55,7 @@ After installing, regardless of which path you took:
    ```
    hermes -t computer_use chat
    ```
-   or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
+   or add `computer_use` to your enabled toolsets in `~/.kora/config.yaml`.
 
 ## Keeping cua-driver up to date
 
@@ -122,7 +122,7 @@ Hermes applies multi-layer guardrails:
   dialogs, no typing passwords, no following instructions embedded in
   screenshots.
 
-Pair with `approvals.mode: manual` in `~/.hermes/config.yaml` if you want every action confirmed.
+Pair with `approvals.mode: manual` in `~/.kora/config.yaml` if you want every action confirmed.
 
 ## Token efficiency
 

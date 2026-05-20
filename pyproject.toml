@@ -127,8 +127,8 @@ acp = ["agent-client-protocol==0.9.0"]
 #   2. Add back: mistral = ["mistralai==<verified-version>"]
 #   3. Re-enable Mistral in:
 #        - tools/lazy_deps.py (LAZY_DEPS["tts.mistral"], LAZY_DEPS["stt.mistral"])
-#        - hermes_cli/tools_config.py (un-hide from provider picker)
-#        - hermes_cli/web_server.py (re-add to dashboard STT options)
+#        - kora_cli/tools_config.py (un-hide from provider picker)
+#        - kora_cli/web_server.py (re-add to dashboard STT options)
 #        - tools/transcription_tools.py / tools/tts_tool.py (drop disabled stubs)
 #   4. Run `uv lock` to regenerate transitives.
 #   5. Optionally re-add to [all] only after a few days of clean operation.
@@ -211,23 +211,21 @@ all = [
 ]
 
 [project.scripts]
-# Primary entrypoint for the Kora runtime. The `hermes` aliases are kept as
-# backwards-compat wrappers for the duration of KR-1 (ST4 rewrites them as
-# deprecation shims). Module paths still say `hermes_cli` / `run_agent` /
-# `acp_adapter` — ST3 renames `hermes_cli` → `kora_cli` and updates these.
-kora = "hermes_cli.main:main"
+# Primary entrypoint for the Kora runtime. The `hermes*` aliases are kept as
+# backwards-compat wrappers for the duration of KR-1 — ST4 rewraps the
+# `hermes` shim as a deprecation warning + exec kora. Removed in KR-2+.
+kora = "kora_cli.main:main"
 kora-agent = "run_agent:main"
 kora-acp = "acp_adapter.entry:main"
-# BC aliases — to be wrapped in deprecation warnings by KR-1 ST4, removed in KR-2+.
-hermes = "hermes_cli.main:main"
+hermes = "kora_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "kora_bootstrap", "kora_constants", "kora_state", "kora_time", "kora_logging", "utils"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
+kora_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
 plugins = [
   "*/dashboard/manifest.json",
@@ -236,7 +234,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "kora_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1071,7 +1071,7 @@ class TestDiskFailureMarker:
 
 class TestHermesHomeIsolation:
     def test_hermes_bin_dir_respects_hermes_home(self):
-        """_hermes_bin_dir must use HERMES_HOME, not hardcoded ~/.hermes."""
+        """_hermes_bin_dir must use HERMES_HOME, not hardcoded ~/.kora."""
         from tools.tirith_security import _hermes_bin_dir
         import tempfile
         tmpdir = tempfile.mkdtemp()
@@ -1081,7 +1081,7 @@ class TestHermesHomeIsolation:
         assert os.path.isdir(result)
 
     def test_failure_marker_respects_hermes_home(self):
-        """_failure_marker_path must use HERMES_HOME, not hardcoded ~/.hermes."""
+        """_failure_marker_path must use HERMES_HOME, not hardcoded ~/.kora."""
         from tools.tirith_security import _failure_marker_path
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/hermes"}):
             result = _failure_marker_path()
@@ -1093,16 +1093,16 @@ class TestHermesHomeIsolation:
         assert hermes_home is not None, "HERMES_HOME should be set by conftest"
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
-    def test_get_hermes_home_fallback(self):
+    def test_get_kora_home_fallback(self):
         """Without HERMES_HOME set, falls back to the active OS home."""
-        from tools.tirith_security import _get_hermes_home
+        from tools.tirith_security import _get_kora_home
         with patch.dict(os.environ, {}, clear=True):
             # Remove HERMES_HOME entirely. With HOME also absent, expanduser
             # falls back to the account database; compute expected under the
             # same environment instead of after patch.dict restores HOME.
             os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".hermes")
-            result = _get_hermes_home()
+            expected = os.path.join(os.path.expanduser("~"), ".kora")
+            result = _get_kora_home()
         assert result == expected
 
 

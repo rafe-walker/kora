@@ -1,6 +1,6 @@
 """ACP session manager — maps ACP sessions to Hermes AIAgent instances.
 
-Sessions are persisted to the shared SessionDB (``~/.hermes/state.db``) so they
+Sessions are persisted to the shared SessionDB (``~/.kora/state.db``) so they
 survive process restarts and appear in ``session_search``.  When the editor
 reconnects after idle/restart, the ``load_session`` / ``resume_session`` calls
 find the persisted session in the database and restore the full conversation
@@ -8,7 +8,7 @@ history.
 """
 from __future__ import annotations
 
-from hermes_constants import get_hermes_home
+from kora_constants import get_kora_home
 
 import copy
 import json
@@ -45,7 +45,7 @@ def _translate_acp_cwd(cwd: str) -> str:
     sessions all agree on the usable workspace. Native Linux/macOS keeps the
     original cwd unchanged.
     """
-    from hermes_constants import is_wsl
+    from kora_constants import is_wsl
 
     if not is_wsl():
         return cwd
@@ -198,7 +198,7 @@ class SessionManager:
                            Used by tests. When omitted, a real AIAgent is created
                            using the current Hermes runtime provider configuration.
             db:            Optional SessionDB instance. When omitted, the default
-                           SessionDB (``~/.hermes/state.db``) is lazily created.
+                           SessionDB (``~/.kora/state.db``) is lazily created.
         """
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
@@ -412,8 +412,8 @@ class SessionManager:
         if self._db_instance is not None:
             return self._db_instance
         try:
-            from hermes_state import SessionDB
-            hermes_home = get_hermes_home()
+            from kora_state import SessionDB
+            hermes_home = get_kora_home()
             self._db_instance = SessionDB(db_path=hermes_home / "state.db")
             return self._db_instance
         except Exception:
@@ -574,8 +574,8 @@ class SessionManager:
             return self._agent_factory()
 
         from run_agent import AIAgent
-        from hermes_cli.config import load_config
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from kora_cli.config import load_config
+        from kora_cli.runtime_provider import resolve_runtime_provider
 
         config = load_config()
         model_cfg = config.get("model")

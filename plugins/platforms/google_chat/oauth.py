@@ -73,17 +73,17 @@ logger = logging.getLogger("gateway.platforms.google_chat_user_oauth")
 # Use the project's HERMES_HOME helper so the token follows the user's
 # profile (e.g. tests can override via HERMES_HOME=/tmp/...).
 try:
-    from hermes_constants import display_hermes_home, get_hermes_home
+    from kora_constants import display_kora_home, get_kora_home
 except (ModuleNotFoundError, ImportError):
-    # Fallback for environments where hermes_constants isn't importable
+    # Fallback for environments where kora_constants isn't importable
     # (mirrors the same fallback used by the google-workspace skill's
     # _hermes_home.py shim).
-    def get_hermes_home() -> Path:
+    def get_kora_home() -> Path:
         val = os.environ.get("HERMES_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".hermes"
+        return Path(val) if val else Path.home() / ".kora"
 
-    def display_hermes_home() -> str:
-        home = get_hermes_home()
+    def display_kora_home() -> str:
+        home = get_kora_home()
         try:
             return "~/" + str(home.relative_to(Path.home()))
         except ValueError:
@@ -97,13 +97,13 @@ def _hermes_home() -> Path:
     binding. If we cached the path at import time, switching profiles
     or tweaking env vars in tests would silently keep using the old
     path."""
-    return get_hermes_home()
+    return get_kora_home()
 
 
 # Filesystem-safe key: lowercase, allow ``[a-z0-9._-@]``, replace anything
 # else with ``_``. ``ramon.fernandez@nttdata.com`` stays human-readable
 # (``ramon.fernandez@nttdata.com.json``) which makes admin debugging by
-# ``ls ~/.hermes/google_chat_user_tokens/`` trivial.
+# ``ls ~/.kora/google_chat_user_tokens/`` trivial.
 _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 
 
@@ -554,9 +554,9 @@ def exchange_auth_code(code: str, email: Optional[str] = None) -> None:
 
     print(f"OK: Authenticated. Token saved to {token_path}")
     rel_label = (
-        f"{display_hermes_home()}/google_chat_user_tokens/{_sanitize_email(email)}.json"
+        f"{display_kora_home()}/google_chat_user_tokens/{_sanitize_email(email)}.json"
         if email
-        else f"{display_hermes_home()}/google_chat_user_token.json"
+        else f"{display_kora_home()}/google_chat_user_token.json"
     )
     print(f"Profile path: {rel_label}")
 

@@ -22,7 +22,7 @@ import pytest
 
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".kora"
     home.mkdir()
     (home / "skills").mkdir()
     (home / "logs").mkdir()
@@ -30,8 +30,8 @@ def curator_env(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     import importlib
-    import hermes_constants
-    importlib.reload(hermes_constants)
+    import kora_constants
+    importlib.reload(kora_constants)
     from agent import curator
     importlib.reload(curator)
     yield curator

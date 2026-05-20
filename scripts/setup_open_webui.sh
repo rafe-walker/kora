@@ -4,7 +4,7 @@ set -euo pipefail
 # Bootstrap Open WebUI against Hermes Agent's OpenAI-compatible API server.
 #
 # Idempotent by design:
-# - ensures ~/.hermes/.env has API server settings
+# - ensures ~/.kora/.env has API server settings
 # - installs Open WebUI into ~/.local/open-webui-venv
 # - writes a reusable launcher at ~/.local/bin/start-open-webui-hermes.sh
 # - optionally installs a user service (launchd on macOS, systemd --user on Linux)
@@ -31,14 +31,14 @@ OPEN_WEBUI_ENABLE_SIGNUP="${OPEN_WEBUI_ENABLE_SIGNUP:-true}"
 OPEN_WEBUI_ENABLE_SERVICE="${OPEN_WEBUI_ENABLE_SERVICE:-auto}"
 OPEN_WEBUI_VENV="${OPEN_WEBUI_VENV:-$HOME/.local/open-webui-venv}"
 OPEN_WEBUI_DATA_DIR="${OPEN_WEBUI_DATA_DIR:-$HOME/.local/share/open-webui/data}"
-HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.kora/.env}"
 HERMES_API_PORT="${HERMES_API_PORT:-8642}"
 HERMES_API_HOST="${HERMES_API_HOST:-127.0.0.1}"
 HERMES_API_CONNECT_HOST="${HERMES_API_CONNECT_HOST:-127.0.0.1}"
 HERMES_API_MODEL_NAME="${HERMES_API_MODEL_NAME:-Hermes Agent}"
 HERMES_API_BASE_URL="http://${HERMES_API_CONNECT_HOST}:${HERMES_API_PORT}/v1"
 LAUNCHER_PATH="$HOME/.local/bin/start-open-webui-hermes.sh"
-LOG_DIR="$HOME/.hermes/logs"
+LOG_DIR="$HOME/.kora/logs"
 
 log() {
   printf '[open-webui-bootstrap] %s\n' "$*"
@@ -271,8 +271,8 @@ ExecStart=/bin/bash %h/.local/bin/start-open-webui-hermes.sh
 Restart=always
 RestartSec=3
 WorkingDirectory=%h
-StandardOutput=append:%h/.hermes/logs/openwebui.log
-StandardError=append:%h/.hermes/logs/openwebui.error.log
+StandardOutput=append:%h/.kora/logs/openwebui.log
+StandardError=append:%h/.kora/logs/openwebui.error.log
 
 [Install]
 WantedBy=default.target

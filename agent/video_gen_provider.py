@@ -8,7 +8,7 @@ instances via ``PluginContext.register_video_gen_provider()``; the active one
 ``video_generate`` tool call.
 
 Providers live in ``<repo>/plugins/video_gen/<name>/`` (built-in, auto-loaded
-as ``kind: backend``) or ``~/.hermes/plugins/video_gen/<name>/`` (user, opt-in
+as ``kind: backend``) or ``~/.kora/plugins/video_gen/<name>/`` (user, opt-in
 via ``plugins.enabled``).
 
 Mirrors the ``image_gen`` provider design (``agent/image_gen_provider.py``) so
@@ -203,9 +203,9 @@ class VideoGenProvider(abc.ABC):
 
 def _videos_cache_dir() -> Path:
     """Return ``$HERMES_HOME/cache/videos/``, creating parents as needed."""
-    from hermes_constants import get_hermes_home
+    from kora_constants import get_kora_home
 
-    path = get_hermes_home() / "cache" / "videos"
+    path = get_kora_home() / "cache" / "videos"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

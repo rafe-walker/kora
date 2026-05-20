@@ -299,7 +299,7 @@
 - Fix false positives in recursive delete detection ([#68](https://github.com/NousResearch/hermes-agent/pull/68)) — @cutepawss
 - Fix Ruff lint warnings across codebase ([#608](https://github.com/NousResearch/hermes-agent/pull/608)) — @JackTheGit
 - Fix Anthropic native base URL fail-fast ([#173](https://github.com/NousResearch/hermes-agent/pull/173)) — @adavyas
-- Fix install.sh creating ~/.hermes before moving Node.js directory ([#53](https://github.com/NousResearch/hermes-agent/pull/53)) — @JoshuaMart
+- Fix install.sh creating ~/.kora before moving Node.js directory ([#53](https://github.com/NousResearch/hermes-agent/pull/53)) — @JoshuaMart
 - Fix SystemExit traceback during atexit cleanup on Ctrl+C ([#55](https://github.com/NousResearch/hermes-agent/pull/55)) — @bierlingm
 - Restore missing MIT license file ([#620](https://github.com/NousResearch/hermes-agent/pull/620)) — @stablegenius49
 

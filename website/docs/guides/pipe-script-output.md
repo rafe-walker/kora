@@ -153,7 +153,7 @@ fi
 ```bash
 # Crontab entry
 0 9 * * * /usr/local/bin/generate-metrics.sh \
-  | /home/me/.hermes/bin/hermes send \
+  | /home/me/.kora/bin/hermes send \
       --to telegram --subject "Daily metrics $(date +%Y-%m-%d)"
 ```
 
@@ -186,7 +186,7 @@ msg_id=$(hermes send --to discord:#ops --json "build started" \
 **Usually no.** For any bot-token platform — Telegram, Discord, Slack,
 Signal, SMS, WhatsApp Cloud API, and most others — `hermes send` calls
 the platform's REST endpoint directly using credentials from
-`~/.hermes/.env` and `~/.hermes/config.yaml`. It's a standalone subprocess
+`~/.kora/.env` and `~/.kora/config.yaml`. It's a standalone subprocess
 that exits as soon as the message is delivered.
 
 A live gateway is only required for **plugin platforms** that rely on a
@@ -211,7 +211,7 @@ hermes send --list telegram
 hermes send --list --json
 ```
 
-The listing is built from `~/.hermes/channel_directory.json`, which the
+The listing is built from `~/.kora/channel_directory.json`, which the
 gateway refreshes every few minutes while it's running. If you see
 "no channels discovered yet", start the gateway once (`hermes gateway
 start`) so it can populate the cache.

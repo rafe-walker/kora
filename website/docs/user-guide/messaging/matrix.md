@@ -180,7 +180,7 @@ Select **Matrix** when prompted, then provide your homeserver URL, access token 
 
 ### Option B: Manual Configuration
 
-Add the following to your `~/.hermes/.env` file:
+Add the following to your `~/.kora/.env` file:
 
 **Using an access token:**
 
@@ -211,7 +211,7 @@ MATRIX_PASSWORD=***
 MATRIX_ALLOWED_USERS=@alice:matrix.example.org
 ```
 
-Optional behavior settings in `~/.hermes/config.yaml`:
+Optional behavior settings in `~/.kora/config.yaml`:
 
 ```yaml
 group_sessions_per_user: true
@@ -264,7 +264,7 @@ sudo dnf install libolm-devel
 
 ### Enable E2EE
 
-Add to your `~/.hermes/.env`:
+Add to your `~/.kora/.env`:
 
 ```bash
 MATRIX_ENCRYPTION=true
@@ -272,7 +272,7 @@ MATRIX_ENCRYPTION=true
 
 When E2EE is enabled, Hermes:
 
-- Stores encryption keys in `~/.hermes/platforms/matrix/store/` (legacy installs: `~/.hermes/matrix/store/`)
+- Stores encryption keys in `~/.kora/platforms/matrix/store/` (legacy installs: `~/.kora/matrix/store/`)
 - Uploads device keys on first connection
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
@@ -290,7 +290,7 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
 :::warning[Deleting the crypto store]
-If you delete `~/.hermes/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
+If you delete `~/.kora/platforms/matrix/store/crypto.db`, the bot loses its encryption identity. Simply restarting with the same device ID will **not** fully recover — the homeserver still holds one-time keys signed with the old identity key, and peers cannot establish new Olm sessions.
 
 Hermes detects this condition on startup and refuses to enable E2EE, logging: `device XXXX has stale one-time keys on the server signed with a previous identity key`.
 
@@ -318,7 +318,7 @@ Hermes detects this condition on startup and refuses to enable E2EE, logging: `d
 
 2. Delete the local crypto store and restart Hermes:
    ```bash
-   rm -f ~/.hermes/platforms/matrix/store/crypto.db*
+   rm -f ~/.kora/platforms/matrix/store/crypto.db*
    # restart hermes
    ```
 
@@ -339,7 +339,7 @@ Type `/sethome` in any Matrix room where the bot is present. That room becomes t
 
 ### Manual Configuration
 
-Add this to your `~/.hermes/.env`:
+Add this to your `~/.kora/.env`:
 
 ```bash
 MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
@@ -477,16 +477,16 @@ changed identity keys for the same device as suspicious.
      }'
    ```
 
-   Copy the new `access_token` and update `MATRIX_ACCESS_TOKEN` in `~/.hermes/.env`.
+   Copy the new `access_token` and update `MATRIX_ACCESS_TOKEN` in `~/.kora/.env`.
 
 2. **Delete old encryption state**:
 
    ```bash
-   rm -f ~/.hermes/platforms/matrix/store/crypto.db
-   rm -f ~/.hermes/platforms/matrix/store/crypto_store.*
+   rm -f ~/.kora/platforms/matrix/store/crypto.db
+   rm -f ~/.kora/platforms/matrix/store/crypto_store.*
    ```
 
-3. **Set your recovery key** (if you use cross-signing — most Element users do). Add to `~/.hermes/.env`:
+3. **Set your recovery key** (if you use cross-signing — most Element users do). Add to `~/.kora/.env`:
 
    ```bash
    MATRIX_RECOVERY_KEY=EsT... your recovery key here
@@ -552,7 +552,7 @@ The Docker container only handles Matrix protocol + E2EE. When a message arrives
 
 Enable the API server so the host accepts incoming requests from the Docker container.
 
-Add to `~/.hermes/.env`:
+Add to `~/.kora/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
@@ -599,7 +599,7 @@ services:
       GATEWAY_PROXY_URL: "http://192.168.1.100:8642"
       GATEWAY_PROXY_KEY: "your-secret-key-here"
     volumes:
-      - ./matrix-store:/root/.hermes/platforms/matrix/store
+      - ./matrix-store:/root/.kora/platforms/matrix/store
 ```
 
 **`Dockerfile`:**
@@ -676,7 +676,7 @@ Session continuity is maintained via the `X-Hermes-Session-Id` header. The host'
 
 **Cause**: Your User ID isn't in `MATRIX_ALLOWED_USERS`.
 
-**Fix**: Add your User ID to `MATRIX_ALLOWED_USERS` in `~/.hermes/.env` and restart the gateway. Use the full `@user:server` format.
+**Fix**: Add your User ID to `MATRIX_ALLOWED_USERS` in `~/.kora/.env` and restart the gateway. Use the full `@user:server` format.
 
 ## Security
 

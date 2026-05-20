@@ -10,7 +10,7 @@ import pytest
 @pytest.fixture
 def _isolate(tmp_path, monkeypatch):
     """Isolate HERMES_HOME so tests don't touch real config."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".kora"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 

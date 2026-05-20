@@ -23,7 +23,7 @@ def external_skills_dir(tmp_path):
 @pytest.fixture
 def hermes_home(tmp_path):
     """Create a minimal HERMES_HOME with config."""
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".kora"
     home.mkdir()
     (home / "skills").mkdir()
     return home

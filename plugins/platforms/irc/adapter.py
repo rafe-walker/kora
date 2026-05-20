@@ -536,10 +536,10 @@ def validate_config(config) -> bool:
 def interactive_setup() -> None:
     """Interactive `hermes gateway setup` flow for the IRC platform.
 
-    Lazy-imports ``hermes_cli.setup`` helpers so the plugin stays importable
+    Lazy-imports ``kora_cli.setup`` helpers so the plugin stays importable
     in non-CLI contexts (gateway runtime, tests).
     """
-    from hermes_cli.setup import (
+    from kora_cli.setup import (
         prompt,
         prompt_yes_no,
         save_env_value,
@@ -636,7 +636,7 @@ def interactive_setup() -> None:
             print_info("No nicks allowed — the bot will ignore all messages until you add nicks.")
 
     print()
-    print_success("IRC configuration saved to ~/.hermes/.env")
+    print_success("IRC configuration saved to ~/.kora/.env")
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 

@@ -522,10 +522,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # made the in-memory version of this heuristic flaky for
         # multi-restart sessions).
         try:
-            from hermes_constants import get_hermes_home as _get_hermes_home
-            _hermes_home = _get_hermes_home()
+            from kora_constants import get_kora_home as _get_kora_home
+            _hermes_home = _get_kora_home()
         except (ModuleNotFoundError, ImportError):
-            _hermes_home = _Path.home() / ".hermes"
+            _hermes_home = _Path.home() / ".kora"
         self._thread_count_store = _ThreadCountStore(
             _hermes_home / "google_chat_thread_counts.json"
         )
@@ -689,7 +689,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Location where the resolved bot user_id is cached across restarts."""
-        base = os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
+        base = os.getenv("HERMES_HOME", str(_Path.home() / ".kora"))
         return _Path(base) / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
@@ -3025,20 +3025,20 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
 def interactive_setup() -> None:
     """Walk the user through Google Chat configuration via ``hermes setup``.
 
-    The setup wizard at ``hermes_cli/gateway.py`` calls this for plugin
+    The setup wizard at ``kora_cli/gateway.py`` calls this for plugin
     platforms instead of using the in-tree ``_PLATFORMS`` data block. The
     flow mirrors the in-tree built-ins: print the GCP setup instructions,
-    prompt for env vars, persist them to ``~/.hermes/.env`` so the next
+    prompt for env vars, persist them to ``~/.kora/.env`` so the next
     gateway restart picks them up.
     """
-    from hermes_cli.cli_output import (
+    from kora_cli.cli_output import (
         print_info,
         print_success,
         print_warning,
         prompt,
         prompt_yes_no,
     )
-    from hermes_cli.config import get_env_value, save_env_value
+    from kora_cli.config import get_env_value, save_env_value
 
     existing_sub = get_env_value("GOOGLE_CHAT_SUBSCRIPTION_NAME")
     if existing_sub:
@@ -3110,7 +3110,7 @@ def interactive_setup() -> None:
         save_env_value("GOOGLE_CHAT_HOME_CHANNEL", home.strip())
 
     print()
-    print_success("Google Chat configuration saved to ~/.hermes/.env")
+    print_success("Google Chat configuration saved to ~/.kora/.env")
     print_info("Restart the gateway: hermes gateway restart")
 
 

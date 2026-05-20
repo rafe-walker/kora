@@ -334,7 +334,7 @@ A full React/Ink rewrite of the interactive CLI — invoked via `hermes --tui` o
 - **Account limits section in `/usage`** ([#13428](https://github.com/NousResearch/hermes-agent/pull/13428))
 - **Doctor: Command Installation check** for `hermes` bin symlink ([#10112](https://github.com/NousResearch/hermes-agent/pull/10112))
 - **ESC cancels secret/sudo prompts**, clearer skip messaging ([#9902](https://github.com/NousResearch/hermes-agent/pull/9902))
-- Fix: agent-facing text uses `display_hermes_home()` instead of hardcoded `~/.hermes` ([#10285](https://github.com/NousResearch/hermes-agent/pull/10285))
+- Fix: agent-facing text uses `display_hermes_home()` instead of hardcoded `~/.kora` ([#10285](https://github.com/NousResearch/hermes-agent/pull/10285))
 - Fix: enforce `config.yaml` as sole CWD source + deprecate `.env` CWD vars + add `hermes memory reset` ([#11029](https://github.com/NousResearch/hermes-agent/pull/11029))
 
 ---

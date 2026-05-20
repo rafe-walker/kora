@@ -86,7 +86,7 @@ class TestXAIProviderIsAvailable:
         assert XAIWebSearchProvider().is_available() is True
 
     def test_available_via_auth_store(self, monkeypatch, tmp_path):
-        """Cheap probe should detect xai-oauth tokens in ~/.hermes/auth.json
+        """Cheap probe should detect xai-oauth tokens in ~/.kora/auth.json
         without invoking the resolver (which can trigger refresh)."""
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -729,7 +729,7 @@ class TestXAIBackendWiring:
 class TestXAIProviderOAuthPath:
     """Verifies the provider works when credentials come from the OAuth
     runtime resolver (``hermes auth`` sign-in) rather than an env-var key.
-    Patches at the ``hermes_cli.runtime_provider.resolve_runtime_provider``
+    Patches at the ``kora_cli.runtime_provider.resolve_runtime_provider``
     boundary so the full ``tools.xai_http.resolve_xai_http_credentials``
     chain is exercised end-to-end.
     """
@@ -756,7 +756,7 @@ class TestXAIProviderOAuthPath:
             return _mock_resp(_responses_payload(json.dumps({"results": []})))
 
         with patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            "kora_cli.runtime_provider.resolve_runtime_provider",
             return_value=oauth_runtime,
         ), patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
              patch("httpx.post", side_effect=fake_post):

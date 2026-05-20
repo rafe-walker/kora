@@ -95,7 +95,7 @@ This resolver is the main reason Hermes can share auth/runtime logic between:
 
 ## AI Gateway
 
-Set `AI_GATEWAY_API_KEY` in `~/.hermes/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
+Set `AI_GATEWAY_API_KEY` in `~/.kora/.env` and run with `--provider ai-gateway`. Hermes fetches available models from the gateway's `/models` endpoint, filtering to language models with tool-use support.
 
 ## OpenRouter, AI Gateway, and custom OpenAI-compatible base URLs
 

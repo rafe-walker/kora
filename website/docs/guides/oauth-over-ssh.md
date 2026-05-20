@@ -143,9 +143,9 @@ xAI's authorize page shows this when its redirect to `127.0.0.1:<port>/callback`
 
 Same root cause as above — the redirect never made it back. Check the tunnel is still alive (`ssh -N` doesn't show output, so look at the terminal you started it from), restart it if needed, and re-run `hermes auth add xai-oauth --no-browser`.
 
-### Tokens land in the wrong `~/.hermes`
+### Tokens land in the wrong `~/.kora`
 
-The tokens are written under the Linux user that ran `hermes auth add ...`. If your gateway / systemd service runs as a different user (e.g. `root` or a dedicated `hermes` user), authenticate as **that** user so the tokens land in their `~/.hermes/auth.json`. `sudo -u hermes -i` or equivalent.
+The tokens are written under the Linux user that ran `hermes auth add ...`. If your gateway / systemd service runs as a different user (e.g. `root` or a dedicated `hermes` user), authenticate as **that** user so the tokens land in their `~/.kora/auth.json`. `sudo -u hermes -i` or equivalent.
 
 ## See Also
 

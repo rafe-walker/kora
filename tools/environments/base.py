@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
-from hermes_constants import get_hermes_home
+from kora_constants import get_kora_home
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ def get_sandbox_dir() -> Path:
     if custom:
         p = Path(custom)
     else:
-        p = get_hermes_home() / "sandboxes"
+        p = get_kora_home() / "sandboxes"
     p.mkdir(parents=True, exist_ok=True)
     return p
 

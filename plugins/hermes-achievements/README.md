@@ -61,14 +61,14 @@ Version `0.2.x` expands the catalog to 60+ achievements, including model/provide
 Clone into your Hermes plugins directory:
 
 ```bash
-git clone https://github.com/PCinkusz/hermes-achievements ~/.hermes/plugins/hermes-achievements
+git clone https://github.com/PCinkusz/hermes-achievements ~/.kora/plugins/hermes-achievements
 ```
 
 For local development, keep the repo elsewhere and symlink it:
 
 ```bash
 git clone https://github.com/PCinkusz/hermes-achievements ~/hermes-achievements
-ln -s ~/hermes-achievements ~/.hermes/plugins/hermes-achievements
+ln -s ~/hermes-achievements ~/.kora/plugins/hermes-achievements
 ```
 
 Then rescan dashboard plugins:
@@ -84,7 +84,7 @@ If backend API routes 404, restart `hermes dashboard`; plugin APIs are mounted a
 If you installed with git:
 
 ```bash
-cd ~/.hermes/plugins/hermes-achievements
+cd ~/.kora/plugins/hermes-achievements
 git pull --ff-only
 curl http://127.0.0.1:9119/api/dashboard/plugins/rescan
 ```

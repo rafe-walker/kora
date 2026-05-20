@@ -62,16 +62,16 @@ except ImportError:
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using HERMES_HOME."""
     try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home() / "sessions"
+        from kora_constants import get_kora_home
+        return get_kora_home() / "sessions"
     except ImportError:
-        return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "sessions"
+        return Path(os.environ.get("HERMES_HOME", Path.home() / ".kora")) / "sessions"
 
 
 def _get_session_db():
     """Get a SessionDB instance for reading message transcripts."""
     try:
-        from hermes_state import SessionDB
+        from kora_state import SessionDB
         return SessionDB()
     except Exception as e:
         logger.debug("SessionDB unavailable: %s", e)
@@ -98,11 +98,11 @@ def _load_sessions_index() -> dict:
 def _load_channel_directory() -> dict:
     """Load the cached channel directory for available targets."""
     try:
-        from hermes_constants import get_hermes_home
-        directory_file = get_hermes_home() / "channel_directory.json"
+        from kora_constants import get_kora_home
+        directory_file = get_kora_home() / "channel_directory.json"
     except ImportError:
         directory_file = Path(
-            os.environ.get("HERMES_HOME", Path.home() / ".hermes")
+            os.environ.get("HERMES_HOME", Path.home() / ".kora")
         ) / "channel_directory.json"
 
     if not directory_file.exists():
@@ -362,10 +362,10 @@ class EventBridge:
 
         # Check if state.db has changed
         try:
-            from hermes_constants import get_hermes_home
-            db_file = get_hermes_home() / "state.db"
+            from kora_constants import get_kora_home
+            db_file = get_kora_home() / "state.db"
         except ImportError:
-            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".kora")) / "state.db"
 
         try:
             db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0

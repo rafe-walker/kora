@@ -113,9 +113,9 @@ class TestGatewayRunnerRegistration:
         # Stub out heavy dependencies if not already present
         stubs = [
             "dotenv",
-            "hermes_cli.env_loader",
-            "hermes_cli.config",
-            "hermes_constants",
+            "kora_cli.env_loader",
+            "kora_cli.config",
+            "kora_constants",
         ]
         _orig = {}
         for mod in stubs:
