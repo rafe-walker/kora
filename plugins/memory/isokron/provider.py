@@ -1,23 +1,33 @@
 """IsoKronMemoryProvider — Kora's substrate-backed MemoryProvider.
 
-KR-2 ST1 shipped this as a structural skeleton. KR-2 ST2 wires the
-read paths:
+KR-2 closes here at ST4: every ABC method has a real implementation,
+no ``NotImplementedError`` stubs remain. Surface summary:
 
 * **Role Charter** — ``read_active_role_charter`` against
-  ``public.kora_role_charter`` with SHA-256 integrity check.
+  ``public.kora_role_charter`` with SHA-256 integrity check (ST2).
 * **Capability matrix Kora row** — C2 Python mirror of
   ``ACTOR_CAPABILITY_MATRIX`` (parity test guards drift; K-7 will swap
-  to a Sea MCP tool).
+  to a Sea MCP tool; ST2).
 * **Policy registry** — ``read_kora_policy_registry`` against
-  ``kora_policy_registry`` with RLS GUC set inside a transaction;
-  31-row sanity warned-on-drift.
-
-Subsequent sub-tasks fill in:
-
-* **ST3** — scratchpad reads + writes (Plan 02 schema). Wires
-  ``sync_turn`` / ``on_memory_write``.
-* **ST4** — chain event emission (``kora.*`` event types) + recent
-  events read. Removes the remaining stubs.
+  ``kora_policy_registry`` with RLS GUC; 31-row sanity warn-on-drift (ST2).
+* **Scratchpad** — own + cross-agent reads against
+  ``kronicle.agent_scratchpad_entries`` (ST3). Writes deferred behind
+  ``ScratchpadWriteNotAvailableError`` until K-8 ships the Sea MCP tool.
+* **Recent chain events** — ``read_recent_kora_events`` against
+  ``hivex_foundation.event_log`` (tenant_id-keyed; JOIN tenant on
+  clerk_org_id) filtered ``LIKE 'kora.%'`` (ST4).
+* **Active Constitution revision** — ``read_active_constitution_revision``
+  against ``kronicle.workspace_constitution_revisions``; hex-encoded
+  ``rules_hash`` for K-6 Constitution pre-screen middleware (ST4).
+* **Chain event emit** — deferred behind ``ChainEventEmitNotAvailableError``
+  until Sea MCP ships ``kora__append_event`` (BUILD_DEVIATIONS
+  ``D-kr2-st4-no-chain-emit-mcp-tool``). Same shape as the scratchpad
+  write defer: catch the error in lifecycle hooks, log, continue.
+* **Session context** — ``assemble_session_context`` returns a
+  ``KoraSessionContext`` mirroring the TS-side
+  ``packages/sea-mcp-server/src/kora/context-assembler/types.ts:130``
+  shape; six load-bearing reads + two identity fields, fanned out via
+  ``asyncio.gather``.
 
 Selected via ``memory.provider: isokron`` in ``~/.kora/config.yaml``.
 Replaces Hermes' flat MEMORY.md / USER.md once configured; ``MemoryManager``
@@ -36,6 +46,11 @@ from agent.memory_provider import MemoryProvider
 from .cache import TTLCache
 from .config import ISOKRON_CONFIG_SCHEMA, IsoKronProviderConfig
 from .connection import IsoKronConnection
+from .events import (
+    ChainEventEmitNotAvailableError,
+    RecentChainEvent,
+    emit_kora_event,
+)
 from .models import (
     KoraCapabilityRow,
     PolicyRegistryEntry,
@@ -56,6 +71,7 @@ from .scratchpad import (
     read_own_scratchpad,
     write_scratchpad_entry,
 )
+from .session_context import KoraSessionContext, assemble_session_context
 
 logger = logging.getLogger(__name__)
 
@@ -82,22 +98,6 @@ RULE_6_HONEST_LABEL = (
     "below conflicts with a fresh substrate query, the substrate query "
     "wins."
 )
-
-
-def _not_yet_implemented(method: str, sub_task: str) -> NotImplementedError:
-    """Build a Rule-6 honest NotImplementedError for ST1 skeleton stubs.
-
-    Every stub method shares the same message format so operators can
-    grep `kora.isokron.todo` in their logs to see which surfaces are
-    still unimplemented.
-    """
-    msg = (
-        f"[kora.isokron.todo] IsoKronMemoryProvider.{method} not yet wired — "
-        f"KR-2 {sub_task} implements this. Rule-6: KR-2 ST1 shipped a "
-        f"structural skeleton; do not rely on this surface yet."
-    )
-    logger.warning(msg)
-    return NotImplementedError(msg)
 
 
 class IsoKronMemoryProvider(MemoryProvider):
@@ -167,6 +167,17 @@ class IsoKronMemoryProvider(MemoryProvider):
         self._cross_agent_scratchpad_cache: TTLCache[List[ScratchpadEntry]] = TTLCache(
             ttl_seconds=ttl
         )
+        # Recent chain events + active Constitution revision (ST4 reads).
+        self._events_cache: TTLCache[List[RecentChainEvent]] = TTLCache(
+            ttl_seconds=ttl
+        )
+        # Constitution revision cache holds Optional[tuple[str, str]] —
+        # (revision_id, rules_hash_hex) — or the sentinel ``(None, None)``
+        # for fresh workspaces with no revisions. Using a tuple keeps the
+        # TTLCache invariant (cached value cannot be None for "miss").
+        self._constitution_cache: TTLCache[
+            tuple[Optional[str], Optional[str]]
+        ] = TTLCache(ttl_seconds=ttl)
 
         # Validate config eagerly so a typo surfaces at construct time
         # rather than at first turn. ``is_available`` checks this.
@@ -278,13 +289,17 @@ class IsoKronMemoryProvider(MemoryProvider):
         return None
 
     def _prefetch_all(self, workspace_id: str) -> None:
-        """Block on a parallel ``asyncio.gather`` of the three reads.
+        """Block on a parallel ``asyncio.gather`` of all session reads.
 
         Each result populates its TTL cache so the subsequent
         ``system_prompt_block`` call hits warm cache. Integrity errors
         (RoleCharterIntegrityError, NoActiveRoleCharterError) surface
         as exceptions per spec § "fail-closed"; the policy 31-row
-        sanity warning is non-fatal.
+        sanity + scratchpad BLAKE3 drift are non-fatal WARNINGs.
+
+        Seven reads in parallel: Role Charter, policy registry,
+        capability matrix, own scratchpad, cross-agent scratchpad,
+        recent ``kora.*`` chain events, active Constitution revision.
 
         Called by ``on_turn_start`` (per spec acceptance) and as a
         cache-warm step from ``system_prompt_block`` when the cache
@@ -296,21 +311,98 @@ class IsoKronMemoryProvider(MemoryProvider):
             )
         pool = self._connection.get_pg_pool()
 
-        async def _gather() -> tuple[
-            RoleCharter, List[PolicyRegistryEntry], KoraCapabilityRow
-        ]:
+        # We deliberately gather all 7 reads in one shot rather than
+        # call ``assemble_session_context`` — the latter doesn't fetch
+        # the policy registry (not part of KoraSessionContext), and
+        # we want a single gather for round-trip latency.
+        from .events import read_recent_kora_events
+        from .scratchpad import (
+            read_cross_agent_scratchpad as _read_cross,
+            read_own_scratchpad as _read_own,
+        )
+        from .constitution import read_active_constitution_revision
+
+        async def _gather() -> Any:
             return await asyncio.gather(
                 read_active_role_charter(workspace_id, pool),
                 read_kora_policy_registry(workspace_id, pool),
                 read_kora_capability_row(pool),
+                _read_own(workspace_id, pool),
+                _read_cross(workspace_id, pool),
+                read_recent_kora_events(workspace_id, pool),
+                read_active_constitution_revision(workspace_id, pool),
             )
 
-        charter, policies, caps = self._connection.submit_and_wait(
-            _gather(), timeout=15.0
-        )
+        (
+            charter,
+            policies,
+            caps,
+            own_entries,
+            cross_entries,
+            recent_events,
+            constitution,
+        ) = self._connection.submit_and_wait(_gather(), timeout=20.0)
         self._charter_cache.put(workspace_id, charter)
         self._policy_cache.put(workspace_id, policies)
         self._capability_cache.put(workspace_id, caps)
+        self._own_scratchpad_cache.put(workspace_id, own_entries)
+        self._cross_agent_scratchpad_cache.put(workspace_id, cross_entries)
+        self._events_cache.put(workspace_id, recent_events)
+        self._constitution_cache.put(
+            workspace_id,
+            (
+                (constitution.revision_id, constitution.rules_hash)
+                if constitution is not None
+                else (None, None)
+            ),
+        )
+
+    def session_context(
+        self, *, workspace_id: Optional[str] = None
+    ) -> Optional[KoraSessionContext]:
+        """Return the assembled session context for the workspace.
+
+        Reads from the post-prefetch caches; returns ``None`` if any
+        load-bearing cache is cold (call ``on_turn_start`` first to
+        warm). Mirrors the TS-side ``KoraSessionContext`` shape at
+        ``packages/sea-mcp-server/src/kora/context-assembler/types.ts:130``.
+
+        Public API — consumers wanting just the typed context object
+        (e.g. K-6 Constitution pre-screen middleware in Python) call
+        this rather than touching individual caches.
+        """
+        from datetime import datetime, timezone
+
+        ws = self._resolve_workspace_id(workspace_id=workspace_id)
+        if ws is None:
+            return None
+        charter = self._charter_cache.get(ws)
+        capabilities = self._capability_cache.get(ws)
+        own = self._own_scratchpad_cache.get(ws)
+        cross = self._cross_agent_scratchpad_cache.get(ws)
+        events = self._events_cache.get(ws)
+        constitution = self._constitution_cache.get(ws)
+        if (
+            charter is None
+            or capabilities is None
+            or own is None
+            or cross is None
+            or events is None
+            or constitution is None
+        ):
+            return None
+        rev_id, rules_hash = constitution
+        return KoraSessionContext(
+            workspace_id=ws,
+            assembled_at=datetime.now(timezone.utc).isoformat(),
+            role_charter=charter,
+            capability_matrix_row=capabilities,
+            own_scratchpad=tuple(own),
+            cross_agent_scratchpad=tuple(cross),
+            recent_chain_events=tuple(events),
+            active_constitution_revision_id=rev_id,
+            active_constitution_rules_hash=rules_hash,
+        )
 
     def system_prompt_block(self) -> str:
         """Return the assembled identity prompt block.
@@ -319,8 +411,9 @@ class IsoKronMemoryProvider(MemoryProvider):
             §1 Identity — from ``content_md`` / sections.identity
             §2 CAN bullets — sections.authority_can_do
             §3 CANNOT bullets — sections.authority_cannot_do
-            Active policy values — selected 5 load-bearing rows
-            Capability matrix Kora-row summary — granted cap names
+            §4 Active policy values — selected 5 load-bearing rows
+            §5 Capability matrix Kora-row summary — granted cap names
+            §6 Recent ``kora.*`` activity — last few chain events
             Rule-6 honest-label — verbatim
 
         If the substrate is unreachable or the cache is cold and the
@@ -344,19 +437,23 @@ class IsoKronMemoryProvider(MemoryProvider):
             self._charter_cache.get(workspace_id) is None
             or self._policy_cache.get(workspace_id) is None
             or self._capability_cache.get(workspace_id) is None
+            or self._events_cache.get(workspace_id) is None
         ):
             self._prefetch_all(workspace_id)
 
         charter = self._charter_cache.get(workspace_id)
         policies = self._policy_cache.get(workspace_id)
         capabilities = self._capability_cache.get(workspace_id)
-        # All three are populated post-_prefetch_all; the ``is None``
-        # guards are defensive (e.g. zero-TTL test config).
+        events = self._events_cache.get(workspace_id) or []
+        # The four ST2/ST4 caches are populated post-_prefetch_all; the
+        # ``is None`` guards are defensive (e.g. zero-TTL test config).
         assert charter is not None, "charter cache miss after prefetch"
         assert policies is not None, "policy cache miss after prefetch"
         assert capabilities is not None, "capability cache miss after prefetch"
 
-        return _assemble_system_prompt_block(charter, policies, capabilities)
+        return _assemble_system_prompt_block(
+            charter, policies, capabilities, events
+        )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall context for the upcoming turn — no-op in ST2.
@@ -416,7 +513,15 @@ class IsoKronMemoryProvider(MemoryProvider):
         args: Dict[str, Any],
         **kwargs: Any,
     ) -> str:
-        raise _not_yet_implemented("handle_tool_call", "ST3 (writes) / KR-3 (iso_node_* tools)")
+        """Handle a tool call routed by name.
+
+        The provider returns no tools from ``get_tool_schemas`` (the
+        ``iso_node_*`` / ``iso_link_*`` family lands in KR-3), so this
+        hook should never be invoked in normal operation. Inherit the
+        ABC's "provider X does not handle tool Y" error so a routing
+        bug surfaces with a clear actionable message.
+        """
+        return super().handle_tool_call(tool_name, args, **kwargs)
 
     # -- Scratchpad reads (sync wrappers around the async reads) -----------
 
@@ -551,7 +656,28 @@ class IsoKronMemoryProvider(MemoryProvider):
         self._prefetch_all(workspace_id)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        raise _not_yet_implemented("on_session_end", "ST4")
+        """Emit ``kora.session.ended`` chain event with turn count.
+
+        Through the deferred-emit path until K-9 (or equivalent Sea
+        MCP ``kora__append_event`` tool) lands. The event would carry
+        ``{session_id, turn_count, ended_at}``; the catch + log
+        pattern preserves session lifecycle reliability regardless.
+        """
+        workspace_id = self._resolve_workspace_id()
+        if workspace_id is None:
+            logger.debug(
+                "[kora.isokron] on_session_end: no workspace_id — chain event skipped."
+            )
+            return
+        self._attempt_chain_event_emit(
+            workspace_id=workspace_id,
+            event_type="kora.session.ended",
+            payload={
+                "session_id": self._session_id or "",
+                "turn_count": len(messages),
+            },
+            origin="on_session_end",
+        )
 
     def on_session_switch(
         self,
@@ -561,10 +687,43 @@ class IsoKronMemoryProvider(MemoryProvider):
         reset: bool = False,
         **kwargs: Any,
     ) -> None:
-        raise _not_yet_implemented("on_session_switch", "ST4")
+        """Update stashed session_id + invalidate caches on a hard reset.
+
+        ``/resume`` / ``/branch`` / compression keep the logical
+        conversation alive — leave the caches as-is; new session_id
+        is the only state to rotate.
+
+        ``/reset`` / ``/new`` (``reset=True``) starts a fresh
+        conversation. Flush the per-workspace caches so the next turn
+        re-reads the current substrate state rather than serving
+        stale entries from a different logical session.
+        """
+        del parent_session_id, kwargs
+        self._session_id = new_session_id
+        if reset:
+            self._charter_cache.clear()
+            self._policy_cache.clear()
+            self._capability_cache.clear()
+            self._own_scratchpad_cache.clear()
+            self._cross_agent_scratchpad_cache.clear()
+            self._events_cache.clear()
+            self._constitution_cache.clear()
+            logger.info(
+                "[kora.isokron] session reset to %s — all caches flushed",
+                new_session_id,
+            )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        raise _not_yet_implemented("on_pre_compress", "ST4")
+        """Provider-extracted insights to preserve through compression.
+
+        The IsoKron substrate is the system of record for everything
+        that should survive compression (Role Charter, scratchpad,
+        chain events). Conversation-history compression doesn't need
+        an isokron-side contribution; substrate-side data is
+        re-fetched on next turn.
+        """
+        del messages
+        return ""
 
     def on_delegation(
         self,
@@ -574,7 +733,40 @@ class IsoKronMemoryProvider(MemoryProvider):
         child_session_id: str = "",
         **kwargs: Any,
     ) -> None:
-        raise _not_yet_implemented("on_delegation", "ST4")
+        """Record a subagent delegation as scratchpad + chain event.
+
+        Subagents (e.g. claude_pm / oracle / critic) emit on their own
+        substrate identity; parent Kora records the observation via a
+        ``reasoning_trail`` scratchpad entry (so her own context shows
+        what she handed off + what came back) and a
+        ``kora.handoff.to_claude_pm`` chain event.
+
+        Both paths are catch-and-continue (deferred MCP tools).
+        """
+        del kwargs
+        workspace_id = self._resolve_workspace_id()
+        if workspace_id is None:
+            return
+        summary = _summarize_for_scratchpad(
+            f"[delegation child={child_session_id}] task={task!r} result={result!r}"
+        )
+        self._attempt_scratchpad_write(
+            workspace_id=workspace_id,
+            scratchpad_kind=ScratchpadKind.REASONING_TRAIL,
+            visibility_scope=VisibilityScope.AGENT_PRIVATE,
+            content=summary,
+            origin="on_delegation",
+        )
+        self._attempt_chain_event_emit(
+            workspace_id=workspace_id,
+            event_type="kora.handoff.to_claude_pm",
+            payload={
+                "child_session_id": child_session_id,
+                "task_preview": task[:200],
+                "result_preview": result[:200],
+            },
+            origin="on_delegation",
+        )
 
     def on_memory_write(
         self,
@@ -613,7 +805,57 @@ class IsoKronMemoryProvider(MemoryProvider):
         )
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
-        raise _not_yet_implemented("save_config", "ST3 (`kora memory setup` walkthrough)")
+        """No-op: the IsoKron provider is configured via env vars + the
+        ``plugins.entries.isokron`` YAML block in ``config.yaml``.
+
+        Per ABC: "Providers that use only env vars can leave the default
+        (no-op)". The ``kora memory setup`` walkthrough writes the YAML
+        block + an ``.env`` entry directly via the secret-handling path;
+        the provider itself has no native config file to maintain.
+        """
+        del values, hermes_home
+
+    # -- Chain event emit (deferred until Sea MCP tool ships) ----------------
+
+    def _attempt_chain_event_emit(
+        self,
+        *,
+        workspace_id: str,
+        event_type: str,
+        payload: Dict[str, Any],
+        origin: str,
+    ) -> None:
+        """Submit an emit via the dedicated IO loop; catch the defer-error.
+
+        Mirrors :meth:`_attempt_scratchpad_write`'s defer-and-log
+        pattern. When the Sea MCP tool ships, only
+        :func:`events.emit_kora_event`'s body changes; this helper
+        stays identical.
+        """
+        if self._connection is None:
+            raise RuntimeError(
+                f"[kora.isokron] _attempt_chain_event_emit ({origin}) before construct"
+            )
+        try:
+            self._connection.submit_and_wait(
+                emit_kora_event(
+                    workspace_id=workspace_id,
+                    event_type=event_type,
+                    payload=payload,
+                    mcp_client=None,
+                ),
+                timeout=10.0,
+            )
+            # Successful emit invalidates the events cache so the next
+            # system_prompt_block re-reads.
+            self._events_cache.invalidate(workspace_id)
+        except ChainEventEmitNotAvailableError as exc:
+            logger.warning(
+                "[kora.isokron] %s chain event emit skipped (%s) — %s",
+                origin,
+                event_type,
+                exc,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -682,8 +924,9 @@ def _assemble_system_prompt_block(
     charter: RoleCharter,
     policies: List[PolicyRegistryEntry],
     capabilities: KoraCapabilityRow,
+    recent_events: List[RecentChainEvent],
 ) -> str:
-    """Render the identity + policy + capability block for the system prompt.
+    """Render the identity + policy + capability + activity block.
 
     Pure function — extracted from ``IsoKronMemoryProvider`` so tests
     can drive it with synthetic shapes without mocking the connection.
@@ -728,6 +971,40 @@ def _assemble_system_prompt_block(
         f"{len(capabilities.granted) + len(capabilities.denied)}):",
         cap_bullets,
         "",
+        _render_recent_activity(recent_events),
+        "",
         RULE_6_HONEST_LABEL,
     ]
     return "\n".join(blocks)
+
+
+# Number of recent events to surface in the §6 prompt section. Keeps
+# prompt size bounded — the full set lives in event_log and is
+# queryable via read_recent_kora_events directly.
+_SYSTEM_PROMPT_RECENT_EVENT_LIMIT = 5
+
+
+def _render_recent_activity(events: List[RecentChainEvent]) -> str:
+    """Render §6 'Recent kora.* activity'.
+
+    Returns a "§6" section even when the list is empty so the section
+    structure stays consistent across sessions (operators inspecting
+    the prompt see the same anchors regardless of activity volume).
+    """
+    if not events:
+        return "§6 Recent kora.* activity\n  - <no recent chain events>"
+    head = events[:_SYSTEM_PROMPT_RECENT_EVENT_LIMIT]
+    bullets = []
+    for evt in head:
+        # First line of payload_summary gives operators the shape of
+        # the event without the full pretty-printed JSON in-prompt.
+        first_line = evt.payload_summary.splitlines()[0] if evt.payload_summary else ""
+        bullets.append(
+            f"  - {evt.occurred_at} {evt.event_type} {first_line}".rstrip()
+        )
+    if len(events) > _SYSTEM_PROMPT_RECENT_EVENT_LIMIT:
+        bullets.append(
+            f"  - …{len(events) - _SYSTEM_PROMPT_RECENT_EVENT_LIMIT} older "
+            f"event(s) in event_log"
+        )
+    return f"§6 Recent kora.* activity ({len(events)} cached):\n" + "\n".join(bullets)

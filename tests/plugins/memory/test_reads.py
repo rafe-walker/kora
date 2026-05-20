@@ -390,8 +390,8 @@ def test_read_kora_policy_registry_passes_codec_decoded_values_through():
 def test_capability_mirror_loads_with_expected_shape():
     """The mirror is a non-empty dict with the right keys + boolean values."""
     assert isinstance(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN, dict)
-    # 24 SEA_CAPABILITIES + 24 KORA_BROADER_CAPABILITIES = 48 entries.
-    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 48
+    # 24 SEA + 25 KORA_BROADER = 49 entries (cap_unbless_convention added 2026-05-20).
+    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 49
     # Values are booleans (not strings, not ints).
     assert all(
         isinstance(v, bool) for v in ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.values()
@@ -405,10 +405,11 @@ def test_read_kora_capability_row_returns_typed_kora_row():
     row = asyncio.run(read_kora_capability_row())
     assert isinstance(row, KoraCapabilityRow)
     assert row.actor_kind == "kora"
-    # Kora has 22 granted caps (3 sea + 19 kora-broader) of the 48 total.
+    # Kora has 22 granted caps (3 sea + 19 kora-broader) of the 49 total.
+    # cap_unbless_convention is operator-only → denied for Kora.
     assert len(row.granted) == 22
-    assert len(row.denied) == 26
-    assert len(row.granted) + len(row.denied) == 48
+    assert len(row.denied) == 27
+    assert len(row.granted) + len(row.denied) == 49
 
 
 def test_kora_capability_row_has_lookup_is_fail_closed():
@@ -507,7 +508,10 @@ def _synthetic_capabilities() -> KoraCapabilityRow:
 def test_system_prompt_block_assembles_all_required_sections():
     """The assembler produces non-empty text with each spec-required section."""
     block = _assemble_system_prompt_block(
-        _synthetic_charter(), _synthetic_policies(), _synthetic_capabilities()
+        _synthetic_charter(),
+        _synthetic_policies(),
+        _synthetic_capabilities(),
+        [],  # no recent events for this base-shape test
     )
     assert block  # non-empty
     # §1 Identity
@@ -527,6 +531,8 @@ def test_system_prompt_block_assembles_all_required_sections():
     # §5 granted capabilities (Kora has 22 granted of 48)
     assert "§5 Granted capabilities" in block
     assert "cap_write_agent_scratchpad" in block
+    # §6 recent activity — present even with empty list
+    assert "§6 Recent kora.* activity" in block
     # Granted caps are sorted — never references operator-only caps as granted
     assert "cap_override_security_or_policy_verdict" not in block.split(
         "§5 Granted capabilities"
@@ -536,7 +542,10 @@ def test_system_prompt_block_assembles_all_required_sections():
 def test_system_prompt_block_contains_rule_6_label_verbatim():
     """Rule-6 honest-label appears verbatim — operators grep for this string."""
     block = _assemble_system_prompt_block(
-        _synthetic_charter(), _synthetic_policies(), _synthetic_capabilities()
+        _synthetic_charter(),
+        _synthetic_policies(),
+        _synthetic_capabilities(),
+        [],
     )
     assert RULE_6_HONEST_LABEL in block
     # And it's at the bottom (last line of the block).
@@ -549,6 +558,7 @@ def test_system_prompt_block_marks_missing_policy_entries():
         _synthetic_charter(),
         [],  # empty registry — every entry shows <not seeded>
         _synthetic_capabilities(),
+        [],
     )
     for path in SYSTEM_PROMPT_POLICY_PATHS:
         assert f"{path} = <not seeded>" in block
