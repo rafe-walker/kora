@@ -211,14 +211,14 @@ def test_env_var_expansion_missing_leaves_literal(monkeypatch):
     [
         # ST2 implemented: system_prompt_block, on_turn_start (reads).
         # ST2 no-op'd: prefetch, queue_prefetch (ABC defaults).
-        # The remaining stubs raise per Rule-6 with the ST3/ST4 marker.
-        ("sync_turn", ("u", "a"), {"session_id": "s"}),
+        # ST3 implemented: sync_turn, on_memory_write (deferred-write
+        #   surface; ScratchpadWriteNotAvailableError caught + logged).
+        # Remaining stubs target ST4 / KR-3.
         ("handle_tool_call", ("t", {}), {}),
         ("on_session_end", ([],), {}),
         ("on_session_switch", ("new-id",), {"reset": True}),
         ("on_pre_compress", ([],), {}),
         ("on_delegation", ("task", "result"), {"child_session_id": "c"}),
-        ("on_memory_write", ("add", "memory", "content"), {}),
         ("save_config", ({"key": "val"}, "/tmp/kora-home"), {}),
     ],
 )
@@ -233,8 +233,6 @@ def test_stub_method_raises_with_rule6_message(method, args, kwargs):
     assert "[kora.isokron.todo]" in str(excinfo.value), (
         f"{method} missing Rule-6 todo tag: {excinfo.value}"
     )
-    # ST2 stubs target ST3 or KR-3. (ST1 used "KR-2" as the marker;
-    # ST2 transitions some to ST3 / KR-3.)
     msg = str(excinfo.value)
     assert any(tag in msg for tag in ("ST3", "ST4", "KR-3")), (
         f"{method} stub message missing forward-target tag: {msg}"

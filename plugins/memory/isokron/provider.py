@@ -47,6 +47,15 @@ from .reads import (
     read_kora_capability_row,
     read_kora_policy_registry,
 )
+from .scratchpad import (
+    ScratchpadEntry,
+    ScratchpadKind,
+    ScratchpadWriteNotAvailableError,
+    VisibilityScope,
+    read_cross_agent_scratchpad,
+    read_own_scratchpad,
+    write_scratchpad_entry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +157,14 @@ class IsoKronMemoryProvider(MemoryProvider):
             ttl_seconds=ttl
         )
         self._capability_cache: TTLCache[KoraCapabilityRow] = TTLCache(
+            ttl_seconds=ttl
+        )
+        # Scratchpad caches — separate for own vs cross-agent so a Kora
+        # write invalidates only her own cache and not Critic/Oracle reads.
+        self._own_scratchpad_cache: TTLCache[List[ScratchpadEntry]] = TTLCache(
+            ttl_seconds=ttl
+        )
+        self._cross_agent_scratchpad_cache: TTLCache[List[ScratchpadEntry]] = TTLCache(
             ttl_seconds=ttl
         )
 
@@ -362,7 +379,36 @@ class IsoKronMemoryProvider(MemoryProvider):
         *,
         session_id: str = "",
     ) -> None:
-        raise _not_yet_implemented("sync_turn", "ST3")
+        """Persist a Kora-action summary to the scratchpad (if any happened).
+
+        Heuristic per spec § ST3 §4: any turn whose assistant output
+        references a ``cap_*`` token is treated as a Kora action that
+        gets a ``reasoning_trail`` scratchpad entry.
+
+        Write goes through :func:`scratchpad.write_scratchpad_entry`
+        which currently raises ``ScratchpadWriteNotAvailableError``
+        (BUILD_DEVIATIONS ``D-kr2-st3-no-scratchpad-write-mcp-tool``).
+        We catch that one error + log a one-line warning so sessions
+        stay alive while substrate-team ships the MCP tool. Any other
+        exception propagates.
+        """
+        del session_id, user_content
+        if not _looks_like_kora_action(assistant_content):
+            return
+        workspace_id = self._resolve_workspace_id()
+        if workspace_id is None:
+            logger.debug(
+                "[kora.isokron] sync_turn: Kora action detected but no "
+                "workspace_id resolvable — scratchpad write skipped."
+            )
+            return
+        self._attempt_scratchpad_write(
+            workspace_id=workspace_id,
+            scratchpad_kind=ScratchpadKind.REASONING_TRAIL,
+            visibility_scope=VisibilityScope.AGENT_PRIVATE,
+            content=_summarize_for_scratchpad(assistant_content),
+            origin="sync_turn",
+        )
 
     def handle_tool_call(
         self,
@@ -371,6 +417,109 @@ class IsoKronMemoryProvider(MemoryProvider):
         **kwargs: Any,
     ) -> str:
         raise _not_yet_implemented("handle_tool_call", "ST3 (writes) / KR-3 (iso_node_* tools)")
+
+    # -- Scratchpad reads (sync wrappers around the async reads) -----------
+
+    def read_own_scratchpad(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[ScratchpadEntry]:
+        """Return Kora's own scratchpad entries (cached 60s per workspace).
+
+        Sync — uses the connection's dedicated IO loop. ``workspace_id``
+        falls back to ``default_workspace_id`` via ``_resolve_workspace_id``;
+        a missing workspace_id returns empty list and logs a warning.
+        """
+        ws = self._resolve_workspace_id(workspace_id=workspace_id)
+        if ws is None:
+            logger.warning(
+                "[kora.isokron] read_own_scratchpad — no workspace_id "
+                "resolvable; returning empty list."
+            )
+            return []
+        cached = self._own_scratchpad_cache.get(ws)
+        if cached is not None:
+            return cached
+        if self._connection is None:
+            raise RuntimeError("[kora.isokron] read_own_scratchpad before construct")
+        pool = self._connection.get_pg_pool()
+        entries = self._connection.submit_and_wait(
+            read_own_scratchpad(ws, pool, limit=limit), timeout=10.0
+        )
+        self._own_scratchpad_cache.put(ws, entries)
+        return entries
+
+    def read_cross_agent_scratchpad(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[ScratchpadEntry]:
+        """Return cross-agent dereferenceable entries (cached 60s)."""
+        ws = self._resolve_workspace_id(workspace_id=workspace_id)
+        if ws is None:
+            logger.warning(
+                "[kora.isokron] read_cross_agent_scratchpad — no "
+                "workspace_id resolvable; returning empty list."
+            )
+            return []
+        cached = self._cross_agent_scratchpad_cache.get(ws)
+        if cached is not None:
+            return cached
+        if self._connection is None:
+            raise RuntimeError(
+                "[kora.isokron] read_cross_agent_scratchpad before construct"
+            )
+        pool = self._connection.get_pg_pool()
+        entries = self._connection.submit_and_wait(
+            read_cross_agent_scratchpad(ws, pool, limit=limit), timeout=10.0
+        )
+        self._cross_agent_scratchpad_cache.put(ws, entries)
+        return entries
+
+    def _attempt_scratchpad_write(
+        self,
+        *,
+        workspace_id: str,
+        scratchpad_kind: ScratchpadKind,
+        visibility_scope: VisibilityScope,
+        content: str,
+        origin: str,
+    ) -> None:
+        """Common write-attempt path: catch the deferred-write error gracefully.
+
+        Invalidates the own_scratchpad cache for this workspace whether
+        or not the write succeeds. When the MCP tool lands, this code
+        path keeps working without changes — only ``write_scratchpad_entry``
+        body changes.
+        """
+        if self._connection is None:
+            raise RuntimeError(
+                f"[kora.isokron] _attempt_scratchpad_write ({origin}) before construct"
+            )
+        # Pre-invalidate so a successful write isn't masked by stale cache;
+        # a failed write means there's no fresh data to hide either, so
+        # invalidation is safe in both branches.
+        self._own_scratchpad_cache.invalidate(workspace_id)
+        try:
+            self._connection.submit_and_wait(
+                write_scratchpad_entry(
+                    workspace_id=workspace_id,
+                    scratchpad_kind=scratchpad_kind,
+                    visibility_scope=visibility_scope,
+                    content=content,
+                    mcp_client=None,  # ST3 deferred; ST4 wires the MCP client
+                ),
+                timeout=10.0,
+            )
+        except ScratchpadWriteNotAvailableError as exc:
+            logger.warning(
+                "[kora.isokron] %s scratchpad write skipped — %s",
+                origin,
+                exc,
+            )
 
     def on_turn_start(
         self,
@@ -434,10 +583,78 @@ class IsoKronMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        raise _not_yet_implemented("on_memory_write", "ST3")
+        """Mirror Hermes' built-in memory writes to the scratchpad.
+
+        Per ABC: "Use to mirror built-in memory writes to your backend."
+        We project each memory write as a ``reasoning_trail`` scratchpad
+        entry. ``action`` and ``target`` are encoded in the summary so
+        operators can trace which built-in write produced which
+        scratchpad row.
+
+        Write attempts go through the same deferred path as ``sync_turn``;
+        ``ScratchpadWriteNotAvailableError`` is caught + logged.
+        """
+        del metadata
+        workspace_id = self._resolve_workspace_id()
+        if workspace_id is None:
+            logger.debug(
+                "[kora.isokron] on_memory_write: no workspace_id resolvable — "
+                "scratchpad mirror skipped (built-in memory write itself is "
+                "unaffected; this hook only mirrors)."
+            )
+            return
+        summary = f"[memory.{action} → {target}] {_summarize_for_scratchpad(content)}"
+        self._attempt_scratchpad_write(
+            workspace_id=workspace_id,
+            scratchpad_kind=ScratchpadKind.REASONING_TRAIL,
+            visibility_scope=VisibilityScope.AGENT_PRIVATE,
+            content=summary,
+            origin="on_memory_write",
+        )
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         raise _not_yet_implemented("save_config", "ST3 (`kora memory setup` walkthrough)")
+
+
+# ---------------------------------------------------------------------------
+# Kora-action heuristic + scratchpad summarizer (module-level)
+# ---------------------------------------------------------------------------
+
+
+import re as _re
+
+_KORA_ACTION_PATTERN = _re.compile(r"\bcap_[a-z0-9_]+\b")
+"""Match capability tokens like ``cap_write_agent_scratchpad`` in text.
+
+A capability mention in assistant output is the spec § ST3 §4 heuristic
+for "a Kora action happened this turn". Crude but PM-approved as the
+ST3 starting point — refined when ST4 wires real chain-event detection.
+"""
+
+_SCRATCHPAD_SUMMARY_MAX_CHARS = 2000
+"""Cap inline scratchpad content at 2KB to stay under the eventual
+``content_inline TEXT`` payload limits + keep audit-log noise bounded.
+Longer content should go through object storage via ``content_uri``."""
+
+
+def _looks_like_kora_action(assistant_content: str) -> bool:
+    """True iff the assistant output references at least one ``cap_*`` token.
+
+    Public so tests + the sync_turn heuristic share one definition.
+    """
+    return bool(_KORA_ACTION_PATTERN.search(assistant_content))
+
+
+def _summarize_for_scratchpad(content: str) -> str:
+    """Trim ``content`` to fit a scratchpad ``content_inline`` row.
+
+    Truncates with a clear marker rather than silently chopping so
+    downstream readers know the entry was lossy.
+    """
+    if len(content) <= _SCRATCHPAD_SUMMARY_MAX_CHARS:
+        return content
+    head = content[: _SCRATCHPAD_SUMMARY_MAX_CHARS - 24]
+    return f"{head}…[truncated by isokron]"
 
 
 # ---------------------------------------------------------------------------

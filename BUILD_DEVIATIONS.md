@@ -17,6 +17,42 @@ Format:
 
 ## Open
 
+### D-kr2-st3-no-scratchpad-write-mcp-tool
+
+- **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
+- **Why**: Spec § ST3 § 3 mandates writes go through a Sea MCP tool
+  (`kora__write_agent_scratchpad`) — direct INSERT is explicitly forbidden
+  because the tool gates `cap_write_agent_scratchpad` authorization,
+  emits the `approved_event_id NOT NULL` chain event required by
+  foundation/0135, and validates `visibility_scope` semantics. The
+  substrate's Sea MCP server (current main `a3e77f67`) exposes
+  only `kora__propose_convention`, `kora__read_escalation_queue`, and
+  `kora__propose_policy_change` — no scratchpad-write tool. Spec § ST3
+  pre-authorizes this BUILD_DEVIATIONS path: "If the tool doesn't exist
+  substrate-side yet, BUILD_DEVIATIONS + queue for substrate-team via
+  PM coordination. Do NOT bypass with direct INSERT."
+- **Closes when**: A Sea MCP write tool for `kronicle.agent_scratchpad_entries`
+  ships (working name `kora__write_agent_scratchpad`; PM coordinates
+  with substrate-team / files the substrate dispatch). Then
+  `scratchpad.write_scratchpad_entry` swaps from raising
+  `ScratchpadWriteNotAvailableError` to calling
+  `mcp_client.invoke('kora__write_agent_scratchpad', ...)`. Caller
+  signature stays unchanged — no provider-side refactor needed.
+- **Guarded by**:
+  - `plugins/memory/isokron/scratchpad.py` — top-of-module `[kora.isokron.todo]`
+    tag in the docstring; `ScratchpadWriteNotAvailableError` carries the
+    deviation ID in every raised message.
+  - `IsoKronMemoryProvider.sync_turn` / `on_memory_write` —
+    catch `ScratchpadWriteNotAvailableError` + log a one-line WARNING
+    so sessions stay alive while the substrate tool ships. Operators
+    grep `D-kr2-st3-no-scratchpad-write-mcp-tool` in logs to see how
+    often writes are being deferred.
+  - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
+    operator-facing notice of the deferred-write semantics.
+  - `tests/plugins/memory/test_scratchpad.py` —
+    `test_write_scratchpad_entry_raises_deferred_write_error` asserts
+    the error message + tag stay correct.
+
 ### D-kr2-st2-capability-matrix-mirror
 
 - **Bucket**: KR-2 ST2 (IsoKron memory provider — read paths)
