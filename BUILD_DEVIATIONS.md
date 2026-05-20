@@ -17,6 +17,46 @@ Format:
 
 ## Open
 
+### D-kr3-st2-no-relationlink-write-mcp-tool
+
+- **Bucket**: KR-3 ST2 (`iso_link_*` typed-edge tool family)
+- **Why**: Three substrate-side blockers gate the `iso_link_create`
+  write path. Verified against `packages/db/migrations/0058_relationlink.sql`
+  on substrate main `41ddc208`:
+  1. `created_by_actor_kind` CHECK lacks `'kora'`. The check covers
+     7 actor_kinds + 3 synthetic platform kinds = 8 entries total:
+     `operator, oracle, critic, claude_pm, hermes, platform_seal,
+     platform_rollback, platform_session_expiry`. A Kora-side INSERT
+     would fail the CHECK.
+  2. No Sea MCP write tool exposes the path. The `kora__*` tool
+     inventory on substrate main is: `kora__propose_convention`,
+     `kora__read_escalation_queue`, `kora__propose_policy_change`.
+     No `kora__create_relationlink` (or equivalent).
+  3. `chain_event_id UUID NOT NULL` requires a chain event emit
+     bound to the write — substrate-team owns the SECDEF wrapper
+     (same pattern as `kronicle.compact_scratchpad` from Plan 02).
+     Direct INSERT into `relationlink` would either fail (no
+     chain_event_id) or, if filled in client-side, would break
+     the chain witness invariant.
+- **Closes when**: PM dispatches a substrate-side bucket that
+  (a) extends the actor_kind CHECK to include `'kora'`, (b) adds
+  the Sea MCP write tool, (c) ties chain-event emission into the
+  same SECDEF. Then `relationlink.create_relationlink` body switches
+  from `raise RelationLinkWriteNotAvailableError()` to
+  `mcp_client.invoke('kora__create_relationlink', ...)`. Signature
+  stays unchanged.
+- **Guarded by**:
+  - `plugins/memory/isokron/relationlink.py` —
+    `RelationLinkWriteNotAvailableError` carries all three blockers
+    verbatim in the error message; operators grep
+    `D-kr3-st2-no-relationlink-write-mcp-tool` in logs.
+  - `plugins/memory/isokron/tools/iso_link.py:_handle_iso_link_create`
+    catches the error + returns a structured `{"ok": false,
+    "deferred": true, "deviation_id": "D-kr3-st2-..."}` envelope so
+    the model gets an in-band signal.
+  - `tests/plugins/memory/test_iso_link_tools.py:test_create_relationlink_raises_deferred_write_error`
+    asserts the message contains all three blockers.
+
 ### D-kr3-st1-capability-check-deferred
 
 - **Bucket**: KR-3 ST1 (`iso_node_*` tool family)
