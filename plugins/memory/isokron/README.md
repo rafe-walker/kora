@@ -93,26 +93,34 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 
 ## Operator pitfalls
 
-### Deferred-surface summary (4 open BUILD_DEVIATIONS as of KR-6)
+### Deferred-surface summary (3 open BUILD_DEVIATIONS as of KR-7)
 
-All four follow the same shape: signature is forward-stable, body
+All three follow the same shape: signature is forward-stable, body
 swaps from `raise <DeferredError>` to `mcp_client.invoke(...)` when
 the substrate-side dependency lands. **No caller refactor needed**.
 Operators grep the deviation_id in logs to track defer rates.
 
 | Deviation | What's deferred | Closes when |
 |---|---|---|
-| `D-kr2-st2-capability-matrix-mirror` | C2 Python mirror of `ACTOR_CAPABILITY_MATRIX` Kora column (parity test guards drift) | K-7 ships Sea MCP `kora__read_kora_capability_row` |
+| `D-kr2-st2-capability-matrix-mirror` | C2 Python mirror of `ACTOR_CAPABILITY_MATRIX` Kora column (parity test guards drift) | K-7→KR-N swap (Sea MCP `kora__read_kora_capability_row` shipped 2026-05-20; PM drafts swap bucket) |
 | `D-kr2-st3-no-scratchpad-write-mcp-tool` | Scratchpad writes from `sync_turn` / `on_memory_write` / `iso_node_create` / `iso_node_supersede` | K-8 ships Sea MCP `kora__write_agent_scratchpad` |
-| `D-kr2-st4-no-chain-emit-mcp-tool` | Chain event emission from `on_session_end` / `on_delegation` / `iso_node_supersede` | K-9 ships Sea MCP `kora__append_event` |
 | `D-kr3-st2-no-relationlink-write-mcp-tool` | `iso_link_create` writes — 3 substrate blockers in one (actor_kind CHECK + missing MCP tool + chain_event_id SECDEF) | K-10 ships the bundled substrate bucket |
 
-**Recently closed**: `D-kr3-st1-capability-check-deferred` — KR-6
-shipped the Python `actor_has_capability` helper at
-`plugins/memory/isokron/capability_check.py`. Every `iso_*` tool now
-gates through a real check; denied calls surface a structured
-`{"ok": false, "denied": true, "capability": ..., "reason": ...}`
-envelope.
+**Recently closed**:
+- `D-kr2-st4-no-chain-emit-mcp-tool` — KR-7 swapped `emit_kora_event`
+  to route through `kora__append_event` via the KR-7a-wired
+  `IsoKronMCPClient`. Substrate-side failures surface as
+  `IsoKronMCPInvocationError` logged at ERROR; lifecycle hooks catch
+  + log so the session stays alive. Production-test posture per
+  IsoKron PM #27: substrate-team dispatch tier (queued) un-stubs the
+  K-9 handler; live emits will fail until then but the code shape is
+  correct.
+- `D-kr3-st1-capability-check-deferred` — KR-6 shipped the Python
+  `actor_has_capability` helper at
+  `plugins/memory/isokron/capability_check.py`. Every `iso_*` tool
+  now gates through a real check; denied calls surface a structured
+  `{"ok": false, "denied": true, "capability": ..., "reason": ...}`
+  envelope.
 
 ### MCP client (KR-7a)
 
@@ -140,7 +148,20 @@ idempotency) is fully tested with mocked transports.
 
 ### Individual pitfalls
 
-* **Chain event emission is currently deferred — `kora.*` events are NOT being written to `event_log`.** KR-2 ST4 ships the emit API (`events.emit_kora_event`) but the substrate-side Sea MCP tool (`kora__append_event` or equivalent) doesn't exist yet (substrate main `28ff4f78`). Until it lands, every emit raises `ChainEventEmitNotAvailableError`; `sync_turn` / `on_memory_write` / `on_delegation` / `on_session_end` catch it + log a one-line WARNING tagged `D-kr2-st4-no-chain-emit-mcp-tool`. This is a chain-audit gap — operators inspecting Kora's recent activity via the `system_prompt_block` §6 section will see only events that landed in `event_log` through other paths (e.g. SECDEF-emitted events from `compact_scratchpad`). Direct INSERT into `event_log` is forbidden — it would skip the `_emit_chain_event` SECDEF and break the `prev_event_hash` / `this_event_hash` witness chain. Tracked in `BUILD_DEVIATIONS.md`.
+* **Chain event emission routes through `kora__append_event` via the
+  KR-7a-wired `IsoKronMCPClient`.** KR-7 closed the deferred-emit surface.
+  `events.emit_kora_event` now calls `mcp_client.invoke('kora__append_event', …)`
+  and returns the substrate-assigned `event_id`. Substrate-side
+  failures surface as `IsoKronMCPInvocationError`; the provider's
+  `_attempt_chain_event_emit` catches at the lifecycle boundary
+  (`on_session_end` / `on_delegation` / `iso_node_supersede`) and logs
+  at ERROR (`[kora.chain.emit.failed]`) so operators see drops without
+  the session crashing. Successful emits log INFO `[kora.chain.emit]`
+  with the event_id. **Production-test posture** per IsoKron PM #27:
+  the substrate-side K-9 handler is currently a `notImplementedHandler`
+  stub; the dispatch tier (queued substrate-team) un-stubs + resolves
+  Layer-A→Layer-B `actor_kind='kora'`. Until then live emits return
+  substrate errors; mock-tested code shape stays correct.
 
 * **`event_log` is the one genuine `tenant_id UUID`-keyed substrate table.** Every other Kora table (`kora_role_charter`, `kora_policy_registry`, `kronicle.agent_scratchpad_entries`, `kronicle.workspace_constitution_revisions`) is `workspace_id TEXT`-keyed. `read_recent_kora_events` resolves the workspace_id (Clerk `org_*`) to tenant_id via `JOIN hivex_foundation.tenant ON t.clerk_org_id = $1`. If you bypass `events.read_recent_kora_events` and write your own SQL, replicate the JOIN — a `WHERE workspace_id = $1` against `event_log` will fail (no such column on that table).
 

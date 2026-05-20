@@ -19,10 +19,12 @@ no ``NotImplementedError`` stubs remain. Surface summary:
 * **Active Constitution revision** — ``read_active_constitution_revision``
   against ``kronicle.workspace_constitution_revisions``; hex-encoded
   ``rules_hash`` for K-6 Constitution pre-screen middleware (ST4).
-* **Chain event emit** — deferred behind ``ChainEventEmitNotAvailableError``
-  until Sea MCP ships ``kora__append_event`` (BUILD_DEVIATIONS
-  ``D-kr2-st4-no-chain-emit-mcp-tool``). Same shape as the scratchpad
-  write defer: catch the error in lifecycle hooks, log, continue.
+* **Chain event emit** — KR-7 swap to ``kora__append_event`` MCP call
+  via the KR-7a-wired :class:`IsoKronMCPClient`. K-9 shipped the
+  substrate tool (`f8487059`); BUILD_DEVIATIONS
+  ``D-kr2-st4-no-chain-emit-mcp-tool`` closed in KR-7. Substrate-side
+  failures surface as ``IsoKronMCPInvocationError``; lifecycle hooks
+  catch + log at ERROR so the session stays alive.
 * **Session context** — ``assemble_session_context`` returns a
   ``KoraSessionContext`` mirroring the TS-side
   ``packages/sea-mcp-server/src/kora/context-assembler/types.ts:130``
@@ -47,10 +49,10 @@ from .cache import TTLCache
 from .config import ISOKRON_CONFIG_SCHEMA, IsoKronProviderConfig
 from .connection import IsoKronConnection
 from .events import (
-    ChainEventEmitNotAvailableError,
     RecentChainEvent,
     emit_kora_event,
 )
+from .mcp_client import IsoKronMCPInvocationError
 from .models import (
     KoraCapabilityRow,
     PolicyRegistryEntry,
@@ -825,7 +827,7 @@ class IsoKronMemoryProvider(MemoryProvider):
         """
         del values, hermes_home
 
-    # -- Chain event emit (deferred until Sea MCP tool ships) ----------------
+    # -- Chain event emit (KR-7: real Sea MCP call) --------------------------
 
     def _attempt_chain_event_emit(
         self,
@@ -835,33 +837,69 @@ class IsoKronMemoryProvider(MemoryProvider):
         payload: Dict[str, Any],
         origin: str,
     ) -> None:
-        """Submit an emit via the dedicated IO loop; catch the defer-error.
+        """Emit a ``kora.*`` chain event via the Sea MCP ``kora__append_event``
+        tool. Mirrors :meth:`_attempt_scratchpad_write`'s
+        attempt-then-log pattern but for the chain-emit surface.
 
-        Mirrors :meth:`_attempt_scratchpad_write`'s defer-and-log
-        pattern. When the Sea MCP tool ships, only
-        :func:`events.emit_kora_event`'s body changes; this helper
-        stays identical.
+        Substrate-side failures (``IsoKronMCPInvocationError``) get
+        logged at ERROR — chain-event-emit failure is operator-visible
+        per PM-lean ("substrate-side issue worth surfacing"). Session
+        lifecycle hooks (``on_session_end`` / ``on_delegation`` /
+        ``sync_turn``) keep running regardless so a single bad emit
+        doesn't crash the session. Operators grep
+        ``[kora.chain.emit.failed]`` in logs to find dropped events.
+
+        Successful emits invalidate the per-workspace events cache so
+        the next ``system_prompt_block`` §6 re-reads.
         """
         if self._connection is None:
             raise RuntimeError(
                 f"[kora.isokron] _attempt_chain_event_emit ({origin}) before construct"
             )
         try:
-            self._connection.submit_and_wait(
+            mcp_client = self._connection.get_mcp_client()
+        except Exception as exc:
+            logger.error(
+                "[kora.chain.emit.failed] %s emit (%s) — MCP client unavailable: %s",
+                origin,
+                event_type,
+                exc,
+            )
+            return
+        try:
+            event_id = self._connection.submit_and_wait(
                 emit_kora_event(
                     workspace_id=workspace_id,
                     event_type=event_type,
                     payload=payload,
-                    mcp_client=None,
+                    mcp_client=mcp_client,
                 ),
                 timeout=10.0,
             )
-            # Successful emit invalidates the events cache so the next
-            # system_prompt_block re-reads.
+            logger.info(
+                "[kora.chain.emit] %s emit %s → event_id=%s",
+                origin,
+                event_type,
+                event_id,
+            )
             self._events_cache.invalidate(workspace_id)
-        except ChainEventEmitNotAvailableError as exc:
-            logger.warning(
-                "[kora.isokron] %s chain event emit skipped (%s) — %s",
+        except IsoKronMCPInvocationError as exc:
+            # PM-lean: propagate is the function-level default, but the
+            # provider-level wrapper catches at the lifecycle boundary
+            # so session hooks stay alive. ERROR (not WARNING) so the
+            # failure is operator-visible.
+            logger.error(
+                "[kora.chain.emit.failed] %s emit (%s) — %s",
+                origin,
+                event_type,
+                exc,
+            )
+        except Exception as exc:
+            # Defensive: any other unexpected exception from the MCP
+            # boundary (transport reset, timeout, etc.) — same
+            # error-log-but-continue treatment.
+            logger.error(
+                "[kora.chain.emit.failed] %s emit (%s) — unexpected: %s",
                 origin,
                 event_type,
                 exc,
