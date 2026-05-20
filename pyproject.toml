@@ -3,12 +3,15 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-agent"
+# Kora is a fork of NousResearch/hermes-agent (MIT) retargeted to the
+# IsoKron substrate. License attribution to Nous Research is preserved.
+# Distribution name kept as a local-dev identifier — no PyPI publish in KR-1.
+name = "kora"
 version = "0.14.0"
-description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
+description = "Kora — Joshua's personal frontier-tier orchestration agent. Forked from NousResearch/hermes-agent; retargeted to IsoKron typed-graph memory."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Nous Research" }]
+authors = [{ name = "Rafe Walker" }, { name = "Nous Research", email = "noreply@nousresearch.com" }]
 license = { text = "MIT" }
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
@@ -61,6 +64,11 @@ dependencies = [
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/rafe-walker/kora"
+Repository = "https://github.com/rafe-walker/kora"
+Upstream = "https://github.com/NousResearch/hermes-agent"
 
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
@@ -129,23 +137,23 @@ azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.6",
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[pty]",
-  "hermes-agent[mcp]",
-  "hermes-agent[honcho]",
-  "hermes-agent[acp]",
+  "kora[cron]",
+  "kora[cli]",
+  "kora[pty]",
+  "kora[mcp]",
+  "kora[honcho]",
+  "kora[acp]",
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that aren't covered by `tools/lazy_deps.py`.
   # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
   # first use, so they're no longer eager-installed here.
-  "hermes-agent[termux]",
-  "hermes-agent[google]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[sms]",
-  "hermes-agent[web]",
+  "kora[termux]",
+  "kora[google]",
+  "kora[homeassistant]",
+  "kora[sms]",
+  "kora[web]",
 ]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
@@ -189,20 +197,28 @@ all = [
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[dev]",
-  "hermes-agent[pty]",
-  "hermes-agent[mcp]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[sms]",
-  "hermes-agent[acp]",
-  "hermes-agent[google]",
-  "hermes-agent[web]",
-  "hermes-agent[youtube]",
+  "kora[cron]",
+  "kora[cli]",
+  "kora[dev]",
+  "kora[pty]",
+  "kora[mcp]",
+  "kora[homeassistant]",
+  "kora[sms]",
+  "kora[acp]",
+  "kora[google]",
+  "kora[web]",
+  "kora[youtube]",
 ]
 
 [project.scripts]
+# Primary entrypoint for the Kora runtime. The `hermes` aliases are kept as
+# backwards-compat wrappers for the duration of KR-1 (ST4 rewrites them as
+# deprecation shims). Module paths still say `hermes_cli` / `run_agent` /
+# `acp_adapter` — ST3 renames `hermes_cli` → `kora_cli` and updates these.
+kora = "hermes_cli.main:main"
+kora-agent = "run_agent:main"
+kora-acp = "acp_adapter.entry:main"
+# BC aliases — to be wrapped in deprecation warnings by KR-1 ST4, removed in KR-2+.
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"

@@ -40,6 +40,8 @@ privvy*
 images/
 __pycache__/
 hermes_agent.egg-info/
+kora.egg-info/
+*.egg-info/
 wandb/
 testlogs
 

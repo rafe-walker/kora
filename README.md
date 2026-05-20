@@ -1,20 +1,31 @@
+<!--
+Kora is a private fork of NousResearch/hermes-agent retargeted to the
+IsoKron typed-graph substrate. The banner asset still ships Hermes
+artwork — KR-7 will replace it with Kora art. (Rule-6 honest label.)
+-->
+
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/banner.png" alt="Kora" width="100%">
 </p>
 
-# Hermes Agent ☤
+# Kora
 
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
-  <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="https://github.com/rafe-walker/kora/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/NousResearch/hermes-agent"><img src="https://img.shields.io/badge/Forked%20from-NousResearch%2Fhermes--agent-blueviolet?style=for-the-badge" alt="Forked from NousResearch/hermes-agent"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+**Kora is Joshua's personal frontier-tier orchestration agent.** Forked from [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) and retargeted to use [IsoKron](https://github.com/rafe-walker/isokron) as her persistent memory substrate. Codename **Architect-of-Will**. Runs on Claude Opus 4.7 via Joshua's Anthropic Max plan. Not customer-facing.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+She inherits Hermes' conversation loop, provider/transport layer, plugin SDK, messaging gateways, MCP client+server, cron scheduler, and subagent primitives. Layered on top: beads-pattern scratchpad consumption (via `kronicle.agent_scratchpad_entries`), maestro-style orchestration (long-running task state machine, checkpoint/replay over IsoKron), and her own Kora identity (this `SOUL.md` + Role Charter at `public.kora_role_charter`).
+
+## Origin & attribution
+
+Kora's runtime is a fork of [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent), used under MIT license. Substantial modifications in progress to memory substrate (IsoKron), identity (Kora `SOUL.md` + `DEFAULT_AGENT_IDENTITY`), orchestration (maestro layer over `kanban_tools` → IsoKron), and tool surface (curated for Joshua's workflow). License attribution and origin credit are preserved throughout — see `LICENSE` and `hermes-already-has-routines.md` for upstream design notes that still apply.
+
+The build is staged in seven buckets (KR-1 through KR-7). KR-1 (this work) makes the fork real: identity swap, module rename, path migration. KR-2 swaps the memory provider for IsoKron. KR-3 wires beads-pattern scratchpad consumption. KR-4 layers maestro orchestration. KR-5 curates the tool surface. KR-6 wires Constitution pre-screen + capability matrix checks. KR-7 ships full SOUL.md content + personality modes.
+
+Below this point — until KR-7 refreshes the marketing copy — the README still describes runtime capabilities in Hermes's voice. Treat any reference to "Hermes" as the **runtime** (which Kora inherits) rather than the **identity** (which is now Kora):
 
 <table>
 <tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
@@ -191,4 +202,5 @@ scripts/run_tests.sh
 
 MIT — see [LICENSE](LICENSE).
 
-Built by [Nous Research](https://nousresearch.com).
+Kora runtime: maintained by [Rafe Walker](https://github.com/rafe-walker).
+Upstream `hermes-agent`: built by [Nous Research](https://nousresearch.com) — MIT-licensed origin credit preserved throughout.
