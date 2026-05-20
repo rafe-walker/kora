@@ -75,21 +75,50 @@ class _FakePool:
         return _FakeAcquireCtx(self._conn)
 
 
+class _FakeMcpClient:
+    """KR-9 fake — routes by tool_name; returns canonical-shape success
+    for kora__create_relationlink unless invoke_raises is set."""
+
+    def __init__(self, *, invoke_result=None, invoke_raises=None):
+        self.invoke_calls: list[tuple[str, dict]] = []
+        self._invoke_result = invoke_result
+        self._invoke_raises = invoke_raises
+        self._counter = 0
+
+    async def invoke(self, tool_name: str, args: dict):
+        self.invoke_calls.append((tool_name, dict(args)))
+        if self._invoke_raises is not None:
+            raise self._invoke_raises
+        if self._invoke_result is not None:
+            return self._invoke_result
+        self._counter += 1
+        if tool_name == "kora__create_relationlink":
+            return {
+                "link_id": f"link-{self._counter:03d}",
+                "chain_event_id": f"evt-{self._counter:03d}",
+            }
+        raise AssertionError(f"unexpected tool_name {tool_name!r}")
+
+
 class _FakeProviderConnection:
-    def __init__(self, conn: _FakeConnection):
+    def __init__(self, conn: _FakeConnection, *, mcp_client=None):
         self._conn = conn
         self._pool = _FakePool(conn)
+        self._mcp_client = mcp_client or _FakeMcpClient()
         self.submitted: list = []
 
     def get_pg_pool(self):
         return self._pool
+
+    def get_mcp_client(self):
+        return self._mcp_client
 
     def submit_and_wait(self, coro, *, timeout: float = 10.0):
         self.submitted.append(coro)
         return asyncio.run(coro)
 
 
-def _make_provider(*, conn: Optional[_FakeConnection] = None):
+def _make_provider(*, conn: Optional[_FakeConnection] = None, mcp_client=None):
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(
@@ -99,7 +128,9 @@ def _make_provider(*, conn: Optional[_FakeConnection] = None):
             "default_workspace_id": WORKSPACE_ID,
         }
     )
-    fake_conn = _FakeProviderConnection(conn or _FakeConnection())
+    fake_conn = _FakeProviderConnection(
+        conn or _FakeConnection(), mcp_client=mcp_client
+    )
     setattr(provider, "_connection", fake_conn)
     return provider, fake_conn
 
@@ -321,7 +352,51 @@ def test_traverse_rejects_unknown_direction():
 # ---------------------------------------------------------------------------
 
 
-def test_create_relationlink_raises_deferred_write_error():
+def test_create_relationlink_invokes_kora__create_relationlink():
+    """KR-9 happy path: writes route through Sea MCP; link_id returned."""
+    client = _FakeMcpClient(
+        invoke_result={
+            "link_id": "link-abc-123",
+            "chain_event_id": "evt-abc-456",
+        }
+    )
+
+    async def _run():
+        return await create_relationlink(
+            workspace_id=WORKSPACE_ID,
+            from_entity_kind="Decision",
+            from_entity_id="aaa-1",
+            to_entity_kind="Decision",
+            to_entity_id="bbb-2",
+            link_type="supersedes",
+            mcp_client=client,
+        )
+
+    link_id = asyncio.run(_run())
+    assert link_id == "link-abc-123"
+    assert len(client.invoke_calls) == 1
+    tool_name, args = client.invoke_calls[0]
+    assert tool_name == "kora__create_relationlink"
+    assert args["workspace_id"] == WORKSPACE_ID
+    assert args["from_entity_id"] == "aaa-1"
+    assert args["from_entity_kind"] == "Decision"
+    assert args["to_entity_id"] == "bbb-2"
+    assert args["to_entity_kind"] == "Decision"
+    assert args["link_type"] == "supersedes"
+    assert args["evidence_block_ids"] == []
+    assert "rationale_block_id" not in args  # not passed = omitted
+
+
+def test_create_relationlink_propagates_mcp_invocation_error():
+    from plugins.memory.isokron.mcp_client import IsoKronMCPInvocationError
+
+    client = _FakeMcpClient(
+        invoke_raises=IsoKronMCPInvocationError(
+            "kora__create_relationlink",
+            "active-edge uniqueness violation",
+        )
+    )
+
     async def _run():
         await create_relationlink(
             workspace_id=WORKSPACE_ID,
@@ -330,17 +405,79 @@ def test_create_relationlink_raises_deferred_write_error():
             to_entity_kind="Decision",
             to_entity_id="bbb",
             link_type="supersedes",
+            mcp_client=client,
         )
 
-    with pytest.raises(RelationLinkWriteNotAvailableError) as excinfo:
+    with pytest.raises(IsoKronMCPInvocationError) as excinfo:
         asyncio.run(_run())
-    msg = str(excinfo.value)
-    assert "[kora.isokron.todo]" in msg
-    assert "D-kr3-st2-no-relationlink-write-mcp-tool" in msg
-    # Message must call out all three blockers operators need to know.
-    assert "created_by_actor_kind" in msg
-    assert "Sea MCP" in msg
-    assert "chain_event_id" in msg
+    assert excinfo.value.tool_name == "kora__create_relationlink"
+    assert "uniqueness" in excinfo.value.message
+
+
+def test_create_relationlink_rejects_none_mcp_client():
+    async def _run():
+        await create_relationlink(
+            workspace_id=WORKSPACE_ID,
+            from_entity_kind="Decision",
+            from_entity_id="aaa",
+            to_entity_kind="Decision",
+            to_entity_id="bbb",
+            link_type="supersedes",
+            mcp_client=None,
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_run())
+    assert "mcp_client is required" in str(excinfo.value)
+
+
+def test_create_relationlink_rejects_unexpected_response_shape():
+    client = _FakeMcpClient(invoke_result={"oops": "x"})
+
+    async def _run():
+        await create_relationlink(
+            workspace_id=WORKSPACE_ID,
+            from_entity_kind="Decision",
+            from_entity_id="aaa",
+            to_entity_kind="Decision",
+            to_entity_id="bbb",
+            link_type="supersedes",
+            mcp_client=client,
+        )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(_run())
+    assert "unexpected shape" in str(excinfo.value)
+
+
+def test_create_relationlink_passes_rationale_block_id_when_present():
+    client = _FakeMcpClient()
+
+    async def _run():
+        await create_relationlink(
+            workspace_id=WORKSPACE_ID,
+            from_entity_kind="Decision",
+            from_entity_id="aaa",
+            to_entity_kind="Decision",
+            to_entity_id="bbb",
+            link_type="supersedes",
+            rationale_block_id="block-uuid-rationale",
+            evidence_block_ids=["block-uuid-1", "block-uuid-2"],
+            mcp_client=client,
+        )
+
+    asyncio.run(_run())
+    _, args = client.invoke_calls[0]
+    assert args["rationale_block_id"] == "block-uuid-rationale"
+    assert args["evidence_block_ids"] == ["block-uuid-1", "block-uuid-2"]
+
+
+def test_relationlink_write_not_available_error_still_importable_post_kr9():
+    """Deprecation runway."""
+    err = RelationLinkWriteNotAvailableError()
+    msg = str(err)
+    assert "[kora.isokron.deprecated]" in msg
+    assert "obsolete after KR-9" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +485,8 @@ def test_create_relationlink_raises_deferred_write_error():
 # ---------------------------------------------------------------------------
 
 
-def test_iso_link_create_handler_returns_deferred_envelope():
+def test_iso_link_create_handler_returns_ok_envelope_with_substrate_link_id():
+    """KR-9: handler returns {'ok': True, 'link_id': <substrate-uuid>}."""
     provider, _conn = _make_provider()
     result = handle_iso_link_tool_call(
         provider,
@@ -363,9 +501,42 @@ def test_iso_link_create_handler_returns_deferred_envelope():
         },
     )
     decoded = json.loads(result)
+    assert decoded["ok"] is True
+    assert decoded["link_id"] == "link-001"
+    # MCP invoke recorded the spec-pinned tool name + args.
+    invokes = _conn._mcp_client.invoke_calls
+    assert len(invokes) == 1
+    tool_name, args = invokes[0]
+    assert tool_name == "kora__create_relationlink"
+    assert args["link_type"] == "supersedes"
+
+
+def test_iso_link_create_handler_surfaces_substrate_error_envelope():
+    """IsoKronMCPInvocationError flips into {'ok': False, 'substrate_error': True, ...}."""
+    from plugins.memory.isokron.mcp_client import IsoKronMCPInvocationError
+
+    error_client = _FakeMcpClient(
+        invoke_raises=IsoKronMCPInvocationError(
+            "kora__create_relationlink", "active-edge uniqueness violation"
+        )
+    )
+    provider, _conn = _make_provider(mcp_client=error_client)
+    result = handle_iso_link_tool_call(
+        provider,
+        "iso_link_create",
+        {
+            "from_entity_id": "aaaa-1",
+            "from_entity_kind": "Decision",
+            "to_entity_id": "bbbb-2",
+            "to_entity_kind": "Pattern",
+            "link_type": "supersedes",
+        },
+    )
+    decoded = json.loads(result)
     assert decoded["ok"] is False
-    assert decoded["deferred"] is True
-    assert decoded["deviation_id"] == "D-kr3-st2-no-relationlink-write-mcp-tool"
+    assert decoded["substrate_error"] is True
+    assert decoded["tool_name"] == "kora__create_relationlink"
+    assert "uniqueness" in decoded["message"]
 
 
 def test_iso_link_create_handler_rejects_invalid_link_type():

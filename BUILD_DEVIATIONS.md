@@ -17,45 +17,41 @@ Format:
 
 ## Open
 
-### D-kr3-st2-no-relationlink-write-mcp-tool
+### D-kr2-st3-no-scratchpad-write-mcp-tool
 
-- **Bucket**: KR-3 ST2 (`iso_link_*` typed-edge tool family)
-- **Why**: Three substrate-side blockers gate the `iso_link_create`
-  write path. Verified against `packages/db/migrations/0058_relationlink.sql`
-  on substrate main `41ddc208`:
-  1. `created_by_actor_kind` CHECK lacks `'kora'`. The check covers
-     7 actor_kinds + 3 synthetic platform kinds = 8 entries total:
-     `operator, oracle, critic, claude_pm, hermes, platform_seal,
-     platform_rollback, platform_session_expiry`. A Kora-side INSERT
-     would fail the CHECK.
-  2. No Sea MCP write tool exposes the path. The `kora__*` tool
-     inventory on substrate main is: `kora__propose_convention`,
-     `kora__read_escalation_queue`, `kora__propose_policy_change`.
-     No `kora__create_relationlink` (or equivalent).
-  3. `chain_event_id UUID NOT NULL` requires a chain event emit
-     bound to the write — substrate-team owns the SECDEF wrapper
-     (same pattern as `kronicle.compact_scratchpad` from Plan 02).
-     Direct INSERT into `relationlink` would either fail (no
-     chain_event_id) or, if filled in client-side, would break
-     the chain witness invariant.
-- **Closes when**: PM dispatches a substrate-side bucket that
-  (a) extends the actor_kind CHECK to include `'kora'`, (b) adds
-  the Sea MCP write tool, (c) ties chain-event emission into the
-  same SECDEF. Then `relationlink.create_relationlink` body switches
-  from `raise RelationLinkWriteNotAvailableError()` to
-  `mcp_client.invoke('kora__create_relationlink', ...)`. Signature
-  stays unchanged.
+- **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
+- **Why**: Spec § ST3 § 3 mandates writes go through a Sea MCP tool
+  (`kora__write_agent_scratchpad`) — direct INSERT is explicitly forbidden
+  because the tool gates `cap_write_agent_scratchpad` authorization,
+  emits the `approved_event_id NOT NULL` chain event required by
+  foundation/0135, and validates `visibility_scope` semantics. The
+  substrate's Sea MCP server (current main `a3e77f67`) exposes
+  only `kora__propose_convention`, `kora__read_escalation_queue`, and
+  `kora__propose_policy_change` — no scratchpad-write tool. Spec § ST3
+  pre-authorizes this BUILD_DEVIATIONS path: "If the tool doesn't exist
+  substrate-side yet, BUILD_DEVIATIONS + queue for substrate-team via
+  PM coordination. Do NOT bypass with direct INSERT."
+- **Closes when**: A Sea MCP write tool for `kronicle.agent_scratchpad_entries`
+  ships (working name `kora__write_agent_scratchpad`; PM coordinates
+  with substrate-team / files the substrate dispatch). Then
+  `scratchpad.write_scratchpad_entry` swaps from raising
+  `ScratchpadWriteNotAvailableError` to calling
+  `mcp_client.invoke('kora__write_agent_scratchpad', ...)`. Caller
+  signature stays unchanged — no provider-side refactor needed.
 - **Guarded by**:
-  - `plugins/memory/isokron/relationlink.py` —
-    `RelationLinkWriteNotAvailableError` carries all three blockers
-    verbatim in the error message; operators grep
-    `D-kr3-st2-no-relationlink-write-mcp-tool` in logs.
-  - `plugins/memory/isokron/tools/iso_link.py:_handle_iso_link_create`
-    catches the error + returns a structured `{"ok": false,
-    "deferred": true, "deviation_id": "D-kr3-st2-..."}` envelope so
-    the model gets an in-band signal.
-  - `tests/plugins/memory/test_iso_link_tools.py:test_create_relationlink_raises_deferred_write_error`
-    asserts the message contains all three blockers.
+  - `plugins/memory/isokron/scratchpad.py` — top-of-module `[kora.isokron.todo]`
+    tag in the docstring; `ScratchpadWriteNotAvailableError` carries the
+    deviation ID in every raised message.
+  - `IsoKronMemoryProvider.sync_turn` / `on_memory_write` —
+    catch `ScratchpadWriteNotAvailableError` + log a one-line WARNING
+    so sessions stay alive while the substrate tool ships. Operators
+    grep `D-kr2-st3-no-scratchpad-write-mcp-tool` in logs to see how
+    often writes are being deferred.
+  - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
+    operator-facing notice of the deferred-write semantics.
+  - `tests/plugins/memory/test_scratchpad.py` —
+    `test_write_scratchpad_entry_raises_deferred_write_error` asserts
+    the error message + tag stay correct.
 
 ### D-kr2-st2-capability-matrix-mirror
 
@@ -83,62 +79,59 @@ Format:
 
 ## Closed
 
-### D-kr2-st3-no-scratchpad-write-mcp-tool — closed by KR-8 (2026-05-21)
+### D-kr3-st2-no-relationlink-write-mcp-tool — closed by KR-9 (2026-05-21)
 
-- **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
-- **Resolved by**: KR-8 —
-  `plugins/memory/isokron/scratchpad.py:write_scratchpad_entry` body
-  swaps from `raise ScratchpadWriteNotAvailableError()` to
-  `await mcp_client.invoke('kora__write_agent_scratchpad', {...})`.
-  Returns the substrate-assigned `scratchpad_entry_id` (UUID string).
-  Provider's `_attempt_scratchpad_write` fetches the
-  :class:`IsoKronMCPClient` via
-  `IsoKronConnection.get_mcp_client()` (KR-7a-wired) and surfaces
-  substrate-side failures as `IsoKronMCPInvocationError` logged at
-  ERROR (lifecycle hooks catch + log so the session stays alive).
-  `iso_node_create` and `iso_node_supersede` tool handlers route
-  through the same path; their response envelopes flip from
-  `{ok: False, deferred: True, …}` to `{ok: True, entry_id: …}` on
+- **Bucket**: KR-3 ST2 (`iso_link_*` typed-edge tool family)
+- **Resolved by**: KR-9 —
+  `plugins/memory/isokron/relationlink.py:create_relationlink` body
+  swaps from `raise RelationLinkWriteNotAvailableError()` to
+  `await mcp_client.invoke('kora__create_relationlink', {...})`.
+  Returns the substrate-assigned `link_id` (UUID string). The Sea
+  MCP tool wraps `public.kora_create_relationlink` SECDEF which does
+  actor_registry JOIN validation + active-edge uniqueness check +
+  emits `kora.relationlink.created` chain event FIRST + INSERTs the
+  row with the returned event_id as `chain_event_id` (single atomic
+  transaction). `iso_link_create` tool handler envelope flips from
+  `{ok: False, deferred: True, …}` to `{ok: True, link_id: …}` on
   success, or `{ok: False, substrate_error: True, tool_name,
-  message}` on substrate failure.
-- **Spec quote** (KR-8 § 0): *"CC#1 just shipped K-8 (`bd165eb2`):
-  `kora__write_agent_scratchpad` Sea MCP tool. KR-8 swaps CC#3's KR-2
-  ST3 deferred-write path from `raise ScratchpadWriteNotAvailableError`
-  to a real `mcp_client.invoke('kora__write_agent_scratchpad', ...)`
-  call. ~30-60 min ship, ~20-40 LOC."*
-- **Production-test posture** (IsoKron PM #27): K-8 handler is
-  currently a `notImplementedHandler` stub on substrate main;
-  substrate-team's dispatch tier (queued, task #395) un-stubs +
-  bridges Layer-A `wsk_*` auth → Layer-B `actor_kind='kora'`. KR-8's
-  code shape is sound and ships green with mock tests; production
-  deploys wait on the dispatch tier landing.
-- **Substrate-canonical chain literal** (K-DG note from spec § 1):
-  K-8's internal flow emits `kronicle.agent_scratchpad.created` (NOT
-  `kora.scratchpad.entry.created`). The runtime doesn't pass an
-  event_type — the substrate emits internally as part of the SECDEF
-  flow. Verify-at-first-live-emit step: confirm `event_log.actor_id`
-  resolves to the 0076-seeded canonical Kora actor (same posture as
-  KR-7's chain-emit verification).
-- **Deprecation runway**: `ScratchpadWriteNotAvailableError` class
-  kept exported tagged `[kora.isokron.deprecated]` for one release so
-  any pinned downstream tests still resolve. Removal when KR-N audits
-  show no remaining references.
+  message}` on substrate failure (e.g. uniqueness violation,
+  actor-kind mismatch).
+- **Spec quote** (KR-9 § 0): *"CC#1 shipped K-10 (`35e67f18`) +
+  IsoKron PM applied `0083` to prod. The full RelationLink-write
+  stack is now live substrate-side: actor_kind CHECK has 'kora',
+  `public.kora_create_relationlink` SECDEF function exists,
+  `kora.relationlink.created` event literal in
+  event_log_event_type_check (300-literal set),
+  `kora__create_relationlink` Sea MCP tool registered."*
+- **All three pre-KR-9 blockers resolved substrate-side by K-10**:
+  (a) actor_kind CHECK extended to include `'kora'` via 0083;
+  (b) Sea MCP tool registered; (c) chain-event emission tied into
+  the SECDEF (`kora.relationlink.created` is the 300th literal in
+  `event_log_event_type_check`).
+- **Production-test posture** (IsoKron PM #27): K-10 handler is
+  currently a `notImplementedHandler` stub awaiting dispatch tier
+  (substrate task #395). KR-9's code shape is sound and ships green
+  with mock tests; production deploys wait on dispatch tier landing.
+  Verify-at-first-live-emit: confirm `event_log.actor_id` resolves
+  to the 0076-seeded canonical Kora actor + `relationlink` row has
+  `created_by_actor_kind = 'kora'` + `chain_event_id` matches the
+  emitted event.
+- **Deprecation runway**: `RelationLinkWriteNotAvailableError` class
+  kept exported tagged `[kora.isokron.deprecated]` for one release.
+  Removal when KR-N audits show no remaining references.
+- **Forward-stable signature note**: KR-9 added `rationale_block_id`
+  and `evidence_block_ids` parameters to match the K-10 tool input
+  schema. The legacy `rationale` parameter is preserved for one
+  release back-compat (silently dropped — superseded by
+  `rationale_block_id`).
 - **Guarded by**:
-  - `tests/plugins/memory/test_scratchpad.py` — replaced the
-    deferred-error test with five MCP-call-path tests (happy +
+  - `tests/plugins/memory/test_iso_link_tools.py` — replaced the
+    deferred-error test with six MCP-call-path tests (happy +
     error propagation + None-client defense + bad-response shape +
-    deprecation-runway).
-  - `tests/plugins/memory/test_iso_node_tools.py` — flipped
-    `test_iso_node_create_returns_deferred_payload` to
-    `test_iso_node_create_returns_ok_envelope_with_substrate_entry_id`
-    + added a `_substrate_error_surfaces_structured_envelope` test;
-    flipped supersede test to assert success + inherited node_kind.
-  - `tests/plugins/memory/test_tool_finalize.py` — round-trip tests
-    updated to assert success envelopes.
-  - `tests/plugins/memory/test_provider_end_to_end.py` —
-    `_FakeMcpClient` extended with `kora__write_agent_scratchpad`
-    routing; E2E asserts 3 scratchpad writes + 2 chain emits fire
-    via the spec-pinned tool names + arg shapes.
+    optional-args pass-through + deprecation-runway).
+  - `test_iso_link_create_handler_returns_ok_envelope_with_substrate_link_id`
+    + `test_iso_link_create_handler_surfaces_substrate_error_envelope`
+    cover the handler's envelope flips.
 
 ### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
 
