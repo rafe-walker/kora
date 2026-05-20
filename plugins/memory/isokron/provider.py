@@ -257,12 +257,13 @@ class IsoKronMemoryProvider(MemoryProvider):
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return the model-facing tool schemas this provider exposes.
 
-        KR-3 ST1 ships the ``iso_node_*`` family (4 tools). ST2 adds
-        ``iso_link_*`` (3 tools). ST3 wires registration polish.
+        KR-3 ST1: ``iso_node_*`` family (4 tools).
+        KR-3 ST2: ``iso_link_*`` family (3 tools).
+        ST3 wires registration polish.
         """
-        from .tools import ISO_NODE_TOOL_SCHEMAS
+        from .tools import ISO_TYPED_GRAPH_TOOL_SCHEMAS
 
-        return list(ISO_NODE_TOOL_SCHEMAS)
+        return list(ISO_TYPED_GRAPH_TOOL_SCHEMAS)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return ISOKRON_CONFIG_SCHEMA
@@ -526,6 +527,10 @@ class IsoKronMemoryProvider(MemoryProvider):
             from .tools import handle_iso_node_tool_call
 
             return handle_iso_node_tool_call(self, tool_name, args)
+        if tool_name.startswith("iso_link_"):
+            from .tools import handle_iso_link_tool_call
+
+            return handle_iso_link_tool_call(self, tool_name, args)
         return super().handle_tool_call(tool_name, args)
 
     # -- Scratchpad reads (sync wrappers around the async reads) -----------

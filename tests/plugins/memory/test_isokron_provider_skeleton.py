@@ -250,8 +250,8 @@ def test_handle_tool_call_unsupported_tool_raises_with_provider_name():
 # ---------------------------------------------------------------------------
 
 
-def test_tool_schemas_exposes_iso_node_family():
-    """KR-3 ST1: 4 iso_node_* tools registered; iso_link_* lands in ST2."""
+def test_tool_schemas_exposes_iso_typed_graph_family():
+    """KR-3 ST1 ships 4 iso_node_*; ST2 adds 3 iso_link_* = 7 total."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
@@ -262,6 +262,9 @@ def test_tool_schemas_exposes_iso_node_family():
         "iso_node_read",
         "iso_node_search",
         "iso_node_supersede",
+        "iso_link_create",
+        "iso_link_traverse",
+        "iso_link_list_for_node",
     }
     # OpenAI function-call shape — each schema has name, description, parameters.
     for s in schemas:
