@@ -155,7 +155,18 @@ class IsoKronConnection:
         """Tear down loop + pool + MCP transport (idempotent)."""
         if not self._started:
             return
-        # Close the asyncpg pool on the dedicated loop, then stop the loop.
+        # Close the MCP client first (its transport may need active
+        # asyncio infrastructure for clean teardown). Then the asyncpg
+        # pool, then stop the loop.
+        if self._mcp_client is not None:
+            try:
+                fut = self._loop.submit(self._mcp_client.close())
+                fut.result(timeout=5.0)
+            except Exception:  # pragma: no cover — close failures are non-fatal
+                logger.exception(
+                    "[isokron.connection] error closing MCP client — continuing"
+                )
+            self._mcp_client = None
         if self._pg_pool is not None:
             try:
                 fut = self._loop.submit(self._pg_pool.close())
@@ -165,7 +176,6 @@ class IsoKronConnection:
                     "[isokron.connection] error closing pg pool — continuing"
                 )
             self._pg_pool = None
-        # ST3 will close the MCP client here.
         self._loop.stop()
         self._started = False
         logger.info("[isokron.connection] IO loop stopped")
@@ -239,14 +249,38 @@ class IsoKronConnection:
             )
         return self._pg_pool
 
-    # -- MCP client accessor (ST3 fills the implementation) ------------------
+    # -- MCP client accessor (lazy open) -------------------------------------
 
-    def mcp_client(self):
-        """Return the MCP client. KR-2 ST3 implements; ST2 still raises."""
+    def get_mcp_client(self):
+        """Return the :class:`IsoKronMCPClient`, opening it on first access.
+
+        Lazy so lifecycle smokes (``start()`` / ``close()``) and the
+        asyncpg-only read path work without a live Sea MCP server. The
+        first write path (chain emit / scratchpad write / relationlink
+        write — when their KR-N swaps land) triggers the open.
+        """
+        if not self.is_started:
+            raise IsoKronConnectionError(
+                "IsoKronConnection.start() must be called before opening "
+                "the MCP client"
+            )
         if self._mcp_client is None:
-            raise NotImplementedError(
-                "[isokron.connection] MCP client not opened — "
-                "KR-2 ST3 ships this. Rule-6: writes (scratchpad + chain "
-                "events) are not yet wired."
+            from .mcp_client import IsoKronMCPClient
+
+            client = IsoKronMCPClient(self._config)
+            fut = self._loop.submit(client.start())
+            fut.result(timeout=10.0)
+            self._mcp_client = client
+            logger.info(
+                "[isokron.connection] MCP client opened (transport=%s)",
+                client.transport,
             )
         return self._mcp_client
+
+    # Deprecated alias preserved for any external caller; raises
+    # IsoKronConnectionError now instead of NotImplementedError so the
+    # signal is "you called the wrong accessor" rather than "this isn't
+    # built yet". Will be removed when KR-7 closes D-kr2-st4.
+    def mcp_client(self):
+        """Deprecated. Use :meth:`get_mcp_client` instead."""
+        return self.get_mcp_client()

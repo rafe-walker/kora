@@ -87,7 +87,9 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 | ST4 | Recent `kora.*` chain events read against `hivex_foundation.event_log` (the substrate's one tenant_id-UUID-keyed table; JOIN tenant on clerk_org_id). Active Constitution revision read against `kronicle.workspace_constitution_revisions` (no `superseded_at`; ORDER BY revision_number DESC). `KoraSessionContext` shape + assembler mirroring the TS-side types.ts:130 contract. System prompt block extended with §6 "Recent kora.* activity". All six remaining ABC stubs replaced with real implementations. **Chain event emit deferred** behind `ChainEventEmitNotAvailableError` — see "Operator pitfalls" and `BUILD_DEVIATIONS.md` D-kr2-st4-no-chain-emit-mcp-tool. **KR-2 milestone closes.** |
 | KR-3 ST1 | `iso_node_*` typed-graph tool family (4 tools — create / read / search / supersede) backed by `kronicle.agent_scratchpad_entries`. v0.1 packs `node_kind` into `content_inline` header (18 IsoKron entity kinds). Writes route through the deferred scratchpad path; tool handlers catch the defer + return a structured `{"ok": false, "deferred": true, "deviation_id": …}` envelope so the model gets an in-band signal. Capability checks stubbed behind `D-kr3-st1-capability-check-deferred` until KR-6 ships the Python `actorHasCapability` mirror. |
 | KR-3 ST2 | `iso_link_*` typed-edge tool family (3 tools — create / traverse / list_for_node) against `public.relationlink` (ADR-0033/0034). 21 V1 link_type vocabulary. Recursive CTE for traverse (max_depth ≤ 3). Writes blocked by 3 substrate-side concurrent issues tracked as `D-kr3-st2-no-relationlink-write-mcp-tool`. |
-| KR-3 ST3 (this PR) | Tool surface finalize: combined 7-tool surface via `get_tool_schemas`; `ISOKRON_TOOLSET_NAME = "isokron_memory"` constant for operator config grouping. System prompt block extended with §6a "Typed-graph tools" — model sees the 7 tool names + the Hermes-deprecation note. Hermes flat `tools/memory_tool.py:memory_tool` gets `@deprecated` markers + Rule-6 log `[kora.memory.deprecated]` on every call. Operator docs at `docs/kora-runtime/KR-3-tool-surface.md` with the 7-tool table, 18 node_kinds, 21 link_types, 4 example invocations, deferral map. Round-trip + readiness + capability-stub tests. **KR-3 milestone closes.** |
+| KR-3 ST3 | Tool surface finalize: combined 7-tool surface via `get_tool_schemas`; `ISOKRON_TOOLSET_NAME = "isokron_memory"` constant for operator config grouping. System prompt block extended with §6a "Typed-graph tools" — model sees the 7 tool names + the Hermes-deprecation note. Hermes flat `tools/memory_tool.py:memory_tool` gets `@deprecated` markers + Rule-6 log `[kora.memory.deprecated]` on every call. Operator docs at `docs/kora-runtime/KR-3-tool-surface.md` with the 7-tool table, 18 node_kinds, 21 link_types, 4 example invocations, deferral map. Round-trip + readiness + capability-stub tests. **KR-3 milestone closes.** |
+| KR-6 | Python `actor_has_capability` helper at `capability_check.py` replaces the KR-3 ST1 stub. Real check against the C2 mirror; `CapabilityDeniedError` carries `.capability` + `.reason`; tool dispatchers catch + surface a structured `{"ok": false, "denied": true, …}` envelope. Forward-stability invariant tested: module imports only the C2 mirror (no MCP/DB/network at load). **Closes `D-kr3-st1`**. |
+| KR-7a (this PR) | **MCP client transport wiring** — closes the silent KR-2 ST3 stub at `connection.py:244`. New `mcp_client.py` (`IsoKronMCPClient`) wraps stdio + HTTP transports composing the canonical helpers from `tools/mcp_tool.py` (validate_remote_mcp_url, resolve_stdio_command, build_safe_env, sanitize_error, exc_str). Service-token auth: HTTP injects `Authorization: Bearer`, stdio injects `KORA_SERVICE_TOKEN` env var. New config fields: `mcp_service_token: SecretStr | None` (reads `KORA_SERVICE_TOKEN` env fallback); `mcp_transport` derived from `mcp_endpoint` URL prefix. Connection lifecycle: `get_mcp_client()` lazy-opens on first access; `close()` tears down in reverse order. **Unblocks KR-7 (chain-emit swap), KR-8 (scratchpad-write swap), KR-10-swap (relationlink-write swap)** — each now ships as the originally-spec'd ~20-40 LOC mechanical patch. |
 
 ## Operator pitfalls
 
@@ -111,6 +113,30 @@ shipped the Python `actor_has_capability` helper at
 gates through a real check; denied calls surface a structured
 `{"ok": false, "denied": true, "capability": ..., "reason": ...}`
 envelope.
+
+### MCP client (KR-7a)
+
+The Sea MCP server is reached via the runtime's `IsoKronMCPClient`
+(`plugins/memory/isokron/mcp_client.py`). Two transports, config-driven:
+
+- **`stdio://<command>`** — spawns the Sea MCP server as a subprocess
+  (development + tests). The runtime injects `KORA_SERVICE_TOKEN` into
+  the subprocess env so the server's auth layer reads it via the
+  standard `service-token-auth.ts` middleware shape.
+- **`http(s)://host:port/...`** — talks to a long-running HTTP MCP
+  server (production). The runtime injects `Authorization: Bearer
+  <token>` on every request.
+
+The service token is read from `mcp_service_token` config field OR
+the `KORA_SERVICE_TOKEN` env var (config wins on conflict). When
+unset, the client still opens (tests work end-to-end without a real
+token); production deploys wait on substrate-team provisioning per
+`coordination/from_kora_pm/24_kora_runtime_service_token_provisioning_request.md`.
+
+The client is lazy-opened by `IsoKronConnection.get_mcp_client()` on
+first write-path call — reads + lifecycle smokes don't pay the
+transport-open cost. Lifecycle (start / close / double-call
+idempotency) is fully tested with mocked transports.
 
 ### Individual pitfalls
 

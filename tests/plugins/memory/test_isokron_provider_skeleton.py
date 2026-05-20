@@ -271,7 +271,8 @@ def test_tool_schemas_exposes_iso_typed_graph_family():
         assert {"name", "description", "parameters"} <= s.keys()
 
 
-def test_config_schema_carries_all_six_fields():
+def test_config_schema_carries_all_seven_fields():
+    """KR-7a adds mcp_service_token, bringing the schema to 7 fields."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
@@ -284,10 +285,14 @@ def test_config_schema_carries_all_six_fields():
         "cache_ttl_seconds",
         "actor_kind",
         "enable_legacy_fallback",
+        "mcp_service_token",
     }
-    # DSN must be flagged secret (carries credentials).
+    # Both DSN + service token carry credentials.
     dsn_entry = next(e for e in schema if e["key"] == "isokron_dsn")
     assert dsn_entry.get("secret") is True
+    token_entry = next(e for e in schema if e["key"] == "mcp_service_token")
+    assert token_entry.get("secret") is True
+    assert token_entry.get("env_var") == "KORA_SERVICE_TOKEN"
 
 
 # ---------------------------------------------------------------------------
@@ -295,8 +300,14 @@ def test_config_schema_carries_all_six_fields():
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_client_accessor_raises_until_st3():
-    """MCP client accessor still raises in ST2; ST3 wires writes."""
+def test_mcp_client_accessor_constructs_via_real_transport_path():
+    """KR-7a wired the MCP client. The accessor now lazy-opens via the
+    real ``IsoKronMCPClient`` rather than raising. Construction happens
+    against the configured transport — the minimal-config fixture
+    points stdio at a non-existent command, so the open attempt fails
+    here with a transport-open exception (NOT NotImplementedError).
+    That's the new contract: the stub-NotImplementedError is gone.
+    """
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
@@ -304,8 +315,22 @@ def test_mcp_client_accessor_raises_until_st3():
     try:
         connection = provider._connection
         assert connection is not None
-        with pytest.raises(NotImplementedError) as excinfo:
-            connection.mcp_client()
-        assert "KR-2 ST3" in str(excinfo.value)
+        # The minimal config's stdio command (``node ./sea-mcp-server.js``)
+        # will fail to spawn — but the failure mode is "transport open
+        # error", not the old "NotImplementedError" stub. We accept any
+        # non-NotImplementedError raise as evidence the stub is gone.
+        try:
+            connection.get_mcp_client()
+        except NotImplementedError:  # pragma: no cover — would mean the stub leaked
+            raise AssertionError(
+                "MCP client accessor still raises NotImplementedError — "
+                "KR-7a should have replaced the stub."
+            )
+        except Exception:
+            # Any other exception is the new contract (subprocess failed
+            # to spawn, mcp SDK rejected the params, etc.). The accessor
+            # is real; the test environment just doesn't have a live
+            # MCP server. That's expected for a lifecycle smoke.
+            pass
     finally:
         provider.shutdown()

@@ -23,9 +23,28 @@ expected today).
 
 from __future__ import annotations
 
-from typing import Optional
+import os
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+
+# Stdio URL prefix Kora's runtime uses to mean "spawn local subprocess";
+# pulled out as a constant so the MCP client + tests + this validator
+# all reference the same literal.
+STDIO_SCHEME = "stdio://"
+
+
+def parse_mcp_transport(endpoint: str) -> Literal["stdio", "http"]:
+    """Discriminate the MCP transport from the ``mcp_endpoint`` value.
+
+    ``stdio://<command>`` → ``"stdio"``; ``http(s)://...`` → ``"http"``.
+    Caller already passed pydantic validation, so we don't re-validate
+    the scheme here.
+    """
+    if endpoint.startswith(STDIO_SCHEME):
+        return "stdio"
+    return "http"
 
 
 class IsoKronProviderConfig(BaseModel):
@@ -99,6 +118,20 @@ class IsoKronProviderConfig(BaseModel):
         ),
     )
 
+    mcp_service_token: Optional[SecretStr] = Field(
+        default=None,
+        description=(
+            "Service token for authenticating to the Sea MCP server. KR-7a "
+            "wires the auth-injection plumbing; substrate-team provisions "
+            "the actual token (see coordination/from_kora_pm/"
+            "24_kora_runtime_service_token_provisioning_request.md). When "
+            "unset, the provider checks the ``KORA_SERVICE_TOKEN`` env var "
+            "via the plugin loader's ``${VAR}`` expansion. HTTP transport "
+            "injects as ``Authorization: Bearer <token>``; stdio transport "
+            "injects as ``KORA_SERVICE_TOKEN`` in the subprocess env."
+        ),
+    )
+
     @field_validator("isokron_dsn")
     @classmethod
     def _dsn_must_be_postgres(cls, v: str) -> str:
@@ -122,6 +155,29 @@ class IsoKronProviderConfig(BaseModel):
                 f"transport; got {v!r}"
             )
         return v
+
+    @property
+    def mcp_transport(self) -> Literal["stdio", "http"]:
+        """Discriminate transport mode from the validated ``mcp_endpoint``.
+
+        Kept as a property (rather than a Field) so operator config
+        files stay backward-compatible — the existing ``mcp_endpoint``
+        URL prefix is the source of truth.
+        """
+        return parse_mcp_transport(self.mcp_endpoint)
+
+    def resolve_service_token(self) -> Optional[str]:
+        """Return the service token's plain-text value, env-var fallback.
+
+        Order: explicit ``mcp_service_token`` field → ``KORA_SERVICE_TOKEN``
+        env var → ``None``. Returned plain so the MCP client can inject
+        it as the Authorization header (HTTP) or subprocess env var
+        (stdio); callers MUST NOT log this value.
+        """
+        if self.mcp_service_token is not None:
+            return self.mcp_service_token.get_secret_value()
+        env_token = os.environ.get("KORA_SERVICE_TOKEN")
+        return env_token or None
 
 
 # Schema metadata for `kora memory setup` walkthrough. Mirrors the
@@ -169,5 +225,15 @@ ISOKRON_CONFIG_SCHEMA = [
         ),
         "required": False,
         "default": False,
+    },
+    {
+        "key": "mcp_service_token",
+        "description": (
+            "Sea MCP service token (KR-7a auth). Substrate-team provisions; "
+            "consumer can read from KORA_SERVICE_TOKEN env var instead."
+        ),
+        "secret": True,
+        "required": False,
+        "env_var": "KORA_SERVICE_TOKEN",
     },
 ]
