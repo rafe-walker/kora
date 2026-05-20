@@ -39,7 +39,6 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from ..scratchpad import (
     ScratchpadEntry,
     ScratchpadKind,
-    ScratchpadWriteNotAvailableError,
     VisibilityScope,
 )
 
@@ -403,35 +402,42 @@ def _handle_iso_node_create(
     assert_kora_can_perform("cap_write_agent_scratchpad")
 
     content = _pack_content(node_kind, title, content_summary)
-    try:
-        # Calls into provider._attempt_scratchpad_write would log + swallow;
-        # we need the deferred error in-band so the model gets a structured
-        # signal. Use the lower-level path with our own try/except.
-        from ..scratchpad import write_scratchpad_entry
+    # KR-8 swap: scratchpad writes route through the Sea MCP tool via
+    # the KR-7a-wired IsoKronMCPClient. Substrate-side failures surface
+    # as IsoKronMCPInvocationError; we project them into a structured
+    # envelope so the model gets an in-band signal rather than an
+    # uncaught exception (mirrors the dispatcher's denied-envelope
+    # pattern from KR-6).
+    from ..mcp_client import IsoKronMCPInvocationError
+    from ..scratchpad import write_scratchpad_entry
 
-        assert provider._connection is not None
-        provider._connection.submit_and_wait(
+    assert provider._connection is not None
+    try:
+        mcp_client = provider._connection.get_mcp_client()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"iso_node_create: MCP client unavailable — {exc}",
+        }
+    try:
+        entry_id = provider._connection.submit_and_wait(
             write_scratchpad_entry(
                 workspace_id=workspace_id,
                 scratchpad_kind=scratchpad_kind,
                 visibility_scope=visibility,
                 content=content,
-                mcp_client=None,
+                mcp_client=mcp_client,
             ),
             timeout=10.0,
         )
-    except ScratchpadWriteNotAvailableError as exc:
+    except IsoKronMCPInvocationError as exc:
         return {
             "ok": False,
-            "deferred": True,
-            "deviation_id": "D-kr2-st3-no-scratchpad-write-mcp-tool",
-            "message": str(exc),
+            "substrate_error": True,
+            "tool_name": exc.tool_name,
+            "message": exc.message,
         }
-
-    # When the substrate tool lands, it returns the new entry_id; KR-N
-    # follow-on swaps this branch in. For now (unreachable in v0.1
-    # because the defer always fires) return a sentinel.
-    return {"ok": True, "entry_id": "<assigned-by-substrate>"}
+    return {"ok": True, "entry_id": entry_id}
 
 
 def _handle_iso_node_read(
@@ -559,48 +565,53 @@ def _handle_iso_node_supersede(
         f"Reason: {supersession_reason}",
     )
 
-    # Attempt the write. Both the scratchpad write AND the
-    # kora.node.superseded chain event are deferred behind their
-    # respective BUILD_DEVIATIONS entries. We surface the first defer
-    # we hit so the model sees one clear deviation_id at a time.
-    try:
-        from ..scratchpad import write_scratchpad_entry
+    # KR-8 swap: scratchpad write routes through Sea MCP.
+    # KR-7 closed: the supersession chain event also routes through Sea MCP
+    # via provider._attempt_chain_event_emit. Both surfaces are live;
+    # substrate-side failures surface as IsoKronMCPInvocationError on
+    # the write and ERROR logs on the chain emit (lifecycle hook).
+    from ..mcp_client import IsoKronMCPInvocationError
+    from ..scratchpad import write_scratchpad_entry
 
-        assert provider._connection is not None
-        provider._connection.submit_and_wait(
+    assert provider._connection is not None
+    try:
+        mcp_client = provider._connection.get_mcp_client()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"iso_node_supersede: MCP client unavailable — {exc}",
+        }
+    try:
+        new_entry_id = provider._connection.submit_and_wait(
             write_scratchpad_entry(
                 workspace_id=workspace_id,
                 scratchpad_kind=ScratchpadKind.COMPACTED_SUMMARY,
                 visibility_scope=VisibilityScope.AGENT_PRIVATE,
                 content=packed,
-                mcp_client=None,
+                mcp_client=mcp_client,
             ),
             timeout=10.0,
         )
-    except ScratchpadWriteNotAvailableError as exc:
+    except IsoKronMCPInvocationError as exc:
         return {
             "ok": False,
-            "deferred": True,
-            "deviation_id": "D-kr2-st3-no-scratchpad-write-mcp-tool",
-            "message": str(exc),
+            "substrate_error": True,
+            "tool_name": exc.tool_name,
+            "message": exc.message,
         }
-
-    # KR-7 closed D-kr2-st4: the supersession emit now routes through
-    # the live kora__append_event MCP tool via the provider's
-    # _attempt_chain_event_emit helper (which fetches IsoKronMCPClient
-    # via get_mcp_client + handles error logging at ERROR level).
-    # Unreachable in v0.1 anyway because the scratchpad write above
-    # still defers via D-kr2-st3.
+    # Supersession-event emit (defensive: catches at the lifecycle
+    # boundary so emit failure doesn't override the successful write).
     provider._attempt_chain_event_emit(
         workspace_id=workspace_id,
         event_type="kora.node.superseded",
         payload={
             "superseded_entry_id": superseded_entry_id,
+            "new_entry_id": new_entry_id,
             "reason": supersession_reason,
         },
         origin="iso_node_supersede",
     )
-    return {"ok": True, "entry_id": "<assigned-by-substrate>"}
+    return {"ok": True, "entry_id": new_entry_id}
 
 
 # ---------------------------------------------------------------------------

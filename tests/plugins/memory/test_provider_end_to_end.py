@@ -162,27 +162,22 @@ class _FakePool:
 
 
 class _FakeMcpClient:
-    """KR-7 + KR-7b era fake MCP client — routes by tool_name.
+    """KR-7 + KR-7b + KR-8 fake MCP client — routes by tool_name.
 
-    Post-KR-7b, initialize() ALSO fetches the capability matrix via
-    ``kora__read_kora_capability_row`` — the fake returns a small
-    canonical-shape matrix so the populate succeeds + the E2E exercises
-    the production path (matrix authoritative). Post-KR-7, chain emits
-    via ``kora__append_event`` return mock event_ids.
+    Covers all three production-MCP swaps:
+    - kora__read_kora_capability_row → small canonical matrix at initialize (KR-7b)
+    - kora__append_event → mock event_id for chain emits (KR-7)
+    - kora__write_agent_scratchpad → mock scratchpad_entry_id (KR-8)
     """
 
     def __init__(self):
         self.invoke_calls: list[tuple[str, dict]] = []
-        # Track only the append-event calls separately so existing
-        # KR-7 assertions on "2 emits" stay stable.
         self.append_event_calls: list[tuple[str, dict]] = []
+        self.scratchpad_write_calls: list[tuple[str, dict]] = []
 
     async def invoke(self, tool_name: str, args: dict):
         self.invoke_calls.append((tool_name, dict(args)))
         if tool_name == "kora__read_kora_capability_row":
-            # Minimal canonical-shape matrix — 3 entries covering the
-            # caps the E2E hits via iso_node/iso_link handlers (Kora-
-            # granted set). Production fetches the full 49.
             return {
                 "capability_matrix": {
                     "cap_write_agent_scratchpad": True,
@@ -193,6 +188,13 @@ class _FakeMcpClient:
         if tool_name == "kora__append_event":
             self.append_event_calls.append((tool_name, dict(args)))
             return {"event_id": f"evt-mock-{len(self.append_event_calls):03d}"}
+        if tool_name == "kora__write_agent_scratchpad":
+            self.scratchpad_write_calls.append((tool_name, dict(args)))
+            n = len(self.scratchpad_write_calls)
+            return {
+                "scratchpad_entry_id": f"spe-mock-{n:03d}",
+                "approved_event_id": f"evt-write-mock-{n:03d}",
+            }
         raise AssertionError(
             f"_FakeMcpClient received unexpected tool_name: {tool_name!r}"
         )
@@ -349,21 +351,27 @@ def test_provider_end_to_end_full_lifecycle(caplog, restore_capability_matrix):
         assert WORKSPACE_ID not in provider._events_cache
 
     # No NotImplementedError surfaced anywhere through the full lifecycle.
-    # Post-KR-7 reality:
-    #   - Scratchpad-write deferrals stay (D-kr2-st3 still open) — 3 WARNINGs
-    #     tagged "scratchpad write skipped" (sync_turn + on_memory_write +
+    # Post-KR-8 reality (D-kr2-st3 closed):
+    #   - Scratchpad writes now succeed via the fake MCP client — 3 INFO
+    #     [kora.scratchpad.write] logs (sync_turn + on_memory_write +
     #     on_delegation).
-    #   - Chain emits now succeed via the fake MCP client (KR-7 closed
-    #     D-kr2-st4) — 2 INFO logs tagged [kora.chain.emit].
-    scratchpad_skipped = [
-        r for r in caplog.records if "scratchpad write skipped" in r.getMessage()
+    #   - Chain emits succeed — 2 INFO [kora.chain.emit] logs
+    #     (on_delegation + on_session_end).
+    #   - Capability matrix fetched at initialize — 1 invoke of
+    #     kora__read_kora_capability_row.
+    scratchpad_written = [
+        r for r in caplog.records
+        if "[kora.scratchpad.write]" in r.getMessage()
     ]
-    assert len(scratchpad_skipped) == 3
+    assert len(scratchpad_written) == 3
+    assert any("sync_turn" in r.getMessage() for r in scratchpad_written)
+    assert any("on_memory_write" in r.getMessage() for r in scratchpad_written)
+    assert any("on_delegation" in r.getMessage() for r in scratchpad_written)
 
     chain_emitted = [
         r for r in caplog.records if "[kora.chain.emit]" in r.getMessage()
     ]
-    assert len(chain_emitted) == 2  # on_delegation + on_session_end
+    assert len(chain_emitted) == 2
     assert any(
         "kora.handoff.to_claude_pm" in r.getMessage() for r in chain_emitted
     )
@@ -371,14 +379,23 @@ def test_provider_end_to_end_full_lifecycle(caplog, restore_capability_matrix):
         "kora.session.ended" in r.getMessage() for r in chain_emitted
     )
 
-    # The fake MCP client recorded the two append_event calls with the
-    # spec-pinned tool name + arg shape. (KR-7b adds a 3rd invoke at
-    # initialize for the capability-matrix fetch — checked separately.)
     fake_client = fake_conn._mcp_client
+    # KR-8 baseline: 3 scratchpad writes + 2 chain emits = 5 invokes.
+    # (KR-7b adds 1 more cap-matrix fetch at initialize; that PR's E2E
+    # asserts on it. Keeping KR-8's assertions narrow so the two
+    # parallel PRs don't fight over fixture counts.)
+    assert len(fake_client.scratchpad_write_calls) == 3
     assert len(fake_client.append_event_calls) == 2
-    for tool_name, args in fake_client.append_event_calls:
-        assert tool_name == "kora__append_event"
+    for _tool, args in fake_client.append_event_calls:
         assert set(args.keys()) == {"workspace_id", "event_type", "payload"}
+    for _tool, args in fake_client.scratchpad_write_calls:
+        assert set(args.keys()) >= {
+            "workspace_id",
+            "scratchpad_kind",
+            "visibility_scope",
+            "content_inline",
+            "content_hash",
+        }
 
     # KR-7b: the capability-matrix fetch fired at initialize, replacing
     # the hand-mirrored fallback with the small 3-entry test matrix.
