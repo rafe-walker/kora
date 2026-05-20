@@ -255,12 +255,14 @@ class IsoKronMemoryProvider(MemoryProvider):
     # -- Static metadata --------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas (ABC-required).
+        """Return the model-facing tool schemas this provider exposes.
 
-        ST1: return empty list — no tools surfaced until KR-3 wires the
-        ``iso_node_*`` / ``iso_link_*`` family on top of this provider.
+        KR-3 ST1 ships the ``iso_node_*`` family (4 tools). ST2 adds
+        ``iso_link_*`` (3 tools). ST3 wires registration polish.
         """
-        return []
+        from .tools import ISO_NODE_TOOL_SCHEMAS
+
+        return list(ISO_NODE_TOOL_SCHEMAS)
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return ISOKRON_CONFIG_SCHEMA
@@ -513,15 +515,18 @@ class IsoKronMemoryProvider(MemoryProvider):
         args: Dict[str, Any],
         **kwargs: Any,
     ) -> str:
-        """Handle a tool call routed by name.
+        """Route a tool call to the right typed-graph handler.
 
-        The provider returns no tools from ``get_tool_schemas`` (the
-        ``iso_node_*`` / ``iso_link_*`` family lands in KR-3), so this
-        hook should never be invoked in normal operation. Inherit the
-        ABC's "provider X does not handle tool Y" error so a routing
-        bug surfaces with a clear actionable message.
+        KR-3 ST1 dispatches ``iso_node_*``. ST2 adds ``iso_link_*``.
+        Unknown tool names fall through to the ABC default which
+        raises a clear "Provider isokron does not handle tool X" error.
         """
-        return super().handle_tool_call(tool_name, args, **kwargs)
+        del kwargs
+        if tool_name.startswith("iso_node_"):
+            from .tools import handle_iso_node_tool_call
+
+            return handle_iso_node_tool_call(self, tool_name, args)
+        return super().handle_tool_call(tool_name, args)
 
     # -- Scratchpad reads (sync wrappers around the async reads) -----------
 
