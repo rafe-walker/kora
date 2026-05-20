@@ -162,21 +162,40 @@ class _FakePool:
 
 
 class _FakeMcpClient:
-    """KR-7-era fake MCP client — records calls + returns a mock event_id.
+    """KR-7 + KR-7b era fake MCP client — routes by tool_name.
 
-    Chain emit paths post-KR-7 fetch the client via
-    ``IsoKronConnection.get_mcp_client()`` then call
-    ``mcp_client.invoke('kora__append_event', …)``. The E2E test wires
-    this fake so emits succeed (operator-visible log path, not the
-    fail-and-recover path).
+    Post-KR-7b, initialize() ALSO fetches the capability matrix via
+    ``kora__read_kora_capability_row`` — the fake returns a small
+    canonical-shape matrix so the populate succeeds + the E2E exercises
+    the production path (matrix authoritative). Post-KR-7, chain emits
+    via ``kora__append_event`` return mock event_ids.
     """
 
     def __init__(self):
         self.invoke_calls: list[tuple[str, dict]] = []
+        # Track only the append-event calls separately so existing
+        # KR-7 assertions on "2 emits" stay stable.
+        self.append_event_calls: list[tuple[str, dict]] = []
 
     async def invoke(self, tool_name: str, args: dict):
         self.invoke_calls.append((tool_name, dict(args)))
-        return {"event_id": f"evt-mock-{len(self.invoke_calls):03d}"}
+        if tool_name == "kora__read_kora_capability_row":
+            # Minimal canonical-shape matrix — 3 entries covering the
+            # caps the E2E hits via iso_node/iso_link handlers (Kora-
+            # granted set). Production fetches the full 49.
+            return {
+                "capability_matrix": {
+                    "cap_write_agent_scratchpad": True,
+                    "cap_read_precommit_scratchpad": True,
+                    "cap_sea_create": True,
+                }
+            }
+        if tool_name == "kora__append_event":
+            self.append_event_calls.append((tool_name, dict(args)))
+            return {"event_id": f"evt-mock-{len(self.append_event_calls):03d}"}
+        raise AssertionError(
+            f"_FakeMcpClient received unexpected tool_name: {tool_name!r}"
+        )
 
 
 class _FakeProviderConnection:
@@ -219,7 +238,26 @@ class _FakeProviderConnection:
 # ---------------------------------------------------------------------------
 
 
-def test_provider_end_to_end_full_lifecycle(caplog):
+@pytest.fixture
+def restore_capability_matrix():
+    """Snapshot + restore the hand-mirrored capability matrix.
+
+    KR-7b's MCP-backed populate mutates the module-level dict in place;
+    tests that drive initialize against a fake mcp_client need to
+    restore the hand-mirrored fallback so other tests in the same
+    worker see a clean state.
+    """
+    from plugins.memory.isokron.capability_matrix_mirror import (
+        ACTOR_CAPABILITY_MATRIX_KORA_COLUMN,
+    )
+
+    snapshot = dict(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN)
+    yield
+    ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.clear()
+    ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.update(snapshot)
+
+
+def test_provider_end_to_end_full_lifecycle(caplog, restore_capability_matrix):
     """Walks every ABC method without surfacing any NotImplementedError."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
@@ -333,13 +371,32 @@ def test_provider_end_to_end_full_lifecycle(caplog):
         "kora.session.ended" in r.getMessage() for r in chain_emitted
     )
 
-    # The fake MCP client recorded both emit calls with the spec-pinned
-    # tool name + arg shape.
+    # The fake MCP client recorded the two append_event calls with the
+    # spec-pinned tool name + arg shape. (KR-7b adds a 3rd invoke at
+    # initialize for the capability-matrix fetch — checked separately.)
     fake_client = fake_conn._mcp_client
-    assert len(fake_client.invoke_calls) == 2
-    for tool_name, args in fake_client.invoke_calls:
+    assert len(fake_client.append_event_calls) == 2
+    for tool_name, args in fake_client.append_event_calls:
         assert tool_name == "kora__append_event"
         assert set(args.keys()) == {"workspace_id", "event_type", "payload"}
+
+    # KR-7b: the capability-matrix fetch fired at initialize, replacing
+    # the hand-mirrored fallback with the small 3-entry test matrix.
+    cap_fetches = [
+        c for c in fake_client.invoke_calls
+        if c[0] == "kora__read_kora_capability_row"
+    ]
+    assert len(cap_fetches) == 1
+    from plugins.memory.isokron.capability_matrix_mirror import (
+        ACTOR_CAPABILITY_MATRIX_KORA_COLUMN,
+    )
+    # Authoritative fetch replaced the hand-mirrored 49 entries with
+    # the 3-entry test matrix.
+    assert set(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.keys()) == {
+        "cap_write_agent_scratchpad",
+        "cap_read_precommit_scratchpad",
+        "cap_sea_create",
+    }
 
     provider.shutdown()
     assert provider._initialized is False

@@ -1,34 +1,57 @@
-"""Python mirror of the Kora column of ``ACTOR_CAPABILITY_MATRIX``.
+"""Kora-column slice of ``ACTOR_CAPABILITY_MATRIX`` — KR-7b swap.
 
-[kora.isokron.todo] **C2 INTERIM** — swap to ``kora__read_kora_capability_row``
-MCP tool when K-7 (Sea MCP capability-row tool) lands. PM-decided
-2026-05-20 STOP-gate: blocking CC#3 on a CC#1 dependency to ship KR-2
-ST2 burns days; C2 mirror is the unblock path. A parity test
-(``tests/plugins/memory/test_capability_matrix_parity.py``) guards
-drift against the TS source.
+# Two paths, one dict
 
-Source of truth:
-  ``packages/sea-mcp-server/src/capability-matrix.ts`` in the IsoKron
-  substrate repo. Specifically the ``ACTOR_CAPABILITY_MATRIX`` const's
-  Kora column for each entry in ``SEA_CAPABILITIES`` (24) +
-  ``KORA_BROADER_CAPABILITIES`` (24).
+* **Production (post-KR-7b)** — ``IsoKronMemoryProvider.initialize()``
+  calls :func:`populate_capability_matrix_from_mcp` which fetches
+  ``kora__read_kora_capability_row`` via the KR-7a-wired
+  :class:`IsoKronMCPClient` and replaces this module's dict contents.
+  Substrate is the authoritative source; no hand-translation drift
+  risk. Closes BUILD_DEVIATIONS ``D-kr2-st2-capability-matrix-mirror``.
 
-BUILD_DEVIATIONS entry: ``D-kr2-st2-capability-matrix-mirror`` —
-closes when K-7 lands.
+* **Dev/test fallback (legacy C2)** — the hand-mirrored 49-entry dict
+  below stays as the default at module import. If the MCP fetch fails
+  at provider initialize (transport down, substrate unreachable, etc.),
+  the provider logs a ``[kora.capability_matrix.fallback]`` WARNING and
+  the fallback stays in place — sessions still run, capability checks
+  still work against the (potentially stale) dev data. The parity test
+  at ``tests/plugins/memory/test_capability_matrix_parity.py`` guards
+  the fallback against TS-source drift so dev parity matches
+  production-substrate parity.
+
+# Production-test posture
+
+Same as KR-7's chain-emit closure. K-7 (`ee730853`) shipped the
+substrate-side MCP tool; substrate-team's dispatch tier (queued)
+un-stubs the handler. KR-7b's code is sound; mock tests verify the
+populate machinery; production deploys wait on the dispatch tier
+landing. Operators grep ``[kora.capability_matrix.fallback]`` in logs
+to confirm the production fetch is succeeding.
+
+# Forward stability
+
+When K-13 (capability-matrix tightening) ships and adds new entries
+on the substrate side, the populate function picks them up
+automatically at next provider start — no Python-side code change.
+The hand-mirrored fallback below still needs to be bumped for dev
+parity (the parity test catches it at CI), but the production path
+is auto-current.
 
 Capability names are stable strings per the TS source header:
 > "Capability names are stable strings — they appear in chain events,
 > audit logs, error payloads, and bundle profile definitions. Renames
 > are operator-direct schema changes (PolicyRegistry / chain-event-
 > vocabulary tier of stability)."
-
-So a Python mirror is safe across normal-velocity substrate evolution.
-The parity test catches additions, removals, and Kora-column flips.
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from .models import KoraCapabilityRow
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +163,10 @@ spread. Parity test asserts insertion order is preserved.
 def read_kora_capability_row() -> KoraCapabilityRow:
     """Return the Kora row of ``ACTOR_CAPABILITY_MATRIX`` as a typed shape.
 
-    Sync (no network IO) — this is the C2 interim path. Once K-7 lands
-    the Sea MCP ``kora__read_kora_capability_row`` tool, the read path
-    on ``provider.py`` swaps to call that tool (async), and this
-    function becomes a fallback / test fixture only.
+    Sync (no network IO). Reads the module-level dict, which is either
+    the hand-mirrored fallback (default at import) or the MCP-fetched
+    authoritative data (after ``populate_capability_matrix_from_mcp``
+    runs at provider initialize).
 
     Returns:
         ``KoraCapabilityRow`` with ``granted`` = frozenset of cap names
@@ -156,3 +179,70 @@ def read_kora_capability_row() -> KoraCapabilityRow:
         cap for cap, allowed in ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.items() if not allowed
     )
     return KoraCapabilityRow(actor_kind="kora", granted=granted, denied=denied)
+
+
+# ---------------------------------------------------------------------------
+# KR-7b — MCP-backed population at provider initialize
+# ---------------------------------------------------------------------------
+
+
+CAPABILITY_MATRIX_MCP_TOOL = "kora__read_kora_capability_row"
+"""Name of the K-7 Sea MCP tool that returns the Kora-row matrix."""
+
+
+async def populate_capability_matrix_from_mcp(mcp_client: Any) -> int:
+    """Fetch ``kora__read_kora_capability_row`` + replace this module's dict.
+
+    Mutates ``ACTOR_CAPABILITY_MATRIX_KORA_COLUMN`` in place so all
+    callers that imported it by reference see the fresh data on next
+    access. ``capability_check.actor_has_capability`` consumes the
+    dict by name; no caller-side refactor needed.
+
+    Args:
+        mcp_client: a started :class:`IsoKronMCPClient` (typically from
+            ``IsoKronConnection.get_mcp_client()``).
+
+    Returns:
+        Number of entries written (e.g. 49 today; K-13 will bump to 51).
+
+    Raises:
+        Any exception from ``mcp_client.invoke`` (e.g.
+        :class:`IsoKronMCPInvocationError`) — caller decides whether to
+        fail-closed or fall back to the hand-mirrored data.
+        ``RuntimeError`` if the response shape doesn't match
+        ``{"capability_matrix": {...}}``.
+    """
+    if mcp_client is None:
+        raise ValueError(
+            "populate_capability_matrix_from_mcp: mcp_client is required "
+            "(resolve via IsoKronConnection.get_mcp_client() before calling)"
+        )
+    result = await mcp_client.invoke(CAPABILITY_MATRIX_MCP_TOOL, {})
+    fetched = (
+        result.get("capability_matrix") if isinstance(result, dict) else None
+    )
+    if not isinstance(fetched, dict):
+        raise RuntimeError(
+            f"{CAPABILITY_MATRIX_MCP_TOOL} returned unexpected shape: "
+            f"{result!r}; expected {{'capability_matrix': {{...}}}}"
+        )
+    # Defensive: ensure every value is a bool. K-7's TS-side Zod schema
+    # should guarantee this, but a substrate-side regression that ships
+    # non-bools would silently break ``actor_has_capability`` lookups.
+    bad = [
+        k for k, v in fetched.items()
+        if not isinstance(v, bool) or not isinstance(k, str)
+    ]
+    if bad:
+        raise RuntimeError(
+            f"{CAPABILITY_MATRIX_MCP_TOOL} returned non-bool / non-str "
+            f"entries: {bad!r}"
+        )
+    ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.clear()
+    ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.update(fetched)
+    logger.info(
+        "[kora.capability_matrix] populated from %s — %d entries",
+        CAPABILITY_MATRIX_MCP_TOOL,
+        len(fetched),
+    )
+    return len(fetched)
