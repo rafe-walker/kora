@@ -18,13 +18,13 @@ This page covers option 1. The container stores all user data (config, API keys,
 If this is your first time running Hermes Agent, create a data directory on the host and start the container interactively to run the setup wizard:
 
 ```sh
-mkdir -p ~/.hermes
+mkdir -p ~/.kora
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent setup
 ```
 
-This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
+This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.kora/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.
 
 ## Running in gateway mode
 
@@ -34,7 +34,7 @@ Once configured, run the container in the background as a persistent gateway (Te
 docker run -d \
   --name hermes \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   -p 8642:8642 \
   nousresearch/hermes-agent gateway run
 ```
@@ -47,7 +47,7 @@ Note: the API server is gated on `API_SERVER_ENABLED=true`. To expose it beyond 
 docker run -d \
   --name hermes \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   -p 8642:8642 \
   -e API_SERVER_ENABLED=true \
   -e API_SERVER_HOST=0.0.0.0 \
@@ -66,7 +66,7 @@ The built-in web dashboard runs as an optional side-process inside the same cont
 docker run -d \
   --name hermes \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   -p 8642:8642 \
   -p 9119:9119 \
   -e HERMES_DASHBOARD=1 \
@@ -94,7 +94,7 @@ To open an interactive chat session against a running data directory:
 
 ```sh
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent
 ```
 
@@ -106,7 +106,7 @@ Or if you have already opened a terminal in your running container (via Docker D
 
 ## Persistent volumes
 
-The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host's `~/.hermes/` directory and contains:
+The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host's `~/.kora/` directory and contains:
 
 | Path | Contents |
 |------|----------|
@@ -127,7 +127,7 @@ Never run two Hermes **gateway** containers against the same data directory simu
 
 ## Multi-profile support
 
-Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.hermes/` directories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **When running under Docker, using Hermes' built-in multi-profile feature is not recommended.**
+Hermes supports [multiple profiles](../reference/profile-commands.md) — separate `~/.kora/` directories that let you run independent agents (different SOUL, skills, memory, sessions, credentials) from a single installation. **When running under Docker, using Hermes' built-in multi-profile feature is not recommended.**
 
 Instead, the recommended pattern is **one container per profile**, with each container bind-mounting its own host directory as `/opt/data`:
 
@@ -136,7 +136,7 @@ Instead, the recommended pattern is **one container per profile**, with each con
 docker run -d \
   --name hermes-work \
   --restart unless-stopped \
-  -v ~/.hermes-work:/opt/data \
+  -v ~/.kora-work:/opt/data \
   -p 8642:8642 \
   nousresearch/hermes-agent gateway run
 
@@ -144,7 +144,7 @@ docker run -d \
 docker run -d \
   --name hermes-personal \
   --restart unless-stopped \
-  -v ~/.hermes-personal:/opt/data \
+  -v ~/.kora-personal:/opt/data \
   -p 8643:8642 \
   nousresearch/hermes-agent gateway run
 ```
@@ -169,7 +169,7 @@ services:
     ports:
       - "8642:8642"
     volumes:
-      - ~/.hermes-work:/opt/data
+      - ~/.kora-work:/opt/data
 
   hermes-personal:
     image: nousresearch/hermes-agent:latest
@@ -179,7 +179,7 @@ services:
     ports:
       - "8643:8642"
     volumes:
-      - ~/.hermes-personal:/opt/data
+      - ~/.kora-personal:/opt/data
 ```
 
 ## Environment variable forwarding
@@ -188,7 +188,7 @@ API keys are read from `/opt/data/.env` inside the container. You can also pass 
 
 ```sh
 docker run -it --rm \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   -e OPENAI_API_KEY="sk-..." \
   nousresearch/hermes-agent
@@ -215,7 +215,7 @@ services:
       - "8642:8642"   # gateway API
       - "9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
     volumes:
-      - ~/.hermes:/opt/data
+      - ~/.kora:/opt/data
     environment:
       - HERMES_DASHBOARD=1
       # Uncomment to forward specific env vars instead of using .env file:
@@ -250,7 +250,7 @@ docker run -d \
   --name hermes \
   --restart unless-stopped \
   --memory=4g --cpus=2 \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent gateway run
 ```
 
@@ -289,7 +289,7 @@ docker rm -f hermes
 docker run -d \
   --name hermes \
   --restart unless-stopped \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent gateway run
 ```
 
@@ -302,7 +302,7 @@ docker compose up -d
 
 ## Skills and credential files
 
-When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox — see [Configuration → Docker Backend](./configuration.md#docker-backend)), Hermes reuses a single long-lived container for all tool calls and automatically bind-mounts the skills directory (`~/.hermes/skills/`) and any credential files declared by skills into that container as read-only volumes. Skill scripts, templates, and references are available inside the sandbox without manual configuration, and because the container persists for the life of the Hermes process, any dependencies you install or files you write stay around for the next tool call.
+When using Docker as the execution environment (not the methods above, but when the agent runs commands inside a Docker sandbox — see [Configuration → Docker Backend](./configuration.md#docker-backend)), Hermes reuses a single long-lived container for all tool calls and automatically bind-mounts the skills directory (`~/.kora/skills/`) and any credential files declared by skills into that container as read-only volumes. Skill scripts, templates, and references are available inside the sandbox without manual configuration, and because the container persists for the life of the Hermes process, any dependencies you install or files you write stay around for the next tool call.
 
 The same syncing happens for SSH and Modal backends — skills and credential files are uploaded via rsync or the Modal mount API before each command.
 
@@ -342,7 +342,7 @@ services:
     ports:
       - "8642:8642"
     volumes:
-      - ~/.hermes:/opt/data
+      - ~/.kora:/opt/data
     networks:
       - hermes-net
 
@@ -351,7 +351,7 @@ networks:
     driver: bridge
 ```
 
-Then in your `~/.hermes/config.yaml`, use the **container name** as the hostname:
+Then in your `~/.kora/config.yaml`, use the **container name** as the hostname:
 
 ```yaml
 model:
@@ -377,7 +377,7 @@ If your inference server runs directly on the host (not in Docker), use `host.do
 ```sh
 docker run -d \
   --name hermes \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   -p 8642:8642 \
   nousresearch/hermes-agent gateway run
 ```
@@ -397,7 +397,7 @@ model:
 docker run -d \
   --name hermes \
   --network host \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent gateway run
 ```
 
@@ -449,10 +449,10 @@ Check logs: `docker logs hermes`. Common causes:
 
 ### "Permission denied" errors
 
-The container's entrypoint drops privileges to the non-root `hermes` user (UID 10000) via `gosu`. If your host `~/.hermes/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` to match your host user, or ensure the data directory is writable:
+The container's entrypoint drops privileges to the non-root `hermes` user (UID 10000) via `gosu`. If your host `~/.kora/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` to match your host user, or ensure the data directory is writable:
 
 ```sh
-chmod -R 755 ~/.hermes
+chmod -R 755 ~/.kora
 ```
 
 ### Browser tools not working
@@ -463,7 +463,7 @@ Playwright needs shared memory. Add `--shm-size=1g` to your Docker run command:
 docker run -d \
   --name hermes \
   --shm-size=1g \
-  -v ~/.hermes:/opt/data \
+  -v ~/.kora:/opt/data \
   nousresearch/hermes-agent gateway run
 ```
 

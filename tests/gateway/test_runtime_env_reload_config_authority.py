@@ -16,7 +16,7 @@ from gateway import run as gateway_run
 
 
 def test_reload_runtime_env_preserves_config_max_turns(tmp_path: Path, monkeypatch) -> None:
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".kora"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump({"agent": {"max_turns": 9000}}),
@@ -40,7 +40,7 @@ def test_reload_runtime_env_preserves_config_max_turns(tmp_path: Path, monkeypat
 def test_reload_runtime_env_keeps_env_max_iterations_when_config_omits_key(
     tmp_path: Path, monkeypatch
 ) -> None:
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".kora"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text(yaml.safe_dump({"agent": {}}), encoding="utf-8")
     (hermes_home / ".env").write_text("HERMES_MAX_ITERATIONS=123\n", encoding="utf-8")

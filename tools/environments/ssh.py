@@ -129,7 +129,7 @@ class SSHEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def _ensure_remote_dirs(self) -> None:
-        """Create base ~/.hermes directory tree on remote in one SSH call."""
+        """Create base ~/.kora directory tree on remote in one SSH call."""
         base = f"{self._remote_home}/.hermes"
         dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
         cmd = self._build_ssh_command()
@@ -240,7 +240,7 @@ class SSHEnvironment(BaseEnvironment):
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""
         # Tar from / with the full path so archive entries preserve absolute
-        # paths (e.g. home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
+        # paths (e.g. home/user/.kora/skills/f.py), matching _pushed_hashes keys.
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         ssh_cmd = self._build_ssh_command()
         ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")

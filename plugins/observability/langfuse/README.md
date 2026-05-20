@@ -14,7 +14,7 @@ Or check the box in the interactive `hermes plugins` UI.
 
 ## Required credentials
 
-Set these in `~/.hermes/.env`:
+Set these in `~/.kora/.env`:
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...

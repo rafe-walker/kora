@@ -64,7 +64,7 @@ Both are free for the volumes a personal bot generates.
 
 After creation, open the SA, go to **Keys → Add Key → Create new key → JSON** and
 download the file. Save it somewhere only Hermes can read (e.g.,
-`~/.hermes/google-chat-sa.json`, `chmod 600`).
+`~/.kora/google-chat-sa.json`, `chmod 600`).
 
 :::caution There is NO "Chat Bot Caller" role
 A common mistake is to search for a Chat-specific IAM role and grant it at the
@@ -144,13 +144,13 @@ self-message filtering.
 
 ## Step 9: Configure Hermes
 
-Add the Google Chat section to `~/.hermes/.env`:
+Add the Google Chat section to `~/.kora/.env`:
 
 ```bash
 # Required
 GOOGLE_CHAT_PROJECT_ID=my-chat-bot-123
 GOOGLE_CHAT_SUBSCRIPTION_NAME=projects/my-chat-bot-123/subscriptions/hermes-chat-events-sub
-GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/home/you/.hermes/google-chat-sa.json
+GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=/home/you/.kora/google-chat-sa.json
 
 # Authorization — paste the emails of people allowed to talk to the bot
 GOOGLE_CHAT_ALLOWED_USERS=you@yourdomain.com,coworker@yourdomain.com
@@ -241,7 +241,7 @@ python -m gateway.platforms.google_chat_user_oauth \
     --client-secret /path/to/client_secret.json
 ```
 
-That writes `~/.hermes/google_chat_user_client_secret.json`. This is shared
+That writes `~/.kora/google_chat_user_client_secret.json`. This is shared
 infrastructure — it identifies the OAuth *app*, not any individual user. One
 file per host is enough no matter how many users authorize later.
 
@@ -259,7 +259,7 @@ Each user runs the flow once, in their own DM with the bot:
    into chat as `/setup-files <PASTED_URL>`. The bot exchanges it for a
    refresh token.
 
-The token lands at `~/.hermes/google_chat_user_tokens/<sanitized_email>.json`.
+The token lands at `~/.kora/google_chat_user_tokens/<sanitized_email>.json`.
 Subsequent file requests in that user's DM use *their* token, so the bot
 uploads as them and the message lands in their space.
 
@@ -276,7 +276,7 @@ on purpose.
 ### Multi-user behavior
 
 When the asker has no per-user token yet, the bot falls back to a legacy
-single-user token at `~/.hermes/google_chat_user_token.json` (if present from
+single-user token at `~/.kora/google_chat_user_token.json` (if present from
 a pre-multi-user install). When neither is available, the bot posts a clear
 text notice telling the asker to run `/setup-files`.
 
@@ -365,6 +365,6 @@ The auth code is single-use and short-lived (typically a few minutes). Send
 - **User OAuth scope**: the per-user attachment flow requests *only*
   `chat.messages.create` — the minimum that covers `media.upload` plus the
   follow-up `messages.create`. Tokens are persisted as plain JSON at
-  `~/.hermes/google_chat_user_tokens/<sanitized_email>.json` (filesystem
+  `~/.kora/google_chat_user_tokens/<sanitized_email>.json` (filesystem
   permissions are the protection — same model as the SA key file). Each
   token is owned by exactly one user; revoke is scoped to that user.

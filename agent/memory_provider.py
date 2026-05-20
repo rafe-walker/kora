@@ -66,7 +66,7 @@ class MemoryProvider(ABC):
 
         kwargs always include:
           - hermes_home (str): The active HERMES_HOME directory path. Use this
-            for profile-scoped storage instead of hardcoding ``~/.hermes``.
+            for profile-scoped storage instead of hardcoding ``~/.kora``.
           - platform (str): "cli", "telegram", "discord", "cron", etc.
 
         kwargs may also include:

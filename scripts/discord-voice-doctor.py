@@ -19,7 +19,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+HERMES_HOME = Path(os.getenv("HERMES_HOME", Path.home() / ".kora"))
 ENV_FILE = HERMES_HOME / ".env"
 
 OK = "\033[92m\u2713\033[0m"
@@ -176,7 +176,7 @@ def check_env_vars():
 
     # Load .env
     try:
-        from hermes_cli.env_loader import load_hermes_dotenv
+        from kora_cli.env_loader import load_hermes_dotenv
 
         load_hermes_dotenv(
             hermes_home=ENV_FILE.parent,

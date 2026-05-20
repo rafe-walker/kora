@@ -120,7 +120,7 @@ This is usually the best place to start.
 
 ### Environment file example
 
-Add to `~/.hermes/.env`:
+Add to `~/.kora/.env`:
 
 ```bash
 # Cloud STT options (local needs no key)

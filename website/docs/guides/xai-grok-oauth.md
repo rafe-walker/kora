@@ -53,7 +53,7 @@ hermes model
 hermes
 ```
 
-After the first login, credentials are stored under `~/.hermes/auth.json` and refreshed automatically before they expire.
+After the first login, credentials are stored under `~/.kora/auth.json` and refreshed automatically before they expire.
 
 ## Logging In Manually
 
@@ -98,7 +98,7 @@ See [OAuth over SSH / Remote Hosts](./oauth-over-ssh.md#browser-only-remote-clou
 
 1. Hermes opens your browser to `accounts.x.ai`.
 2. You sign in (or confirm your existing session) and approve access.
-3. xAI redirects back to Hermes and the tokens are saved to `~/.hermes/auth.json`.
+3. xAI redirects back to Hermes and the tokens are saved to `~/.kora/auth.json`.
 4. From then on, Hermes refreshes the access token in the background — you stay signed in until you `hermes auth remove xai-oauth` or revoke access from your xAI account settings.
 
 ## Checking Login Status
@@ -126,7 +126,7 @@ hermes config set model.provider xai-oauth
 
 ## Configuration Reference
 
-After login, `~/.hermes/config.yaml` will contain:
+After login, `~/.kora/config.yaml` will contain:
 
 ```yaml
 model:

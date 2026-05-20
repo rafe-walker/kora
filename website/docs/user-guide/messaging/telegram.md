@@ -97,7 +97,7 @@ Select **Telegram** when prompted. The wizard asks for your bot token and allowe
 
 ### Option B: Manual Configuration
 
-Add the following to `~/.hermes/.env`:
+Add the following to `~/.kora/.env`:
 
 ```bash
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
@@ -132,14 +132,14 @@ Recommended pattern:
 terminal:
   backend: docker
   docker_volumes:
-    - "/home/user/.hermes/cache/documents:/output"
+    - "/home/user/.kora/cache/documents:/output"
 ```
 
 Then:
 
 - write files inside Docker to `/output/...`
 - emit the **host-visible** path in `MEDIA:`, for example:
-  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+  `MEDIA:/home/user/.kora/cache/documents/report.txt`
 
 If you already have a `docker_volumes:` section, add the new mount to the same
 list. YAML duplicate keys silently override earlier ones.
@@ -175,7 +175,7 @@ For **cloud deployments** (Fly.io, Railway, Render, etc.), **webhook mode** is m
 
 ### Configuration
 
-Add the following to `~/.hermes/.env`:
+Add the following to `~/.kora/.env`:
 
 ```bash
 TELEGRAM_WEBHOOK_URL=https://my-app.fly.dev/telegram
@@ -245,7 +245,7 @@ The proxy applies to both the main Telegram connection and the fallback IP trans
 
 Use the `/sethome` command in any Telegram chat (DM or group) to designate it as the **home channel**. Scheduled tasks (cron jobs) deliver their results to this channel.
 
-You can also set it manually in `~/.hermes/.env`:
+You can also set it manually in `~/.kora/.env`:
 
 ```bash
 TELEGRAM_HOME_CHANNEL=-1001234567890
@@ -278,7 +278,7 @@ Voice messages you send on Telegram are automatically transcribed by Hermes's co
 
 #### Skipping STT: pass the raw audio file to the agent
 
-If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.hermes/config.yaml`:
+If you'd rather have the **agent itself** handle audio — for diarization, a custom transcription tool, or just archiving the recording — set `stt.enabled: false` in `~/.kora/config.yaml`:
 
 ```yaml
 stt:
@@ -288,7 +288,7 @@ stt:
 With STT disabled, the gateway still downloads the voice/audio attachment into Hermes's audio cache, but **does not transcribe it**. The agent receives the message with a marker like:
 
 ```
-[The user sent a voice message: /home/<user>/.hermes/cache/audio/<hash>.ogg]
+[The user sent a voice message: /home/<user>/.kora/cache/audio/<hash>.ogg]
 ```
 
 Your tools or skills can then read that path directly (e.g., hand it off to a local diarization pipeline, a richer transcription model, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
@@ -383,7 +383,7 @@ curl "http://127.0.0.1:8081/bot<YOUR_BOT_TOKEN>/getMe"
 
 ### Step 4: Point Hermes at the local server
 
-Add the URLs under `platforms.telegram.extra` in `~/.hermes/config.yaml`:
+Add the URLs under `platforms.telegram.extra` in `~/.kora/config.yaml`:
 
 ```yaml
 platforms:
@@ -409,7 +409,7 @@ Restart the gateway and look for a confirmation log line:
 
 ```bash
 hermes gateway restart
-grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.hermes/logs/gateway.log | tail
+grep -E "Using custom Telegram base_url|Using Telegram local_mode" ~/.kora/logs/gateway.log | tail
 ```
 
 ### Step 5: `local_mode` — file access on disk
@@ -438,10 +438,10 @@ If you see that, the cap-lift is working but the file-share isn't. Verify `ls -l
 Send the bot a voice note or audio file that's bigger than 20 MB. Tail the gateway log:
 
 ```bash
-tail -f ~/.hermes/logs/gateway.log | grep -iE "telegram|cache"
+tail -f ~/.kora/logs/gateway.log | grep -iE "telegram|cache"
 ```
 
-You should see a `[Telegram] Cached user voice at /home/<user>/.hermes/cache/audio/...` line and **no** "too large" rejection. Combined with `stt.enabled: false` (above), the path to the original audio file then lands in the agent's inbound message for downstream processing.
+You should see a `[Telegram] Cached user voice at /home/<user>/.kora/cache/audio/...` line and **no** "too large" rejection. Combined with `stt.enabled: false` (above), the path to the original audio file then lands in the agent's inbound message for downstream processing.
 
 ## Group Chat Usage
 
@@ -519,7 +519,7 @@ the sender-user allowlist.
 
 ### Example group trigger configuration
 
-Add this to `~/.hermes/config.yaml`:
+Add this to `~/.kora/config.yaml`:
 
 ```yaml
 telegram:
@@ -569,7 +569,7 @@ Before adding topics to your config, the user must **enable Topics mode** in the
 Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
 :::
 
-Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
+Add topics under `platforms.telegram.extra.dm_topics` in `~/.kora/config.yaml`:
 
 ```yaml
 platforms:
@@ -764,7 +764,7 @@ Send `/topic off` in the root DM. Hermes flips the row off, clears the chat's `(
 If you need to clean up by hand (e.g. a bulk reset across many chats), remove the rows directly:
 
 ```bash
-sqlite3 ~/.hermes/state.db \
+sqlite3 ~/.kora/state.db \
   "UPDATE telegram_dm_topic_mode SET enabled = 0 WHERE chat_id = '<your_chat_id>'; \
    DELETE FROM telegram_dm_topic_bindings WHERE chat_id = '<your_chat_id>';"
 ```
@@ -787,7 +787,7 @@ A team supergroup with forum topics for different workstreams:
 
 ### Configuration
 
-Add topic bindings under `platforms.telegram.extra.group_topics` in `~/.hermes/config.yaml`:
+Add topic bindings under `platforms.telegram.extra.group_topics` in `~/.kora/config.yaml`:
 
 ```yaml
 platforms:
@@ -855,7 +855,7 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 | `edit` (default) | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
-In `~/.hermes/config.yaml`:
+In `~/.kora/config.yaml`:
 
 ```yaml
 gateway:
@@ -1048,7 +1048,7 @@ In some restricted networks, `api.telegram.org` may resolve to an IP that is unr
 TELEGRAM_FALLBACK_IPS=149.154.167.220,149.154.167.221
 ```
 
-Or in `~/.hermes/config.yaml`:
+Or in `~/.kora/config.yaml`:
 
 ```yaml
 platforms:
@@ -1084,7 +1084,7 @@ export HTTPS_PROXY=http://proxy.example.com:8080
 hermes gateway
 ```
 
-Or add it to `~/.hermes/.env`:
+Or add it to `~/.kora/.env`:
 
 ```bash
 HTTPS_PROXY=http://proxy.example.com:8080
@@ -1155,7 +1155,7 @@ Numeric YAML keys are automatically normalized to strings.
 | Bot not responding at all | Verify `TELEGRAM_BOT_TOKEN` is correct. Check `hermes gateway` logs for errors. |
 | Bot responds with "unauthorized" | Your user ID is not in `TELEGRAM_ALLOWED_USERS`. Double-check with @userinfobot. |
 | Bot ignores group messages | Privacy mode is likely on. Disable it (Step 3) or make the bot a group admin. **Remember to remove and re-add the bot after changing privacy.** |
-| Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.hermes/.env`. |
+| Voice messages not transcribed | Verify STT is available: install `faster-whisper` for local transcription, or set `GROQ_API_KEY` / `VOICE_TOOLS_OPENAI_KEY` in `~/.kora/.env`. |
 | Voice replies are files, not bubbles | Install `ffmpeg` (needed for Edge TTS Opus conversion). |
 | Bot token revoked/invalid | Generate a new token via `/revoke` then `/newbot` or `/token` in BotFather. Update your `.env` file. |
 | Webhook not receiving updates | Verify `TELEGRAM_WEBHOOK_URL` is publicly reachable (test with `curl`). Ensure your platform/reverse proxy routes inbound HTTPS traffic from the URL's port to the local listen port configured by `TELEGRAM_WEBHOOK_PORT` (they do not need to be the same number). Ensure SSL/TLS is active — Telegram only sends to HTTPS URLs. Check firewall rules. |
@@ -1179,7 +1179,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Tap a button to answer, or tap **Other** to type a free-form response (the next message you send becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+Configure the response timeout via `agent.clarify_timeout` in `~/.kora/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
 ## Push notification volume
 
@@ -1190,7 +1190,7 @@ Telegram fires a push notification on every message the bot sends. For long agen
 | `important` (default) | Only **final responses**, **approval prompts**, and **slash-command confirmations** ring. Tool progress, streaming chunks, and status messages are delivered with `disable_notification=true`. |
 | `all` | Every outgoing message fires a push notification. Legacy behavior; opt in if you genuinely want to hear about every tool call. |
 
-Configure in `~/.hermes/config.yaml`:
+Configure in `~/.kora/config.yaml`:
 
 ```yaml
 display:

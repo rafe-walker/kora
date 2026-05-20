@@ -5,7 +5,7 @@ Provides PID-file based detection of whether the gateway daemon is running,
 used by send_message's check_fn to gate availability in the CLI.
 
 The PID file lives at ``{HERMES_HOME}/gateway.pid``.  HERMES_HOME defaults to
-``~/.hermes`` but can be overridden via the environment variable.  This means
+``~/.kora`` but can be overridden via the environment variable.  This means
 separate HERMES_HOME directories naturally get separate PID files — a property
 that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
@@ -19,7 +19,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from kora_constants import get_kora_home
 from typing import Any, Optional
 from utils import atomic_json_write
 
@@ -43,7 +43,7 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 def _get_pid_path() -> Path:
     """Return the path to the gateway PID file, respecting HERMES_HOME."""
-    home = get_hermes_home()
+    home = get_kora_home()
     return home / "gateway.pid"
 
 
@@ -51,7 +51,7 @@ def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
     """Return the path to the runtime gateway lock file."""
     if pid_path is not None:
         return pid_path.with_name(_GATEWAY_LOCK_FILENAME)
-    home = get_hermes_home()
+    home = get_kora_home()
     return home / _GATEWAY_LOCK_FILENAME
 
 
@@ -171,8 +171,8 @@ def _looks_like_gateway_process(pid: int) -> bool:
         return False
 
     patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
+        "kora_cli.main gateway",
+        "kora_cli/main.py gateway",
         "hermes gateway",
         "hermes-gateway",
         "gateway/run.py",
@@ -192,8 +192,8 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     # Normalize Windows backslashes so patterns match cross-platform.
     cmdline = " ".join(str(part) for part in argv).replace("\\", "/")
     patterns = (
-        "hermes_cli.main gateway",
-        "hermes_cli/main.py gateway",
+        "kora_cli.main gateway",
+        "kora_cli/main.py gateway",
         "hermes gateway",
         "gateway/run.py",
     )
@@ -766,13 +766,13 @@ _PLANNED_STOP_MARKER_TTL_S = 60
 
 def _get_takeover_marker_path() -> Path:
     """Return the path to the --replace takeover marker file."""
-    home = get_hermes_home()
+    home = get_kora_home()
     return home / _TAKEOVER_MARKER_FILENAME
 
 
 def _get_planned_stop_marker_path() -> Path:
     """Return the path to the intentional gateway stop marker file."""
-    home = get_hermes_home()
+    home = get_kora_home()
     return home / _PLANNED_STOP_MARKER_FILENAME
 
 

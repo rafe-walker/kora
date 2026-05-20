@@ -1,7 +1,7 @@
 """Tests for credential_pool .env fallback and auth credential_pool lookup.
 
 Covers the fix from #15914 / PR #15920:
-- _seed_from_env reads API keys from ~/.hermes/.env when not in os.environ
+- _seed_from_env reads API keys from ~/.kora/.env when not in os.environ
 - _resolve_api_key_provider_secret falls back to credential_pool when env vars are empty
 - env vars take priority over .env file (handled by get_env_value itself)
 - env vars take priority over credential pool (fallback only kicks in when env is empty)
@@ -20,7 +20,7 @@ def _make_pconfig(provider_id="deepseek", env_vars=None):
     Default provider_id is 'deepseek' because it's a real api_key provider
     in PROVIDER_REGISTRY (needed for _seed_from_env's generic path).
     """
-    from hermes_cli.auth import ProviderConfig
+    from kora_cli.auth import ProviderConfig
     return ProviderConfig(
         id=provider_id,
         name=provider_id.title(),
@@ -35,7 +35,7 @@ def isolated_hermes_home(tmp_path, monkeypatch):
 
     Also invalidates any cached get_env_value state by patching Path.home().
     """
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".kora"
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -52,13 +52,13 @@ def isolated_hermes_home(tmp_path, monkeypatch):
 
 
 def _write_env_file(home: Path, **kwargs) -> None:
-    """Write key=value pairs to ~/.hermes/.env."""
+    """Write key=value pairs to ~/.kora/.env."""
     lines = [f"{k}={v}" for k, v in kwargs.items()]
     (home / ".env").write_text("\n".join(lines) + "\n")
 
 
 class TestCredentialPoolSeedsFromDotEnv:
-    """_seed_from_env must read keys from ~/.hermes/.env, not just os.environ.
+    """_seed_from_env must read keys from ~/.kora/.env, not just os.environ.
 
     This is the load-bearing behaviour for the fix: when a user adds a key to
     .env mid-session or via a non-CLI entry point that doesn't run
@@ -109,14 +109,14 @@ class TestCredentialPoolSeedsFromDotEnv:
 
 
 class TestAuthResolvesFromDotEnv:
-    """_resolve_api_key_provider_secret must also read from ~/.hermes/.env."""
+    """_resolve_api_key_provider_secret must also read from ~/.kora/.env."""
 
     def test_key_from_dotenv_only(self, isolated_hermes_home):
         """Key in .env but not os.environ → _resolve returns it with the env var source."""
         _write_env_file(isolated_hermes_home, DEEPSEEK_API_KEY="sk-dotenv-resolve-789")
         assert "DEEPSEEK_API_KEY" not in os.environ
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from kora_cli.auth import _resolve_api_key_provider_secret
         key, source = _resolve_api_key_provider_secret(
             provider_id="deepseek",
             pconfig=_make_pconfig(),
@@ -138,7 +138,7 @@ class TestAuthCredentialPoolFallback:
         mock_pool.has_credentials.return_value = True
         mock_pool.peek.return_value = mock_entry
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from kora_cli.auth import _resolve_api_key_provider_secret
         with patch("agent.credential_pool.load_pool", return_value=mock_pool):
             key, source = _resolve_api_key_provider_secret(
                 provider_id="deepseek",
@@ -152,7 +152,7 @@ class TestAuthCredentialPoolFallback:
         mock_pool = MagicMock()
         mock_pool.has_credentials.return_value = False
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from kora_cli.auth import _resolve_api_key_provider_secret
         with patch("agent.credential_pool.load_pool", return_value=mock_pool):
             key, source = _resolve_api_key_provider_secret(
                 provider_id="deepseek",
@@ -167,7 +167,7 @@ class TestAuthCredentialPoolFallback:
         mock_pool = MagicMock()
         mock_pool.has_credentials.return_value = True
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from kora_cli.auth import _resolve_api_key_provider_secret
         with patch("agent.credential_pool.load_pool", return_value=mock_pool) as mp:
             key, source = _resolve_api_key_provider_secret(
                 provider_id="deepseek",
@@ -186,7 +186,7 @@ class TestAuthCredentialPoolFallback:
         mock_pool = MagicMock()
         mock_pool.has_credentials.return_value = True
 
-        from hermes_cli.auth import _resolve_api_key_provider_secret
+        from kora_cli.auth import _resolve_api_key_provider_secret
         with patch("agent.credential_pool.load_pool", return_value=mock_pool) as mp:
             key, source = _resolve_api_key_provider_secret(
                 provider_id="deepseek",

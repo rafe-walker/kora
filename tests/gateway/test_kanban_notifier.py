@@ -5,7 +5,7 @@ import pytest
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
+from kora_cli import kanban_db as kb
 
 
 class RecordingAdapter:
@@ -124,7 +124,7 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
 
 def test_kanban_db_path_is_test_isolated_from_real_home():
     hermes_home = Path(kb.kanban_home())
-    production_db = Path.home() / ".hermes" / "kanban.db"
+    production_db = Path.home() / ".kora" / "kanban.db"
     assert kb.kanban_db_path().resolve() != production_db.resolve()
 
     conn = kb.connect()

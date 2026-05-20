@@ -1,6 +1,6 @@
 """CLI entry point for the hermes-agent ACP adapter.
 
-Loads environment variables from ``~/.hermes/.env``, configures logging
+Loads environment variables from ``~/.kora/.env``, configures logging
 to write to stderr (so stdout is reserved for ACP JSON-RPC transport),
 and starts the ACP agent server.
 
@@ -13,12 +13,12 @@ Usage::
     hermes-acp
 """
 
-# IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
-# on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
+# IMPORTANT: kora_bootstrap must be the very first import — UTF-8 stdio
+# on Windows.  No-op on POSIX.  See kora_bootstrap.py for full rationale.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import kora_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    # Graceful fallback when hermes_bootstrap isn't registered in the venv
+    # Graceful fallback when kora_bootstrap isn't registered in the venv
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
@@ -29,7 +29,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from kora_constants import get_kora_home
 
 
 # Methods clients send as periodic liveness probes. They are not part of the
@@ -94,10 +94,10 @@ def _setup_logging() -> None:
 
 
 def _load_env() -> None:
-    """Load .env from HERMES_HOME (default ``~/.hermes``)."""
-    from hermes_cli.env_loader import load_hermes_dotenv
+    """Load .env from HERMES_HOME (default ``~/.kora``)."""
+    from kora_cli.env_loader import load_hermes_dotenv
 
-    hermes_home = get_hermes_home()
+    hermes_home = get_kora_home()
     loaded = load_hermes_dotenv(hermes_home=hermes_home)
     if loaded:
         for env_file in loaded:
@@ -127,7 +127,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--setup-browser",
         action="store_true",
-        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
+        help="Install agent-browser + Playwright Chromium into ~/.kora/node/ "
              "for browser tool support. Idempotent.",
     )
     parser.add_argument(
@@ -142,7 +142,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _print_version() -> None:
-    from hermes_cli import __version__ as hermes_version
+    from kora_cli import __version__ as hermes_version
 
     print(hermes_version)
 
@@ -155,7 +155,7 @@ def _run_check() -> None:
 
 
 def _run_setup() -> None:
-    from hermes_cli.main import main as hermes_main
+    from kora_cli.main import main as hermes_main
 
     old_argv = sys.argv[:]
     try:
@@ -189,7 +189,7 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 
     Returns 0 on success, 1 on failure.
     """
-    from hermes_cli.dep_ensure import ensure_dependency
+    from kora_cli.dep_ensure import ensure_dependency
 
     try:
         node_ok = ensure_dependency("node", interactive=not assume_yes)

@@ -19,7 +19,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
+    hermes_home = tmp_path / ".kora"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     yield hermes_home
@@ -219,7 +219,7 @@ def test_registry_defaults_to_hermes_home(tmp_path, monkeypatch):
     # registry default path must live inside that tree.
     r = NodeRegistry()
     r.add("x", "ws://x", "t")
-    expected = Path(tmp_path) / ".hermes" / "workspace" / "meetings" / "nodes.json"
+    expected = Path(tmp_path) / ".kora" / "workspace" / "meetings" / "nodes.json"
     assert expected.is_file()
 
 

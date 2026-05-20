@@ -27,7 +27,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Prefer a .venv in the current tree, fall back to the main checkout's venv
 # (useful for worktrees where we don't always duplicate the venv).
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.kora/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     VENV="$candidate"
     break
@@ -89,11 +89,11 @@ export PYTHONHASHSEED=0
 
 # ── Live-gateway test guard (developer machines) ────────────────────────────
 # If a system-wide hermes pytest_live_guard plugin is installed at
-# $HOME/.hermes/pytest_live_guard.py, force-load it here so every test run
+# $HOME/.kora/pytest_live_guard.py, force-load it here so every test run
 # from this script gets the protection regardless of which worktree is
 # checked out (in-tree tests/conftest.py guard may be missing on stale
 # branches). Harmless on CI / fresh machines that don't have the file.
-if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
+if [ -f "$HOME/.kora/pytest_live_guard.py" ]; then
   case ":${PYTHONPATH:-}:" in
     *":$HOME/.hermes:"*) ;;
     *) export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$HOME/.hermes" ;;
