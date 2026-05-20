@@ -181,13 +181,27 @@ def test_unpack_handles_null_content_inline():
 # ---------------------------------------------------------------------------
 
 
-def test_assert_kora_can_perform_stub_logs_deviation_id(caplog):
-    """The stub always allows but logs the deviation ID for grep."""
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.tools.iso_node"):
-        assert_kora_can_perform("cap_test")
-    messages = [r.getMessage() for r in caplog.records]
-    assert any("D-kr3-st1-capability-check-deferred" in m for m in messages)
-    assert any("cap_test" in m for m in messages)
+def test_assert_kora_can_perform_passes_for_granted_capability():
+    """KR-6: the real check passes silently for capabilities Kora holds."""
+    # cap_write_agent_scratchpad is granted to Kora per the C2 mirror.
+    # No raise, no log — silent pass.
+    assert_kora_can_perform("cap_write_agent_scratchpad") is None
+    assert_kora_can_perform("cap_sea_create") is None
+
+
+def test_assert_kora_can_perform_raises_for_denied_capability():
+    """KR-6: denied caps raise CapabilityDeniedError (was: silent stub log)."""
+    from plugins.memory.isokron.capability_check import CapabilityDeniedError
+
+    with pytest.raises(CapabilityDeniedError) as excinfo:
+        assert_kora_can_perform("cap_override_security_or_policy_verdict")
+    assert excinfo.value.capability == "cap_override_security_or_policy_verdict"
+
+
+def test_assert_kora_can_perform_raises_keyerror_for_unknown_cap():
+    """KR-6: unknown caps fail-loud (programmer error)."""
+    with pytest.raises(KeyError):
+        assert_kora_can_perform("cap_does_not_exist_anywhere")
 
 
 # ---------------------------------------------------------------------------

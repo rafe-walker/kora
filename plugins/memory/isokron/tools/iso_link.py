@@ -45,7 +45,8 @@ from ..relationlink import (
     read_relationlink_for_node,
     traverse_relationlink,
 )
-from .iso_node import NODE_KINDS, assert_kora_can_perform
+from ..capability_check import CapabilityDeniedError, assert_kora_can_perform
+from .iso_node import NODE_KINDS
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..provider import IsoKronMemoryProvider
@@ -412,11 +413,24 @@ def handle_iso_link_tool_call(
     tool_name: str,
     args: Dict[str, Any],
 ) -> str:
-    """Route a tool call to the right ``iso_link_*`` handler."""
+    """Route a tool call to the right ``iso_link_*`` handler.
+
+    Mirrors the ``iso_node`` dispatcher's CapabilityDeniedError catch
+    so a denied capability surfaces as a structured envelope rather
+    than a runtime crash.
+    """
     handler = _HANDLERS.get(tool_name)
     if handler is None:
         raise NotImplementedError(
             f"Provider isokron does not handle tool {tool_name!r}"
         )
-    result = handler(provider, args)
+    try:
+        result = handler(provider, args)
+    except CapabilityDeniedError as exc:
+        result = {
+            "ok": False,
+            "denied": True,
+            "capability": exc.capability,
+            "reason": exc.reason,
+        }
     return json.dumps(result, default=str)

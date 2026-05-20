@@ -321,17 +321,21 @@ def test_round_trip_iso_link_list_for_node_envelope():
         ("iso_link_list_for_node", {"entity_id": "a"}),
     ],
 )
-def test_every_iso_tool_logs_capability_stub_deviation(caplog, tool, args):
-    """The capability stub fires + logs D-kr3-st1 on every iso_* tool call."""
+def test_every_iso_tool_passes_capability_check_for_granted_caps(tool, args):
+    """KR-6: every iso_* tool's gating capability is in Kora's granted set
+    per the C2 mirror, so the real check passes silently — no denial
+    envelope, no exception. (KR-3 ST1 asserted log-deviation; KR-6
+    flips to assert no-deny.)"""
     provider, _conn = _make_provider()
-    with caplog.at_level(
-        logging.WARNING, logger="plugins.memory.isokron.tools.iso_node"
-    ):
-        provider.handle_tool_call(tool, args)
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any(
-        "D-kr3-st1-capability-check-deferred" in m for m in msgs
-    ), f"{tool} did not log the D-kr3-st1 deviation"
+    raw = provider.handle_tool_call(tool, args)
+    decoded = json.loads(raw)
+    # No capability-denial envelope. ``ok`` may be False for other
+    # reasons (deferred-write, missing required arg, etc.) — that's
+    # fine; we're only asserting the capability check didn't fire.
+    assert decoded.get("denied") is not True, (
+        f"{tool} surfaced a capability denial — but its required cap "
+        f"should be in Kora's granted set per the C2 mirror"
+    )
 
 
 # ---------------------------------------------------------------------------
