@@ -17,6 +17,41 @@ Format:
 
 ## Open
 
+### D-kr2-st4-no-chain-emit-mcp-tool
+
+- **Bucket**: KR-2 ST4 (chain event emission + recent events read + finalize)
+- **Why**: Spec § ST4 § 1 mandates chain events go through a Sea MCP
+  tool (working name `kora__append_event`) — direct INSERT into
+  `hivex_foundation.event_log` is forbidden because it would skip the
+  substrate's `_emit_chain_event` SECDEF (which sets `prev_event_hash` /
+  `this_event_hash` to maintain chain witness integrity). The Sea MCP
+  server on substrate main `28ff4f78` exposes only
+  `kora__propose_convention`, `kora__read_escalation_queue`,
+  `kora__propose_policy_change` — no append-event tool. Same pattern
+  as the ST3 scratchpad-write deferral.
+- **Closes when**: A Sea MCP append-event tool ships (working name
+  `kora__append_event`; PM coordinates with substrate-team / files
+  the substrate dispatch — likely K-9 on CC#1's lane, queued behind
+  K-7 + K-8). When it lands, `events.emit_kora_event` body switches
+  from `raise ChainEventEmitNotAvailableError()` to
+  `mcp_client.invoke('kora__append_event', ...)`. Caller signature
+  stays unchanged — `provider._attempt_chain_event_emit` and every
+  lifecycle hook that uses it (`sync_turn`, `on_memory_write`,
+  `on_session_end`, `on_delegation`) keep working without refactor.
+- **Guarded by**:
+  - `plugins/memory/isokron/events.py` — top-of-module `[kora.isokron.todo]`
+    tag; `ChainEventEmitNotAvailableError` carries the deviation ID in
+    every raised message.
+  - `IsoKronMemoryProvider._attempt_chain_event_emit` — catches
+    `ChainEventEmitNotAvailableError` + logs a one-line WARNING
+    tagged with the deviation ID and the event_type that was skipped.
+    Operators grep `D-kr2-st4-no-chain-emit-mcp-tool` in logs.
+  - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
+    chain event deferral notice.
+  - `tests/plugins/memory/test_events.py` —
+    `test_emit_kora_event_raises_deferred_write_error` asserts the
+    error message + tag stay correct.
+
 ### D-kr2-st3-no-scratchpad-write-mcp-tool
 
 - **Bucket**: KR-2 ST3 (Scratchpad reads + writes)

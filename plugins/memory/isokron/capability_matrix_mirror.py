@@ -115,6 +115,7 @@ KORA_BROADER_CAPABILITIES_KORA_COLUMN: dict[str, bool] = {
     # Operator-direct admin caps (operator-ONLY)
     "cap_operator_approve_policy_change": False,
     "cap_operator_bless_convention": False,
+    "cap_unbless_convention": False,  # operator-only un-bless path
     "cap_operator_ack_escalation": False,
     "cap_operator_update_policy": False,
 }

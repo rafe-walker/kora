@@ -206,37 +206,43 @@ def test_env_var_expansion_missing_leaves_literal(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "method, args, kwargs",
-    [
-        # ST2 implemented: system_prompt_block, on_turn_start (reads).
-        # ST2 no-op'd: prefetch, queue_prefetch (ABC defaults).
-        # ST3 implemented: sync_turn, on_memory_write (deferred-write
-        #   surface; ScratchpadWriteNotAvailableError caught + logged).
-        # Remaining stubs target ST4 / KR-3.
-        ("handle_tool_call", ("t", {}), {}),
-        ("on_session_end", ([],), {}),
-        ("on_session_switch", ("new-id",), {"reset": True}),
-        ("on_pre_compress", ([],), {}),
-        ("on_delegation", ("task", "result"), {"child_session_id": "c"}),
-        ("save_config", ({"key": "val"}, "/tmp/kora-home"), {}),
-    ],
-)
-def test_stub_method_raises_with_rule6_message(method, args, kwargs):
-    """Each remaining stub raises NotImplementedError tagged ``[kora.isokron.todo]``."""
+def test_no_stub_methods_remain_after_st4():
+    """KR-2 ST4 close-out: every ABC method has a real implementation.
+
+    ``handle_tool_call`` inherits the ABC default which raises a clear
+    error when invoked with an unsupported tool name — that's the
+    correct behavior for a no-tools provider (``get_tool_schemas``
+    returns ``[]``) and is verified separately in
+    ``test_handle_tool_call_unsupported_tool_raises_with_provider_name``.
+    All other ABC methods return normally.
+    """
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
-    fn = getattr(provider, method)
+    provider.initialize(session_id="t-st4-stubcheck")
+    try:
+        # None of these should raise NotImplementedError now.
+        assert provider.prefetch("q", session_id="s") == ""
+        assert provider.queue_prefetch("q", session_id="s") is None
+        assert provider.on_pre_compress([]) == ""
+        # save_config no-op:
+        assert provider.save_config({"k": "v"}, "/tmp/kora-home") is None
+        # Lifecycle hooks with no workspace_id resolution path will
+        # log debug and return — no exception:
+        provider.on_session_switch("new-sess", reset=False)
+    finally:
+        provider.shutdown()
+
+
+def test_handle_tool_call_unsupported_tool_raises_with_provider_name():
+    """handle_tool_call inherits the ABC default since provider has no tools."""
+    from plugins.memory.isokron.provider import IsoKronMemoryProvider
+
+    provider = IsoKronMemoryProvider(config=_minimal_config())
     with pytest.raises(NotImplementedError) as excinfo:
-        fn(*args, **kwargs)
-    assert "[kora.isokron.todo]" in str(excinfo.value), (
-        f"{method} missing Rule-6 todo tag: {excinfo.value}"
-    )
-    msg = str(excinfo.value)
-    assert any(tag in msg for tag in ("ST3", "ST4", "KR-3")), (
-        f"{method} stub message missing forward-target tag: {msg}"
-    )
+        provider.handle_tool_call("some_tool_name_kr_3_will_add", {})
+    assert "isokron" in str(excinfo.value)
+    assert "some_tool_name_kr_3_will_add" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
