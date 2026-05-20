@@ -17,6 +17,31 @@ Format:
 
 ## Open
 
+### D-kr3-st1-capability-check-deferred
+
+- **Bucket**: KR-3 ST1 (`iso_node_*` tool family)
+- **Why**: Each `iso_node_*` tool handler is supposed to gate its
+  invocation through a Python mirror of the TS-side
+  `assertKoraCanPerform(actor_kind, capability)` (Plan 04 helper at
+  `packages/sea-mcp-server/src/capability-matrix.ts:657`). That
+  Python mirror ships in KR-6 as part of the Constitution pre-screen
+  middleware. Spec § ST1 § "Capability check" explicitly pre-authorizes
+  this deferral: "if the Python helper isn't ready, BUILD_DEVIATIONS
+  + use a stub that always allows (with verbatim Rule-6 log
+  'BUILD_DEVIATIONS D-kr3-st1-capability-check-deferred — wires in KR-6')".
+- **Closes when**: KR-6 ships the Python mirror — at that point
+  `tools/iso_node.py:assert_kora_can_perform` body switches from
+  "no-op + log" to the real check, and the per-tool capability map
+  `_TOOL_CAPABILITIES` becomes the gating source of truth.
+- **Guarded by**:
+  - `plugins/memory/isokron/tools/iso_node.py` —
+    `assert_kora_can_perform` logs a WARNING tagged with the
+    deviation ID on every call so operators can grep how often
+    the stub is being relied on.
+  - `tests/plugins/memory/test_iso_node_tools.py` —
+    `test_assert_kora_can_perform_stub_logs_deviation_id` asserts
+    the log line carries the deviation ID + the capability name.
+
 ### D-kr2-st4-no-chain-emit-mcp-tool
 
 - **Bucket**: KR-2 ST4 (chain event emission + recent events read + finalize)
