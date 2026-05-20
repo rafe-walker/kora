@@ -209,12 +209,11 @@ def test_env_var_expansion_missing_leaves_literal(monkeypatch):
 @pytest.mark.parametrize(
     "method, args, kwargs",
     [
-        ("system_prompt_block", (), {}),
-        ("prefetch", ("q",), {"session_id": "s"}),
-        ("queue_prefetch", ("q",), {"session_id": "s"}),
+        # ST2 implemented: system_prompt_block, on_turn_start (reads).
+        # ST2 no-op'd: prefetch, queue_prefetch (ABC defaults).
+        # The remaining stubs raise per Rule-6 with the ST3/ST4 marker.
         ("sync_turn", ("u", "a"), {"session_id": "s"}),
         ("handle_tool_call", ("t", {}), {}),
-        ("on_turn_start", (1, "msg"), {}),
         ("on_session_end", ([],), {}),
         ("on_session_switch", ("new-id",), {"reset": True}),
         ("on_pre_compress", ([],), {}),
@@ -224,7 +223,7 @@ def test_env_var_expansion_missing_leaves_literal(monkeypatch):
     ],
 )
 def test_stub_method_raises_with_rule6_message(method, args, kwargs):
-    """Every ST1 stub raises NotImplementedError tagged ``[kora.isokron.todo]``."""
+    """Each remaining stub raises NotImplementedError tagged ``[kora.isokron.todo]``."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
@@ -234,7 +233,12 @@ def test_stub_method_raises_with_rule6_message(method, args, kwargs):
     assert "[kora.isokron.todo]" in str(excinfo.value), (
         f"{method} missing Rule-6 todo tag: {excinfo.value}"
     )
-    assert "KR-2" in str(excinfo.value)
+    # ST2 stubs target ST3 or KR-3. (ST1 used "KR-2" as the marker;
+    # ST2 transitions some to ST3 / KR-3.)
+    msg = str(excinfo.value)
+    assert any(tag in msg for tag in ("ST3", "ST4", "KR-3")), (
+        f"{method} stub message missing forward-target tag: {msg}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,22 +278,8 @@ def test_config_schema_carries_all_six_fields():
 # ---------------------------------------------------------------------------
 
 
-def test_pg_pool_accessor_raises_in_st1():
-    from plugins.memory.isokron.provider import IsoKronMemoryProvider
-
-    provider = IsoKronMemoryProvider(config=_minimal_config())
-    provider.initialize(session_id="s1")
-    try:
-        connection = provider._connection
-        assert connection is not None
-        with pytest.raises(NotImplementedError) as excinfo:
-            connection.pg_pool()
-        assert "KR-2 ST2" in str(excinfo.value)
-    finally:
-        provider.shutdown()
-
-
-def test_mcp_client_accessor_raises_in_st1():
+def test_mcp_client_accessor_raises_until_st3():
+    """MCP client accessor still raises in ST2; ST3 wires writes."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
 
     provider = IsoKronMemoryProvider(config=_minimal_config())
