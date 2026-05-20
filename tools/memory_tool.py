@@ -2,6 +2,17 @@
 """
 Memory Tool Module - Persistent Curated Memory
 
+.. deprecated:: KR-3 ST3
+   The flat ``memory`` tool (file-backed MEMORY.md / USER.md) is
+   superseded by the IsoKron typed-graph tool family
+   (``iso_node_*`` / ``iso_link_*`` in
+   ``plugins/memory/isokron/tools/``). The flat tool stays loadable
+   for one-release runway so existing test fixtures + cron jobs don't
+   break; every call emits a deprecation WARNING tagged
+   ``[kora.memory.deprecated]`` so operators can grep usage and plan
+   migration. Removal targeted KR-7 or later (cohesively with
+   Constitution pre-screen middleware ship).
+
 Provides bounded, file-backed memory that persists across sessions. Two stores:
   - MEMORY.md: agent's personal notes and observations (environment facts, project
     conventions, tool quirks, things learned)
@@ -472,8 +483,27 @@ def memory_tool(
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
 
+    .. deprecated:: KR-3 ST3
+       Use the IsoKron typed-graph tools instead — ``iso_node_create``
+       for new entries, ``iso_node_supersede`` for revisions,
+       ``iso_node_search`` for retrieval. The flat ``memory`` surface
+       stays loadable for one-release runway (so existing cron jobs +
+       test fixtures don't break) but every call logs a deprecation
+       WARNING tagged ``[kora.memory.deprecated]``. Removal targeted
+       KR-7 or later.
+
     Returns JSON string with results.
     """
+    # Rule-6 deprecation log — fires on every call so operators can
+    # grep [kora.memory.deprecated] in logs to see where migrations
+    # to iso_node_* are still pending.
+    logger.warning(
+        "[kora.memory.deprecated] Hermes flat memory.%s called — "
+        "IsoKron typed-graph tools (iso_node_create / iso_node_supersede / "
+        "iso_node_search) are richer. Flat memory.* removal targeted "
+        "KR-7+. See plugins/memory/isokron/ for the typed-graph surface.",
+        action,
+    )
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 

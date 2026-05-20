@@ -981,11 +981,43 @@ def _assemble_system_prompt_block(
         f"{len(capabilities.granted) + len(capabilities.denied)}):",
         cap_bullets,
         "",
+        _render_typed_graph_tool_surface(),
+        "",
         _render_recent_activity(recent_events),
         "",
         RULE_6_HONEST_LABEL,
     ]
     return "\n".join(blocks)
+
+
+def _render_typed_graph_tool_surface() -> str:
+    """Render the §6a 'Typed-graph tools' section.
+
+    KR-3 ST3 extension. The model sees the 7-tool surface with one-line
+    guidance + the Hermes-deprecation note so it knows to prefer the
+    typed-graph tools over the flat ``memory.*`` family.
+
+    Numbered 6a rather than renumbering everything because
+    ``test_reads.py`` + ``test_provider_end_to_end.py`` (already on
+    main) assert ``§6 Recent kora.* activity`` — keeping 6a keeps
+    those tests stable while the new content lands.
+    """
+    # Tool names sourced from the combined typed-graph schemas so any
+    # future rename or addition flows through naturally.
+    from .tools import ISO_TYPED_GRAPH_TOOL_SCHEMAS
+
+    names = [s["name"] for s in ISO_TYPED_GRAPH_TOOL_SCHEMAS]
+    name_line = ", ".join(names)
+    return (
+        "§6a Typed-graph tools — your working memory is the IsoKron graph.\n"
+        f"You have {len(names)} tools: {name_line}.\n"
+        "\n"
+        "Each node has a typed kind (one of 18 canonical IsoKron entity\n"
+        "kinds) — prefer the most specific kind over Concept.\n"
+        "Edges are typed — declare relationships when you observe them.\n"
+        "Hermes' flat memory.set / memory.add / memory.replace / "
+        "memory.remove tool is deprecated; iso_node_* is richer."
+    )
 
 
 # Number of recent events to surface in the §6 prompt section. Keeps
