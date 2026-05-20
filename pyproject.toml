@@ -120,6 +120,10 @@ sms = ["aiohttp==3.13.3"]
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0"]
 acp = ["agent-client-protocol==0.9.0"]
+# IsoKron memory provider (KR-2). Hybrid architecture: asyncpg for reads
+# against the IsoKron Postgres substrate, mcp client for writes through the
+# Sea MCP server (Plan 06's kora__* tool surface).
+isokron = ["asyncpg==0.31.0", "mcp==1.26.0", "blake3==1.0.7"]
 # mistral: extra REMOVED 2026-05-12 — `mistralai` PyPI project quarantined
 # after malicious 2.4.6 release (Mini Shai-Hulud worm). Every version of
 # `mistralai` returns 404 on PyPI right now, so any pin we'd write is

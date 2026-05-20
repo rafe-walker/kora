@@ -1,0 +1,14 @@
+name: isokron
+version: 0.1.0
+description: "IsoKron memory provider — Kora's substrate-backed MemoryProvider. Hybrid architecture: asyncpg reads against the IsoKron Postgres substrate, MCP writes through the Sea MCP server (Plan 06 kora__* tool surface). KR-2 ST1 ships a skeleton; ST2-ST4 land real reads/writes."
+pip_dependencies:
+  - asyncpg
+  - mcp
+  - blake3
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_session_switch
+  - sync_turn
+  - on_memory_write
+  - on_delegation
