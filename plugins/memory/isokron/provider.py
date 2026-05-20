@@ -11,8 +11,12 @@ no ``NotImplementedError`` stubs remain. Surface summary:
 * **Policy registry** — ``read_kora_policy_registry`` against
   ``kora_policy_registry`` with RLS GUC; 31-row sanity warn-on-drift (ST2).
 * **Scratchpad** — own + cross-agent reads against
-  ``kronicle.agent_scratchpad_entries`` (ST3). Writes deferred behind
-  ``ScratchpadWriteNotAvailableError`` until K-8 ships the Sea MCP tool.
+  ``kronicle.agent_scratchpad_entries`` (ST3); writes via KR-8's
+  ``kora__write_agent_scratchpad`` MCP call (K-8 shipped
+  ``bd165eb2``). Substrate-side failures surface as
+  ``IsoKronMCPInvocationError`` logged at ERROR; lifecycle hooks
+  catch + log so the session stays alive. BUILD_DEVIATIONS
+  ``D-kr2-st3`` closed in KR-8.
 * **Recent chain events** — ``read_recent_kora_events`` against
   ``hivex_foundation.event_log`` (tenant_id-keyed; JOIN tenant on
   clerk_org_id) filtered ``LIKE 'kora.%'`` (ST4).
@@ -67,7 +71,6 @@ from .reads import (
 from .scratchpad import (
     ScratchpadEntry,
     ScratchpadKind,
-    ScratchpadWriteNotAvailableError,
     VisibilityScope,
     read_cross_agent_scratchpad,
     read_own_scratchpad,
@@ -653,35 +656,68 @@ class IsoKronMemoryProvider(MemoryProvider):
         content: str,
         origin: str,
     ) -> None:
-        """Common write-attempt path: catch the deferred-write error gracefully.
+        """Write a scratchpad entry via the Sea MCP tool.
 
-        Invalidates the own_scratchpad cache for this workspace whether
-        or not the write succeeds. When the MCP tool lands, this code
-        path keeps working without changes — only ``write_scratchpad_entry``
-        body changes.
+        KR-8 swap: routes through the KR-7a-wired ``IsoKronMCPClient``
+        to ``kora__write_agent_scratchpad``. Substrate-side failures
+        (``IsoKronMCPInvocationError``) get logged at ERROR — same
+        operator-visibility posture as KR-7's chain-emit. Session
+        lifecycle hooks (``sync_turn`` / ``on_memory_write`` /
+        ``on_delegation``) keep running so a single bad write doesn't
+        crash the session. Operators grep
+        ``[kora.scratchpad.write.failed]`` in logs to find dropped
+        scratchpad entries.
+
+        Successful writes invalidate the per-workspace own-scratchpad
+        cache so the next read re-fetches.
         """
         if self._connection is None:
             raise RuntimeError(
                 f"[kora.isokron] _attempt_scratchpad_write ({origin}) before construct"
             )
+        try:
+            mcp_client = self._connection.get_mcp_client()
+        except Exception as exc:
+            logger.error(
+                "[kora.scratchpad.write.failed] %s — MCP client unavailable: %s",
+                origin,
+                exc,
+            )
+            return
         # Pre-invalidate so a successful write isn't masked by stale cache;
         # a failed write means there's no fresh data to hide either, so
         # invalidation is safe in both branches.
         self._own_scratchpad_cache.invalidate(workspace_id)
         try:
-            self._connection.submit_and_wait(
+            entry_id = self._connection.submit_and_wait(
                 write_scratchpad_entry(
                     workspace_id=workspace_id,
                     scratchpad_kind=scratchpad_kind,
                     visibility_scope=visibility_scope,
                     content=content,
-                    mcp_client=None,  # ST3 deferred; ST4 wires the MCP client
+                    mcp_client=mcp_client,
                 ),
                 timeout=10.0,
             )
-        except ScratchpadWriteNotAvailableError as exc:
-            logger.warning(
-                "[kora.isokron] %s scratchpad write skipped — %s",
+            logger.info(
+                "[kora.scratchpad.write] %s → scratchpad_entry_id=%s",
+                origin,
+                entry_id,
+            )
+        except IsoKronMCPInvocationError as exc:
+            # Same posture as KR-7's chain-emit: substrate-side failure
+            # is operator-visibility-worthy. Log at ERROR; sessions
+            # continue. Lifecycle hooks won't crash on a single bad write.
+            logger.error(
+                "[kora.scratchpad.write.failed] %s — %s",
+                origin,
+                exc,
+            )
+        except Exception as exc:
+            # Defensive: transport reset, timeout, unexpected response
+            # shape — same error-log-but-continue treatment.
+            logger.error(
+                "[kora.scratchpad.write.failed] %s — unexpected: %s",
                 origin,
                 exc,
             )

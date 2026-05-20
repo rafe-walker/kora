@@ -49,16 +49,50 @@ WORKSPACE_ID = "org_test_iso_node"
 class _FakeProviderConnection:
     """Replaces IsoKronConnection in tool tests.
 
-    ``submit_and_wait`` runs the coroutine via ``asyncio.run`` so the
-    deferred-error path surfaces exactly as in production.
+    Exposes ``get_mcp_client()`` for KR-8 + KR-7 swaps. ``submit_and_wait``
+    runs the coroutine via ``asyncio.run`` so substrate-side errors
+    surface exactly as in production.
     """
 
-    def __init__(self):
+    def __init__(self, *, mcp_client=None):
         self.submitted: list = []
+        self._mcp_client = mcp_client or _FakeMcpClient()
+
+    def get_mcp_client(self):
+        return self._mcp_client
 
     def submit_and_wait(self, coro, *, timeout: float = 10.0):
         self.submitted.append(coro)
         return asyncio.run(coro)
+
+
+class _FakeMcpClient:
+    """Default fake — returns canonical-shape success for the K-7/K-8/K-9
+    tools that iso_node + iso_link handlers hit."""
+
+    def __init__(self, *, invoke_result=None, invoke_raises=None):
+        self.invoke_calls: list[tuple[str, dict]] = []
+        self._invoke_result = invoke_result
+        self._invoke_raises = invoke_raises
+        self._counter = 0
+
+    async def invoke(self, tool_name: str, args: dict):
+        self.invoke_calls.append((tool_name, dict(args)))
+        if self._invoke_raises is not None:
+            raise self._invoke_raises
+        if self._invoke_result is not None:
+            return self._invoke_result
+        self._counter += 1
+        if tool_name == "kora__write_agent_scratchpad":
+            return {
+                "scratchpad_entry_id": f"spe-{self._counter:03d}",
+                "approved_event_id": f"evt-{self._counter:03d}",
+            }
+        if tool_name == "kora__append_event":
+            return {"event_id": f"evt-{self._counter:03d}"}
+        if tool_name == "kora__read_kora_capability_row":
+            return {"capability_matrix": {"cap_write_agent_scratchpad": True}}
+        raise AssertionError(f"unexpected tool {tool_name!r}")
 
 
 def _make_provider(
@@ -66,6 +100,7 @@ def _make_provider(
     workspace_id: str = WORKSPACE_ID,
     own: List[ScratchpadEntry] | None = None,
     cross: List[ScratchpadEntry] | None = None,
+    mcp_client=None,
 ):
     """Build a provider with stubbed reads + fake connection."""
     from plugins.memory.isokron.provider import IsoKronMemoryProvider
@@ -77,7 +112,7 @@ def _make_provider(
             "default_workspace_id": workspace_id,
         }
     )
-    fake_conn = _FakeProviderConnection()
+    fake_conn = _FakeProviderConnection(mcp_client=mcp_client)
     setattr(provider, "_connection", fake_conn)
 
     # Replace the sync read accessors with stubs returning whatever the
@@ -209,25 +244,55 @@ def test_assert_kora_can_perform_raises_keyerror_for_unknown_cap():
 # ---------------------------------------------------------------------------
 
 
-def test_iso_node_create_returns_deferred_payload(caplog):
-    """The deferred scratchpad write surfaces as a structured JSON envelope."""
-    provider, _conn = _make_provider()
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron"):
-        result = handle_iso_node_tool_call(
-            provider,
-            "iso_node_create",
-            {
-                "node_kind": "Decision",
-                "title": "Test",
-                "content_summary": "Body",
-                "cross_agent_dereferenceable": False,
-            },
+def test_iso_node_create_returns_ok_envelope_with_substrate_entry_id():
+    """KR-8: scratchpad write succeeds via MCP; entry_id returned to model."""
+    provider, conn = _make_provider()
+    result = handle_iso_node_tool_call(
+        provider,
+        "iso_node_create",
+        {
+            "node_kind": "Decision",
+            "title": "Test",
+            "content_summary": "Body",
+            "cross_agent_dereferenceable": False,
+        },
+    )
+    decoded = json.loads(result)
+    assert decoded["ok"] is True
+    # The fake's counter assigns spe-001 on first invoke.
+    assert decoded["entry_id"] == "spe-001"
+    # MCP tool was invoked with the expected shape.
+    assert len(conn._mcp_client.invoke_calls) == 1
+    tool_name, args = conn._mcp_client.invoke_calls[0]
+    assert tool_name == "kora__write_agent_scratchpad"
+    assert args["scratchpad_kind"] == "reasoning_trail"
+    assert args["visibility_scope"] == "agent_private"
+
+
+def test_iso_node_create_substrate_error_surfaces_structured_envelope():
+    """IsoKronMCPInvocationError flips into {'ok': False, 'substrate_error': True, ...}."""
+    from plugins.memory.isokron.mcp_client import IsoKronMCPInvocationError
+
+    error_client = _FakeMcpClient(
+        invoke_raises=IsoKronMCPInvocationError(
+            "kora__write_agent_scratchpad", "cap_write_agent_scratchpad denied"
         )
+    )
+    provider, _conn = _make_provider(mcp_client=error_client)
+    result = handle_iso_node_tool_call(
+        provider,
+        "iso_node_create",
+        {
+            "node_kind": "Decision",
+            "title": "Test",
+            "content_summary": "Body",
+        },
+    )
     decoded = json.loads(result)
     assert decoded["ok"] is False
-    assert decoded["deferred"] is True
-    assert decoded["deviation_id"] == "D-kr2-st3-no-scratchpad-write-mcp-tool"
-    assert "[kora.isokron.todo]" in decoded["message"]
+    assert decoded["substrate_error"] is True
+    assert decoded["tool_name"] == "kora__write_agent_scratchpad"
+    assert "denied" in decoded["message"]
 
 
 def test_iso_node_create_rejects_invalid_node_kind():
@@ -397,6 +462,8 @@ def test_iso_node_search_cross_agent_only_includes_other_actors():
 
 
 def test_iso_node_supersede_inherits_node_kind_from_original():
+    """KR-8: write succeeds via MCP; inherited node_kind is packed into
+    the new entry's content_inline header."""
     original = _entry(entry_id="orig-1", node_kind="Pattern", title="old-title")
     provider, conn = _make_provider(own=[original])
     result = handle_iso_node_tool_call(
@@ -409,15 +476,21 @@ def test_iso_node_supersede_inherits_node_kind_from_original():
         },
     )
     decoded = json.loads(result)
-    # Write defers like iso_node_create — but it must NOT short-circuit
-    # before resolving the original (otherwise the new entry would lose
-    # its inherited node_kind when the substrate tool lands).
-    assert decoded["ok"] is False
-    assert decoded["deferred"] is True
-    assert decoded["deviation_id"] == "D-kr2-st3-no-scratchpad-write-mcp-tool"
-    # The defer happened during the write attempt — meaning the original
-    # lookup succeeded + the packing happened (a coroutine was submitted).
-    assert len(conn.submitted) == 1
+    assert decoded["ok"] is True
+    assert decoded["entry_id"] == "spe-001"
+    # The new entry's content_inline header carries Pattern (inherited).
+    invokes = [c for c in conn._mcp_client.invoke_calls if c[0] == "kora__write_agent_scratchpad"]
+    assert len(invokes) == 1
+    _, args = invokes[0]
+    assert "node_kind: Pattern" in args["content_inline"]
+    # Supersession reason carried in the body.
+    assert "Reason: learned more" in args["content_inline"]
+    # A kora.node.superseded emit also fired post-write.
+    emit_calls = [c for c in conn._mcp_client.invoke_calls if c[0] == "kora__append_event"]
+    assert len(emit_calls) == 1
+    _, emit_args = emit_calls[0]
+    assert emit_args["event_type"] == "kora.node.superseded"
+    assert emit_args["payload"]["new_entry_id"] == "spe-001"
 
 
 def test_iso_node_supersede_errors_when_original_missing():

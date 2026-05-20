@@ -75,20 +75,25 @@ class VisibilityScope(str, enum.Enum):
 
 
 class ScratchpadWriteNotAvailableError(RuntimeError):
-    """The substrate-side write tool isn't deployed yet.
+    """[DEPRECATED in KR-8] Raised by the pre-K-8 deferred-write path.
 
-    Raised by :func:`write_scratchpad_entry` until ``kora__write_agent_
-    scratchpad`` (or equivalent) ships on the Sea MCP server. Per spec
-    § ST3, runtime callers MUST NOT bypass with direct INSERT — that
-    skips authorization (``cap_write_agent_scratchpad`` gate), chain
-    event emission (``approved_event_id NOT NULL`` requirement), and
-    the visibility_scope semantics check.
+    Kept exported for one release so downstream code or pinned tests
+    that still reference the class resolve cleanly. After KR-8 (which
+    swapped the defer for a real ``mcp_client.invoke`` call) this class
+    is no longer raised by ``write_scratchpad_entry``; substrate-side
+    failures surface as :class:`IsoKronMCPInvocationError`.
 
-    Tracked as ``D-kr2-st3-no-scratchpad-write-mcp-tool`` in
-    ``BUILD_DEVIATIONS.md``. Closes when the MCP tool lands.
+    BUILD_DEVIATIONS ``D-kr2-st3-no-scratchpad-write-mcp-tool`` is
+    Closed in KR-8. Remove this class when KR-N audits show no
+    remaining references.
     """
 
     DEFAULT_MESSAGE = (
+        "[kora.isokron.deprecated] ScratchpadWriteNotAvailableError is "
+        "obsolete after KR-8 — scratchpad writes now route through "
+        "kora__write_agent_scratchpad via IsoKronMCPClient. Substrate-"
+        "side failures surface as IsoKronMCPInvocationError. Original "
+        "deferred-tag follows for grep stability: "
         "[kora.isokron.todo] scratchpad writes deferred — Sea MCP server "
         "does not yet expose kora__write_agent_scratchpad (or equivalent). "
         "Tracked in BUILD_DEVIATIONS.md as D-kr2-st3-no-scratchpad-write-"
@@ -318,7 +323,7 @@ async def read_cross_agent_scratchpad(
 
 
 # ---------------------------------------------------------------------------
-# Write path (deferred — see BUILD_DEVIATIONS D-kr2-st3-no-scratchpad-write-mcp-tool)
+# Write path (KR-8: real Sea MCP call via kora__write_agent_scratchpad)
 # ---------------------------------------------------------------------------
 
 
@@ -328,21 +333,63 @@ async def write_scratchpad_entry(
     scratchpad_kind: ScratchpadKind,
     visibility_scope: VisibilityScope,
     content: str,
-    mcp_client: Any = None,
+    mcp_client: Any,
 ) -> str:
-    """Append a scratchpad entry via the Sea MCP tool surface.
+    """Write a scratchpad entry via the ``kora__write_agent_scratchpad`` MCP tool.
 
-    Raises ``ScratchpadWriteNotAvailableError`` until the substrate-side
-    tool lands. Sync_turn and on_memory_write catch this specific
-    exception + log a one-line warning so sessions stay alive.
+    Returns the new ``scratchpad_entry_id`` (UUID-as-text). K-8's
+    substrate-side flow (per its PR body): BEGIN → SET LOCAL
+    ``app.current_workspace_id`` → emit ``kronicle.agent_scratchpad.created``
+    chain event → INSERT into ``kronicle.agent_scratchpad_entries`` →
+    COMMIT. Fail-closed on ``actor_kind ≠ 'kora'`` BEFORE any DB write.
 
-    Signature is the shape the future MCP-backed implementation will
-    keep — caller code wired against this signature won't need to
-    change when the tool ships and the body switches to an
-    ``mcp_client.invoke('kora__write_agent_scratchpad', ...)`` call.
+    Args:
+        workspace_id: Clerk ``org_*`` TEXT.
+        scratchpad_kind: ``ScratchpadKind`` enum value.
+        visibility_scope: ``VisibilityScope`` enum value.
+        content: inline content; BLAKE3 hex hash computed via
+            :func:`compute_scratchpad_content_hash`. ``content_uri``
+            (XOR alternative) is deferred to a follow-on; KR-8 ships
+            the inline-only happy path that matches all existing
+            call sites.
+        mcp_client: a started :class:`IsoKronMCPClient`. Required.
 
-    Returns the new ``scratchpad_entry_id`` (UUID-as-text) when wired;
-    until then, never returns.
+    Raises:
+        ValueError: ``mcp_client`` is ``None`` (defensive — caller
+            should have resolved via
+            ``IsoKronConnection.get_mcp_client()``).
+        IsoKronMCPInvocationError: substrate-side error (CHECK
+            violation, actor_kind ≠ 'kora', cap gate failure, content
+            XOR violation, etc.).
+        RuntimeError: ``kora__write_agent_scratchpad`` response shape
+            drifted (missing or non-str ``scratchpad_entry_id``).
     """
-    del workspace_id, scratchpad_kind, visibility_scope, content, mcp_client
-    raise ScratchpadWriteNotAvailableError()
+    if mcp_client is None:
+        raise ValueError(
+            "write_scratchpad_entry: mcp_client is required (resolve via "
+            "IsoKronConnection.get_mcp_client() before calling)"
+        )
+    content_hash = compute_scratchpad_content_hash(content)
+    result = await mcp_client.invoke(
+        "kora__write_agent_scratchpad",
+        {
+            "workspace_id": workspace_id,
+            "scratchpad_kind": scratchpad_kind.value,
+            "visibility_scope": visibility_scope.value,
+            "content_inline": content,
+            "content_hash": content_hash,
+        },
+    )
+    # K-8 contract: tool returns {'scratchpad_entry_id': '<uuid>',
+    # 'approved_event_id': '<uuid>'}. Runtime cares about the entry_id;
+    # the event_id is in event_log for chain audit.
+    entry_id = (
+        result.get("scratchpad_entry_id") if isinstance(result, dict) else None
+    )
+    if not isinstance(entry_id, str):
+        raise RuntimeError(
+            f"kora__write_agent_scratchpad returned unexpected shape: "
+            f"{result!r}; expected "
+            f"{{'scratchpad_entry_id': '<uuid>', 'approved_event_id': '<uuid>'}}"
+        )
+    return entry_id

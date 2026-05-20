@@ -57,91 +57,88 @@ Format:
   - `tests/plugins/memory/test_iso_link_tools.py:test_create_relationlink_raises_deferred_write_error`
     asserts the message contains all three blockers.
 
-### D-kr2-st3-no-scratchpad-write-mcp-tool
+### D-kr2-st2-capability-matrix-mirror
 
-- **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
-- **Why**: Spec § ST3 § 3 mandates writes go through a Sea MCP tool
-  (`kora__write_agent_scratchpad`) — direct INSERT is explicitly forbidden
-  because the tool gates `cap_write_agent_scratchpad` authorization,
-  emits the `approved_event_id NOT NULL` chain event required by
-  foundation/0135, and validates `visibility_scope` semantics. The
-  substrate's Sea MCP server (current main `a3e77f67`) exposes
-  only `kora__propose_convention`, `kora__read_escalation_queue`, and
-  `kora__propose_policy_change` — no scratchpad-write tool. Spec § ST3
-  pre-authorizes this BUILD_DEVIATIONS path: "If the tool doesn't exist
-  substrate-side yet, BUILD_DEVIATIONS + queue for substrate-team via
-  PM coordination. Do NOT bypass with direct INSERT."
-- **Closes when**: A Sea MCP write tool for `kronicle.agent_scratchpad_entries`
-  ships (working name `kora__write_agent_scratchpad`; PM coordinates
-  with substrate-team / files the substrate dispatch). Then
-  `scratchpad.write_scratchpad_entry` swaps from raising
-  `ScratchpadWriteNotAvailableError` to calling
-  `mcp_client.invoke('kora__write_agent_scratchpad', ...)`. Caller
-  signature stays unchanged — no provider-side refactor needed.
+- **Bucket**: KR-2 ST2 (IsoKron memory provider — read paths)
+- **Why**: Sea MCP server does not expose a `kora__read_kora_capability_row`
+  tool on main (`b0804640`, 2026-05-20). The `ACTOR_CAPABILITY_MATRIX`
+  source of truth is a TS const at
+  `packages/sea-mcp-server/src/capability-matrix.ts`, not a Postgres
+  table — so Approach B (asyncpg SELECT) is not viable. PM-decided
+  STOP-gate resolution on 2026-05-20: ship C2 (Python mirror) now
+  rather than block CC#3 on a CC#1 dependency.
+- **Closes when**: K-7 (Sea MCP capability-row tool) ships — at that
+  point the read path swaps to call the MCP tool, the Python mirror
+  becomes a test fixture only, and the parity test stays in place
+  as a smoke check across CI configurations that still hit the
+  mirror as a fallback. PM is drafting the K-7 bucket.
 - **Guarded by**:
-  - `plugins/memory/isokron/scratchpad.py` — top-of-module `[kora.isokron.todo]`
-    tag in the docstring; `ScratchpadWriteNotAvailableError` carries the
-    deviation ID in every raised message.
-  - `IsoKronMemoryProvider.sync_turn` / `on_memory_write` —
-    catch `ScratchpadWriteNotAvailableError` + log a one-line WARNING
-    so sessions stay alive while the substrate tool ships. Operators
-    grep `D-kr2-st3-no-scratchpad-write-mcp-tool` in logs to see how
-    often writes are being deferred.
+  - `plugins/memory/isokron/capability_matrix_mirror.py` — top-of-file
+    `[kora.isokron.todo]` tag.
+  - `tests/plugins/memory/test_capability_matrix_parity.py` —
+    parses the TS source and asserts every cap_name → kora_value
+    matches the Python mirror in both directions.
   - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
-    operator-facing notice of the deferred-write semantics.
-  - `tests/plugins/memory/test_scratchpad.py` —
-    `test_write_scratchpad_entry_raises_deferred_write_error` asserts
-    the error message + tag stay correct.
+    operator-facing drift notice.
 
 ## Closed
 
-### D-kr2-st2-capability-matrix-mirror — closed by KR-7b (2026-05-20)
+### D-kr2-st3-no-scratchpad-write-mcp-tool — closed by KR-8 (2026-05-21)
 
-- **Bucket**: KR-2 ST2 (capability matrix Kora row)
-- **Resolved by**: KR-7b — `populate_capability_matrix_from_mcp` in
-  `plugins/memory/isokron/capability_matrix_mirror.py` fetches the
-  authoritative Kora-row matrix from K-7's `kora__read_kora_capability_row`
-  Sea MCP tool (substrate `ee730853`) at `IsoKronMemoryProvider.initialize()`
-  via the KR-7a-wired `IsoKronMCPClient`, replacing the hand-mirrored
-  49-entry C2 dict in place. The dict identity is preserved, so
-  `capability_check.actor_has_capability` keeps consuming it by
-  reference — no caller-side refactor needed. Forward-stable: K-13's
-  upcoming capability additions flow through automatically at the
-  next provider start.
-- **Spec quote** (KR-7b § 90): *"KR-7b ships boot-time MCP fetch
-  replacing hand-mirrored TS-source dict. K-7 (ee730853) shipped the
-  substrate-side tool. Forward-stable; KR-7a transport wiring is
-  independent and may eventually consolidate to a unified MCP client."*
-  CC#3 elected Option A (use KR-7a's `IsoKronMCPClient`) over Option
-  B (parallel httpx fetch path) since KR-7a is shipped — one
-  canonical MCP-call pattern across all closure swaps.
-- **Production-test posture** (same as KR-7): K-7's handler is a
-  `notImplementedHandler` stub on substrate main; dispatch tier
-  (queued substrate-team) un-stubs it. KR-7b's code shape is sound;
-  mock tests verify the populate machinery; production deploys wait
-  on dispatch tier. On fetch failure, hand-mirrored fallback stays in
-  place + `[kora.capability_matrix.fallback]` WARNING logged so
-  dev/test ergonomics survive substrate downtime.
-- **Hand-mirrored fallback retained**: 49-entry C2 dict stays as the
-  default at module import — same content, repurposed from "C2
-  interim" to "dev/test fallback". The parity test at
-  `tests/plugins/memory/test_capability_matrix_parity.py` keeps
-  guarding the fallback against TS-source drift so dev parity matches
-  production-substrate parity (and so when K-13 ships, the parity
-  test catches the 2-line bump that the fallback needs even though
-  production picks up the new caps automatically).
+- **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
+- **Resolved by**: KR-8 —
+  `plugins/memory/isokron/scratchpad.py:write_scratchpad_entry` body
+  swaps from `raise ScratchpadWriteNotAvailableError()` to
+  `await mcp_client.invoke('kora__write_agent_scratchpad', {...})`.
+  Returns the substrate-assigned `scratchpad_entry_id` (UUID string).
+  Provider's `_attempt_scratchpad_write` fetches the
+  :class:`IsoKronMCPClient` via
+  `IsoKronConnection.get_mcp_client()` (KR-7a-wired) and surfaces
+  substrate-side failures as `IsoKronMCPInvocationError` logged at
+  ERROR (lifecycle hooks catch + log so the session stays alive).
+  `iso_node_create` and `iso_node_supersede` tool handlers route
+  through the same path; their response envelopes flip from
+  `{ok: False, deferred: True, …}` to `{ok: True, entry_id: …}` on
+  success, or `{ok: False, substrate_error: True, tool_name,
+  message}` on substrate failure.
+- **Spec quote** (KR-8 § 0): *"CC#1 just shipped K-8 (`bd165eb2`):
+  `kora__write_agent_scratchpad` Sea MCP tool. KR-8 swaps CC#3's KR-2
+  ST3 deferred-write path from `raise ScratchpadWriteNotAvailableError`
+  to a real `mcp_client.invoke('kora__write_agent_scratchpad', ...)`
+  call. ~30-60 min ship, ~20-40 LOC."*
+- **Production-test posture** (IsoKron PM #27): K-8 handler is
+  currently a `notImplementedHandler` stub on substrate main;
+  substrate-team's dispatch tier (queued, task #395) un-stubs +
+  bridges Layer-A `wsk_*` auth → Layer-B `actor_kind='kora'`. KR-8's
+  code shape is sound and ships green with mock tests; production
+  deploys wait on the dispatch tier landing.
+- **Substrate-canonical chain literal** (K-DG note from spec § 1):
+  K-8's internal flow emits `kronicle.agent_scratchpad.created` (NOT
+  `kora.scratchpad.entry.created`). The runtime doesn't pass an
+  event_type — the substrate emits internally as part of the SECDEF
+  flow. Verify-at-first-live-emit step: confirm `event_log.actor_id`
+  resolves to the 0076-seeded canonical Kora actor (same posture as
+  KR-7's chain-emit verification).
+- **Deprecation runway**: `ScratchpadWriteNotAvailableError` class
+  kept exported tagged `[kora.isokron.deprecated]` for one release so
+  any pinned downstream tests still resolve. Removal when KR-N audits
+  show no remaining references.
 - **Guarded by**:
-  - `tests/plugins/memory/test_capability_matrix_mcp_fetch.py` —
-    11 tests covering happy populate, in-place dict mutation, defensive
-    error paths (None client / missing key / non-dict / non-bool /
-    non-str / propagated underlying error), and provider.initialize
-    success-INFO + dual-fallback-WARNING paths.
+  - `tests/plugins/memory/test_scratchpad.py` — replaced the
+    deferred-error test with five MCP-call-path tests (happy +
+    error propagation + None-client defense + bad-response shape +
+    deprecation-runway).
+  - `tests/plugins/memory/test_iso_node_tools.py` — flipped
+    `test_iso_node_create_returns_deferred_payload` to
+    `test_iso_node_create_returns_ok_envelope_with_substrate_entry_id`
+    + added a `_substrate_error_surfaces_structured_envelope` test;
+    flipped supersede test to assert success + inherited node_kind.
+  - `tests/plugins/memory/test_tool_finalize.py` — round-trip tests
+    updated to assert success envelopes.
   - `tests/plugins/memory/test_provider_end_to_end.py` —
-    `_FakeMcpClient.invoke` routes by tool_name and returns a
-    canonical-shape matrix for `kora__read_kora_capability_row`;
-    E2E asserts the initialize-time fetch fired + replaced the dict.
-
-### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
+    `_FakeMcpClient` extended with `kora__write_agent_scratchpad`
+    routing; E2E asserts 3 scratchpad writes + 2 chain emits fire
+    via the spec-pinned tool names + arg shapes.
 
 ### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
 

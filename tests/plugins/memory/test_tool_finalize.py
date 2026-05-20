@@ -130,15 +130,20 @@ def test_system_prompt_block_advertises_hermes_memory_deprecation():
 class _FakeProviderConnection:
     def __init__(self, *, list_rows=None, traverse_rows=None):
         from tests.plugins.memory.test_iso_link_tools import _FakeConnection, _FakePool
+        from tests.plugins.memory.test_iso_node_tools import _FakeMcpClient
 
         self._conn = _FakeConnection(
             list_rows=list_rows or [], traverse_rows=traverse_rows or []
         )
         self._pool = _FakePool(self._conn)
+        self._mcp_client = _FakeMcpClient()
         self.submitted: list = []
 
     def get_pg_pool(self):
         return self._pool
+
+    def get_mcp_client(self):
+        return self._mcp_client
 
     def submit_and_wait(self, coro, *, timeout: float = 10.0):
         self.submitted.append(coro)
@@ -184,10 +189,10 @@ def _make_provider(
 
 
 def test_round_trip_iso_node_create_then_search_envelope_shape():
-    """create defers; search runs immediately against the seed.
+    """KR-8: create succeeds via MCP; search runs immediately against the seed.
 
-    The model's expected program flow: try create → if deferred,
-    surface the deviation_id; search for context regardless.
+    Model's expected program flow: try create → on success use the
+    returned entry_id; search for context regardless.
     """
     seed = [_entry(entry_id="seed-1", node_kind="Decision", title="seed-decision")]
     provider, _conn = _make_provider(own=seed)
@@ -202,9 +207,8 @@ def test_round_trip_iso_node_create_then_search_envelope_shape():
             },
         )
     )
-    assert create["ok"] is False
-    assert create["deferred"] is True
-    assert create["deviation_id"] == "D-kr2-st3-no-scratchpad-write-mcp-tool"
+    assert create["ok"] is True
+    assert create["entry_id"] == "spe-001"
 
     search = json.loads(
         provider.handle_tool_call(
@@ -217,6 +221,7 @@ def test_round_trip_iso_node_create_then_search_envelope_shape():
 
 
 def test_round_trip_iso_node_read_then_supersede():
+    """KR-8: supersede succeeds via MCP; new entry_id returned."""
     seed = [
         _entry(entry_id="orig-1", node_kind="Pattern", title="old-pattern"),
     ]
@@ -238,8 +243,8 @@ def test_round_trip_iso_node_read_then_supersede():
             },
         )
     )
-    assert supersede["ok"] is False
-    assert supersede["deferred"] is True
+    assert supersede["ok"] is True
+    assert supersede["entry_id"] == "spe-001"
 
 
 def test_round_trip_iso_link_traverse_envelope():
