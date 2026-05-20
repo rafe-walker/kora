@@ -87,8 +87,12 @@ def build_top_level_parser():
     other subparsers via ``subparsers.add_parser(...)``.
     """
     parser = argparse.ArgumentParser(
-        prog="hermes",
-        description="Hermes Agent - AI assistant with tool-calling capabilities",
+        prog="kora",
+        description=(
+            "Kora — Joshua's personal frontier-tier orchestration agent. "
+            "Forked from NousResearch/hermes-agent; retargeted to IsoKron "
+            "typed-graph memory."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_EPILOGUE,
     )
@@ -233,8 +237,8 @@ def build_top_level_parser():
     # =========================================================================
     chat_parser = subparsers.add_parser(
         "chat",
-        help="Interactive chat with the agent",
-        description="Start an interactive chat session with Hermes Agent",
+        help="Interactive chat with Kora",
+        description="Start an interactive chat session with Kora",
     )
     chat_parser.add_argument(
         "-q", "--query", help="Single query (non-interactive mode)"

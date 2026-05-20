@@ -260,7 +260,13 @@ import threading
 import time as _time
 from datetime import datetime
 
-from kora_cli import __version__, __release_date__
+from kora_cli import (
+    __version__,
+    __release_date__,
+    __hermes_inherited_version__,
+    __hermes_inherited_release_date__,
+    __hermes_fork_commit_short__,
+)
 from kora_constants import AI_GATEWAY_BASE_URL, OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -5857,7 +5863,15 @@ def cmd_import(args):
 
 def cmd_version(args):
     """Show version."""
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(
+        f"Kora {__version__} (Hermes-derived runtime; "
+        f"fork of NousResearch/hermes-agent@{__hermes_fork_commit_short__})"
+    )
+    print(
+        f"Released: {__release_date__}; "
+        f"upstream Hermes inherited: v{__hermes_inherited_version__} "
+        f"({__hermes_inherited_release_date__})"
+    )
     print(f"Project: {PROJECT_ROOT}")
 
     # Show Python version
@@ -10764,8 +10778,8 @@ def main():
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
-        description="Configure Hermes Agent with an interactive wizard. "
-        "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent",
+        description="Configure the Kora runtime with an interactive wizard. "
+        "Run a specific section: kora setup model|tts|terminal|gateway|tools|agent",
     )
     setup_parser.add_argument(
         "section",
@@ -12243,7 +12257,7 @@ Examples:
 
     mcp_serve_p = mcp_sub.add_parser(
         "serve",
-        help="Run Hermes as an MCP server (expose conversations to other agents)",
+        help="Run Kora as an MCP server (expose conversations to other agents / PMs)",
     )
     mcp_serve_p.add_argument(
         "-v",

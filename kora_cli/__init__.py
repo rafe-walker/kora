@@ -1,21 +1,37 @@
-"""
-Hermes CLI - Unified command-line interface for Hermes Agent.
+"""Kora CLI — unified command-line interface for the Kora runtime.
 
 Provides subcommands for:
-- hermes chat          - Interactive chat (same as ./hermes)
-- hermes gateway       - Run gateway in foreground
-- hermes gateway start - Start gateway service
-- hermes gateway stop  - Stop gateway service
-- hermes setup         - Interactive setup wizard
-- hermes status        - Show status of all components
-- hermes cron          - Manage cron jobs
+- kora chat                 — interactive chat (same as ./kora)
+- kora gateway              — run gateway in foreground (HTTP API + messaging adapters)
+- kora gateway start        — start gateway service
+- kora gateway stop         — stop gateway service
+- kora setup                — interactive setup wizard
+- kora status               — show status of all components
+- kora cron                 — manage cron jobs
+- kora mcp serve            — expose Kora's gateway as an MCP server
+- kora migrate-hermes-home  — KR-1 ST3 ~/.hermes → ~/.kora migration
+
+Inherited from upstream NousResearch/hermes-agent (MIT). Forked at
+commit 5e743559e (release v2026.5.16); see ``cmd_version`` for the
+fork provenance string.
 """
 
 import os
 import sys
 
-__version__ = "0.14.0"
-__release_date__ = "2026.5.16"
+# Kora's own version stream. Independent of the upstream Hermes 0.14.0
+# we forked from; reset to 0.1.0 at the start of KR-1 so the runtime
+# can version its Kora-specific surface separately from the inherited
+# Hermes runtime body.
+__version__ = "0.1.0"
+__release_date__ = "2026.5.20"
+
+# Upstream provenance — printed by `kora --version` and embedded in
+# bug reports / telemetry so a fork-point regression is diagnosable.
+__hermes_inherited_version__ = "0.14.0"
+__hermes_inherited_release_date__ = "2026.5.16"
+__hermes_fork_commit__ = "5e743559e0157df42e0f640cd06d736e898370d0"
+__hermes_fork_commit_short__ = "5e743559e"
 
 
 def _ensure_utf8():

@@ -140,20 +140,32 @@ _kora_home_env_warned = False
 
 
 def init_kora_home_env() -> bool:
-    """Synchronize KORA_HOME and HERMES_HOME env vars at process start.
+    """Synchronize HERMES_* and KORA_* env vars at process start.
 
-    Resolution:
-        * If both are set: leave alone (operator has chosen both — assume intent).
-        * If only KORA_HOME is set: mirror it to HERMES_HOME so legacy
-          callers that read ``HERMES_HOME`` directly still resolve the
-          right path.
-        * If only HERMES_HOME is set: mirror it to KORA_HOME (new
-          callers read ``KORA_HOME``) and warn once that the legacy
-          name is being used.
-        * If neither is set: do nothing — the resolver defaults handle it.
+    For every ``HERMES_*`` variable in ``os.environ``, the corresponding
+    ``KORA_*`` variable is set (if not already set), and vice versa.
+    This provides bidirectional backwards-compat without requiring every
+    raw env-var reader in the codebase to learn the new contract:
+
+        * If both ``HERMES_FOO`` and ``KORA_FOO`` are set, leave alone
+          (operator has chosen both — assume intent).
+        * If only ``KORA_FOO`` is set, mirror it to ``HERMES_FOO`` so
+          legacy callers that read ``HERMES_FOO`` directly still
+          resolve the right value.
+        * If only ``HERMES_FOO`` is set, mirror it to ``KORA_FOO`` so
+          new callers reading ``KORA_FOO`` get the same value. Emits a
+          one-time stderr warning recommending migration to the
+          ``KORA_*`` names. The warning lists the set of legacy
+          variables once; individual subsequent mirrors are silent.
+        * If neither is set: do nothing — resolver defaults handle it.
+
+    The variables covered are determined dynamically by scanning
+    ``os.environ`` — any new ``HERMES_*`` variable upstream introduces
+    automatically gets BC mirroring on the next process start. This
+    closes the KR-1 ST3 gap where only ``HERMES_HOME`` was synced.
 
     Idempotent. Safe to call multiple times. Returns True if this call
-    actually mutated env, False if it was a no-op (already applied or
+    mutated any env entry, False if it was a no-op (already applied or
     nothing to sync).
     """
     global _kora_home_env_init_applied, _kora_home_env_warned
@@ -161,29 +173,41 @@ def init_kora_home_env() -> bool:
     if _kora_home_env_init_applied:
         return False
 
-    kora_val = os.environ.get("KORA_HOME", "").strip()
-    hermes_val = os.environ.get("HERMES_HOME", "").strip()
-
+    legacy_keys: list[str] = []
     mutated = False
-    if kora_val and not hermes_val:
-        os.environ["HERMES_HOME"] = kora_val
-        mutated = True
-    elif hermes_val and not kora_val:
-        os.environ["KORA_HOME"] = hermes_val
-        mutated = True
-        if not _kora_home_env_warned:
-            _kora_home_env_warned = True
-            try:
-                sys.stderr.write(
-                    "[KORA_HOME bc] HERMES_HOME is set but KORA_HOME is "
-                    "not — mirroring to KORA_HOME for this process. "
-                    "Migrate to KORA_HOME (see `kora migrate-hermes-home "
-                    "--help`); HERMES_HOME support will be removed after "
-                    "KR-2.\n"
-                )
-                sys.stderr.flush()
-            except Exception:
-                pass
+
+    # Collect a snapshot — we mutate os.environ during the loop, so
+    # we can't iterate the live mapping.
+    env_snapshot = dict(os.environ)
+
+    for key, value in env_snapshot.items():
+        if not value.strip():
+            continue
+        if key.startswith("HERMES_"):
+            kora_key = "KORA_" + key[len("HERMES_"):]
+            if not os.environ.get(kora_key, "").strip():
+                os.environ[kora_key] = value
+                mutated = True
+                legacy_keys.append(key)
+        elif key.startswith("KORA_"):
+            hermes_key = "HERMES_" + key[len("KORA_"):]
+            if not os.environ.get(hermes_key, "").strip():
+                os.environ[hermes_key] = value
+                mutated = True
+
+    if legacy_keys and not _kora_home_env_warned:
+        _kora_home_env_warned = True
+        try:
+            joined = ", ".join(sorted(legacy_keys))
+            sys.stderr.write(
+                f"[KORA_HOME bc] Legacy HERMES_* env vars detected "
+                f"({joined}). Mirroring to KORA_* for this process. "
+                "Migrate to the KORA_* names; HERMES_* support will be "
+                "removed after KR-2.\n"
+            )
+            sys.stderr.flush()
+        except Exception:
+            pass
 
     _kora_home_env_init_applied = True
     return mutated

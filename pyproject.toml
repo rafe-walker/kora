@@ -7,7 +7,11 @@ build-backend = "setuptools.build_meta"
 # IsoKron substrate. License attribution to Nous Research is preserved.
 # Distribution name kept as a local-dev identifier — no PyPI publish in KR-1.
 name = "kora"
-version = "0.14.0"
+# KR-1 ST4 set the Kora runtime to its own 0.1.0 version stream, independent
+# of the upstream Hermes 0.14.0 we forked from. The Hermes-inherited version
+# is preserved in kora_cli/__init__.py as __hermes_inherited_version__ for
+# diagnostics.
+version = "0.1.0"
 description = "Kora — Joshua's personal frontier-tier orchestration agent. Forked from NousResearch/hermes-agent; retargeted to IsoKron typed-graph memory."
 readme = "README.md"
 requires-python = ">=3.11"
