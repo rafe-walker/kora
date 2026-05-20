@@ -93,30 +93,33 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 
 ## Operator pitfalls
 
-### Deferred-surface summary (1 open BUILD_DEVIATIONS as of KR-8)
+### All BUILD_DEVIATIONS closed code-side as of KR-9 (parallel-merged with KR-7b + KR-8)
 
-| Deviation | What's deferred | Closes when |
-|---|---|---|
-| `D-kr3-st2-no-relationlink-write-mcp-tool` | `iso_link_create` writes — 3 substrate blockers in one (actor_kind CHECK + missing MCP tool + chain_event_id SECDEF) | K-10 ships the bundled substrate bucket (merged; KR-9 dispatchable) |
+All four substrate-MCP-tool deferrals are now closed code-side; only
+substrate dispatch tier (task #395) gates production correctness. PR
+merge interleaves with KR-7b + KR-8; the canonical post-merge state
+is captured in `BUILD_DEVIATIONS.md`.
 
 **Recently closed**:
+- `D-kr3-st2-no-relationlink-write-mcp-tool` — KR-9 swapped
+  `create_relationlink` to route through `kora__create_relationlink`
+  via the KR-7a-wired `IsoKronMCPClient`. K-10 + 0083 in prod
+  closed all 3 substrate blockers; runtime swap is the mechanical
+  follow-on.
 - `D-kr2-st3-no-scratchpad-write-mcp-tool` — KR-8 swapped
-  `write_scratchpad_entry` to route through
-  `kora__write_agent_scratchpad` via the KR-7a-wired
-  `IsoKronMCPClient`. Tool handlers (`iso_node_create` /
-  `iso_node_supersede`) and lifecycle hooks (`sync_turn` /
-  `on_memory_write` / `on_delegation`) now write authoritatively;
-  substrate failures surface as `IsoKronMCPInvocationError` logged
-  at ERROR. Same production-test posture as KR-7.
+  `write_scratchpad_entry`. Tool handlers + lifecycle hooks write
+  authoritatively.
 - `D-kr2-st2-capability-matrix-mirror` — KR-7b replaced the hand-
-  mirrored C2 dict with an authoritative MCP fetch via
-  `kora__read_kora_capability_row` at provider initialize.
-- `D-kr2-st4-no-chain-emit-mcp-tool` — KR-7 swapped `emit_kora_event`
-  to route through `kora__append_event` via the KR-7a-wired
-  `IsoKronMCPClient`.
+  mirrored dict with MCP fetch at provider initialize.
+- `D-kr2-st4-no-chain-emit-mcp-tool` — KR-7 swapped `emit_kora_event`.
 - `D-kr3-st1-capability-check-deferred` — KR-6 shipped the Python
-  `actor_has_capability` helper at
-  `plugins/memory/isokron/capability_check.py`.
+  `actor_has_capability` helper.
+
+After all 5 merges, the standing-by state is dispatch-tier-gated:
+all 4 MCP tool handlers are `notImplementedHandler` stubs on
+substrate main; substrate-team task #395 un-stubs them + bridges
+auth. Operators grep `[kora.*]` ERROR logs in production to confirm
+fetch/write/emit health.
 
 ### MCP client (KR-7a)
 
@@ -163,7 +166,7 @@ idempotency) is fully tested with mocked transports.
 
 * **Constitution revision table has no `superseded_at` column.** Earlier bucket prompts referenced `WHERE superseded_at IS NULL` which would error with "column does not exist". The actual "active" semantic for `kronicle.workspace_constitution_revisions` is `ORDER BY revision_number DESC LIMIT 1` (riding the `idx_constitution_revisions_workspace_current` index). The `read_active_constitution_revision` reader gets this right; if you query the table directly, copy the SQL from `constitution.py:SELECT_ACTIVE_CONSTITUTION_REVISION_SQL`.
 
-* **Scratchpad writes route via `kora__write_agent_scratchpad` (KR-8).** `write_scratchpad_entry` calls the Sea MCP tool through the KR-7a-wired `IsoKronMCPClient` and returns the substrate-assigned `scratchpad_entry_id`. Tool handlers (`iso_node_create` / `iso_node_supersede`) return `{ok: True, entry_id: …}` on success or `{ok: False, substrate_error: True, tool_name, message}` on substrate failure. Lifecycle hooks (`sync_turn` / `on_memory_write` / `on_delegation`) log INFO `[kora.scratchpad.write]` on success or ERROR `[kora.scratchpad.write.failed]` on substrate failure; session stays alive either way. **Production-test posture per IsoKron PM #27**: K-8 handler is currently a `notImplementedHandler` stub awaiting dispatch tier; live writes return substrate errors until then but code shape is correct. Closed as `D-kr2-st3-no-scratchpad-write-mcp-tool` in `BUILD_DEVIATIONS.md`.
+* **RelationLink writes route via `kora__create_relationlink` (KR-9).** `relationlink.create_relationlink` calls the Sea MCP tool through the KR-7a-wired `IsoKronMCPClient` and returns the substrate-assigned `link_id`. K-10 + 0083 shipped all three pre-KR-9 substrate blockers (actor_kind CHECK extension, SECDEF wrapper, `kora.relationlink.created` event vocab). `iso_link_create` handler returns `{ok: True, link_id: …}` on success or `{ok: False, substrate_error: True, tool_name, message}` on substrate failure (uniqueness violation, actor-kind mismatch). Same production-test posture as KR-7 / KR-8: K-10 handler is currently a `notImplementedHandler` stub awaiting dispatch tier. Closed as `D-kr3-st2-no-relationlink-write-mcp-tool` in `BUILD_DEVIATIONS.md`.
 
 * **Scratchpad BLAKE3 integrity is warn-only, NOT fail-closed.** Unlike the Role Charter (which raises on hash mismatch), `read_own_scratchpad` and `read_cross_agent_scratchpad` log a WARNING and return the entry on mismatch. Spec § ST3: scratchpad is mutable working memory; refusing to surface a drifted entry would block sessions on transient state. Operators monitoring chain-of-custody should grep `content_hash drift` in logs.
 

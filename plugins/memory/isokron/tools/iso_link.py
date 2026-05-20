@@ -38,7 +38,6 @@ from ..relationlink import (
     MAX_TRAVERSE_DEPTH,
     RELATIONLINK_VALIDITY_STATES,
     RelationLinkRow,
-    RelationLinkWriteNotAvailableError,
     ReachableNode,
     V1_LINK_TYPES,
     create_relationlink,
@@ -274,9 +273,23 @@ def _handle_iso_link_create(
 
     assert_kora_can_perform("cap_sea_link_authoring")
 
+    # KR-9 swap: relationlink writes route through the Sea MCP tool via
+    # the KR-7a-wired IsoKronMCPClient. Substrate-side failures surface
+    # as IsoKronMCPInvocationError; project them into a structured
+    # envelope so the model gets an in-band signal rather than an
+    # uncaught exception (same pattern as iso_node_create / KR-8).
+    from ..mcp_client import IsoKronMCPInvocationError
+
+    assert provider._connection is not None
     try:
-        assert provider._connection is not None
-        provider._connection.submit_and_wait(
+        mcp_client = provider._connection.get_mcp_client()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"iso_link_create: MCP client unavailable — {exc}",
+        }
+    try:
+        link_id = provider._connection.submit_and_wait(
             create_relationlink(
                 workspace_id=workspace_id,
                 from_entity_kind=from_entity_kind,
@@ -285,19 +298,18 @@ def _handle_iso_link_create(
                 to_entity_id=to_entity_id,
                 link_type=link_type,
                 rationale=rationale,
-                mcp_client=None,
+                mcp_client=mcp_client,
             ),
             timeout=10.0,
         )
-    except RelationLinkWriteNotAvailableError as exc:
+    except IsoKronMCPInvocationError as exc:
         return {
             "ok": False,
-            "deferred": True,
-            "deviation_id": "D-kr3-st2-no-relationlink-write-mcp-tool",
-            "message": str(exc),
+            "substrate_error": True,
+            "tool_name": exc.tool_name,
+            "message": exc.message,
         }
-
-    return {"ok": True, "link_id": "<assigned-by-substrate>"}
+    return {"ok": True, "link_id": link_id}
 
 
 def _handle_iso_link_traverse(

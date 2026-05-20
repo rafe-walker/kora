@@ -55,23 +55,30 @@ logger = logging.getLogger(__name__)
 
 
 class RelationLinkWriteNotAvailableError(RuntimeError):
-    """Raised by :func:`create_relationlink` until the three write
-    blockers in substrate main are resolved.
+    """[DEPRECATED in KR-9] Raised by the pre-K-10 deferred-write path.
 
-    Closure path: PM dispatches a substrate-side bucket adding
-    (a) ``'kora'`` to ``created_by_actor_kind`` CHECK, (b) a Sea MCP
-    tool wrapping the write, (c) chain-event emission tied into the
-    same SECDEF. Then this function's body switches to the MCP call;
-    caller signature stays the same.
+    Kept exported for one release so downstream code or pinned tests
+    that still reference the class resolve cleanly. After KR-9 (which
+    swapped the defer for a real ``mcp_client.invoke`` call) this class
+    is no longer raised by ``create_relationlink``; substrate-side
+    failures surface as :class:`IsoKronMCPInvocationError`.
+
+    BUILD_DEVIATIONS ``D-kr3-st2-no-relationlink-write-mcp-tool`` is
+    Closed in KR-9. Remove this class when KR-N audits show no
+    remaining references.
     """
 
     DEFAULT_MESSAGE = (
-        "[kora.isokron.todo] relationlink writes deferred — three "
-        "blockers in substrate main: (1) created_by_actor_kind CHECK "
-        "lacks 'kora'; (2) no Sea MCP tool exposes the write; (3) "
-        "chain_event_id NOT NULL requires substrate-side emit. Tracked "
-        "in BUILD_DEVIATIONS.md as D-kr3-st2-no-relationlink-write-mcp-"
-        "tool. Direct INSERT bypasses all three guards — do NOT do that."
+        "[kora.isokron.deprecated] RelationLinkWriteNotAvailableError "
+        "is obsolete after KR-9 — relationlink writes now route through "
+        "kora__create_relationlink via IsoKronMCPClient. Substrate-side "
+        "failures surface as IsoKronMCPInvocationError. Original "
+        "deferred-tag preserved for grep stability: [kora.isokron.todo] "
+        "relationlink writes deferred — three blockers in substrate "
+        "main: (1) created_by_actor_kind CHECK lacks 'kora'; (2) no Sea "
+        "MCP tool exposes the write; (3) chain_event_id NOT NULL "
+        "requires substrate-side emit. Tracked in BUILD_DEVIATIONS.md "
+        "as D-kr3-st2-no-relationlink-write-mcp-tool."
     )
 
     def __init__(self, message: Optional[str] = None):
@@ -380,7 +387,7 @@ async def traverse_relationlink(
 
 
 # ---------------------------------------------------------------------------
-# Write path (deferred — see BUILD_DEVIATIONS D-kr3-st2-no-relationlink-write-mcp-tool)
+# Write path (KR-9: real Sea MCP call via kora__create_relationlink)
 # ---------------------------------------------------------------------------
 
 
@@ -393,26 +400,69 @@ async def create_relationlink(
     to_entity_id: str,
     link_type: str,
     rationale: Optional[str] = None,
-    mcp_client: Any = None,
+    rationale_block_id: Optional[str] = None,
+    evidence_block_ids: Optional[list[str]] = None,
+    mcp_client: Any,
 ) -> str:
-    """Create a typed edge via the Sea MCP tool surface.
+    """Create a typed edge via the ``kora__create_relationlink`` MCP tool.
 
-    Raises ``RelationLinkWriteNotAvailableError`` until the three
-    substrate-side blockers are resolved (see BUILD_DEVIATIONS
-    D-kr3-st2-no-relationlink-write-mcp-tool). Signature is
-    forward-stable; when the MCP tool ships, only the body changes.
+    Returns the new ``link_id`` (UUID-as-text). K-10's substrate-side
+    flow (per its PR body + IsoKron PM #32 §1): thin wrapper around
+    ``public.kora_create_relationlink`` SECDEF which does the
+    actor_registry JOIN actor_kind validation + active-edge uniqueness
+    check + emits ``kora.relationlink.created`` chain event FIRST +
+    INSERTs the row with the returned event_id as ``chain_event_id``
+    binding (single atomic transaction via SECDEF).
 
-    Returns the new ``link_id`` (UUID-as-text) once wired; never
-    returns today.
+    Args:
+        workspace_id: Clerk ``org_*`` TEXT.
+        from_entity_id / from_entity_kind / to_entity_id / to_entity_kind:
+            edge endpoints. ``entity_kind`` is one of the canonical
+            17 entity kinds; ``entity_id`` is a UUID.
+        link_type: V1 vocabulary (21 entries per ADR-0033); un-CHECK'd
+            at DB layer — application-layer per-pair gate validates.
+        rationale: free-form rationale text (legacy from KR-3 ST2 API).
+            Not part of K-10's input schema; held for one-release back-
+            compat and dropped silently. Use ``rationale_block_id``
+            instead.
+        rationale_block_id: optional Block reference (UUID); preferred
+            over freeform ``rationale``.
+        evidence_block_ids: optional list of Block references; defaults
+            to empty list.
+        mcp_client: a started :class:`IsoKronMCPClient`. Required.
+
+    Raises:
+        ValueError: ``mcp_client`` is ``None``.
+        IsoKronMCPInvocationError: substrate-side error
+            (actor_kind mismatch, active-edge uniqueness violation,
+            cap gate failure, etc.).
+        RuntimeError: response shape drifted (missing or non-str
+            ``link_id``).
     """
-    del (
-        workspace_id,
-        from_entity_kind,
-        from_entity_id,
-        to_entity_kind,
-        to_entity_id,
-        link_type,
-        rationale,
-        mcp_client,
-    )
-    raise RelationLinkWriteNotAvailableError()
+    del rationale  # KR-9 keeps the param for one-release back-compat
+    if mcp_client is None:
+        raise ValueError(
+            "create_relationlink: mcp_client is required (resolve via "
+            "IsoKronConnection.get_mcp_client() before calling)"
+        )
+    args: dict[str, Any] = {
+        "workspace_id": workspace_id,
+        "from_entity_id": from_entity_id,
+        "from_entity_kind": from_entity_kind,
+        "to_entity_id": to_entity_id,
+        "to_entity_kind": to_entity_kind,
+        "link_type": link_type,
+        "evidence_block_ids": evidence_block_ids or [],
+    }
+    if rationale_block_id is not None:
+        args["rationale_block_id"] = rationale_block_id
+    result = await mcp_client.invoke("kora__create_relationlink", args)
+    # K-10 contract: {'link_id': '<uuid>', 'chain_event_id': '<uuid>'}.
+    link_id = result.get("link_id") if isinstance(result, dict) else None
+    if not isinstance(link_id, str):
+        raise RuntimeError(
+            f"kora__create_relationlink returned unexpected shape: "
+            f"{result!r}; expected "
+            f"{{'link_id': '<uuid>', 'chain_event_id': '<uuid>'}}"
+        )
+    return link_id
