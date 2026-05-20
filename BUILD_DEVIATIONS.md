@@ -57,31 +57,6 @@ Format:
   - `tests/plugins/memory/test_iso_link_tools.py:test_create_relationlink_raises_deferred_write_error`
     asserts the message contains all three blockers.
 
-### D-kr3-st1-capability-check-deferred
-
-- **Bucket**: KR-3 ST1 (`iso_node_*` tool family)
-- **Why**: Each `iso_node_*` tool handler is supposed to gate its
-  invocation through a Python mirror of the TS-side
-  `assertKoraCanPerform(actor_kind, capability)` (Plan 04 helper at
-  `packages/sea-mcp-server/src/capability-matrix.ts:657`). That
-  Python mirror ships in KR-6 as part of the Constitution pre-screen
-  middleware. Spec § ST1 § "Capability check" explicitly pre-authorizes
-  this deferral: "if the Python helper isn't ready, BUILD_DEVIATIONS
-  + use a stub that always allows (with verbatim Rule-6 log
-  'BUILD_DEVIATIONS D-kr3-st1-capability-check-deferred — wires in KR-6')".
-- **Closes when**: KR-6 ships the Python mirror — at that point
-  `tools/iso_node.py:assert_kora_can_perform` body switches from
-  "no-op + log" to the real check, and the per-tool capability map
-  `_TOOL_CAPABILITIES` becomes the gating source of truth.
-- **Guarded by**:
-  - `plugins/memory/isokron/tools/iso_node.py` —
-    `assert_kora_can_perform` logs a WARNING tagged with the
-    deviation ID on every call so operators can grep how often
-    the stub is being relied on.
-  - `tests/plugins/memory/test_iso_node_tools.py` —
-    `test_assert_kora_can_perform_stub_logs_deviation_id` asserts
-    the log line carries the deviation ID + the capability name.
-
 ### D-kr2-st4-no-chain-emit-mcp-tool
 
 - **Bucket**: KR-2 ST4 (chain event emission + recent events read + finalize)
@@ -176,3 +151,38 @@ Format:
     matches the Python mirror in both directions.
   - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
     operator-facing drift notice.
+
+## Closed
+
+### D-kr3-st1-capability-check-deferred — closed by KR-6 (2026-05-20)
+
+- **Bucket**: KR-3 ST1 (`iso_node_*` tool family)
+- **Resolved by**: KR-6 — Python `actor_has_capability` mirror lands at
+  `plugins/memory/isokron/capability_check.py`, consuming the C2
+  `ACTOR_CAPABILITY_MATRIX_KORA_COLUMN` dict. The KR-3 ST1 stub at
+  `plugins/memory/isokron/tools/iso_node.py:assert_kora_can_perform`
+  (which always allowed + logged `[kora.isokron.todo]
+  D-kr3-st1-capability-check-deferred`) was replaced with a re-export
+  from the new module; the helper is now a real check that raises
+  `CapabilityDeniedError` when Kora lacks the requested capability.
+- **Spec quote** (KR-6 § 0): *"KR-3 ST1 added an
+  `assert_kora_can_perform(capability)` stub in the Kora runtime that
+  logs every invocation with `[kora.capability.deferred]` tag but
+  doesn't actually gate anything. The TypeScript-side has
+  `actorHasCapability(actor_kind, capability)` at
+  `packages/sea-mcp-server/src/capability-matrix.ts:657` which does
+  the real check. KR-6 ships the Python equivalent on the runtime
+  lane."*
+- **Forward-stability invariant kept**: `capability_check.py` imports
+  only the C2 mirror — no MCP / DB / network. When K-7 ships
+  `kora__read_kora_capability_row` and a follow-on KR-N swap replaces
+  the C2 mirror with a fresh-per-call MCP fetch, only that import line
+  changes; the helper's public surface stays identical. Guarded by
+  `tests/plugins/memory/test_capability_check.py::test_module_has_no_network_or_db_imports_at_load_time`
+  and the companion only-imports-the-mirror test.
+- **Tool-handler integration**: the iso_node + iso_link dispatchers
+  catch `CapabilityDeniedError` and surface it as a structured
+  `{"ok": false, "denied": true, "capability": ..., "reason": ...}`
+  envelope, mirroring the deferred-write envelope pattern from KR-2
+  ST3 / ST4 / KR-3 ST2 — model gets an in-band signal rather than an
+  uncaught exception.

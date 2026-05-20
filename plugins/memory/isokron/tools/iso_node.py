@@ -96,20 +96,16 @@ _TOOL_CAPABILITIES: Dict[str, str] = {
 }
 
 
-def assert_kora_can_perform(capability: str) -> None:
-    """Capability gate stub — wires in KR-6 (Constitution pre-screen).
-
-    [kora.isokron.todo] BUILD_DEVIATIONS D-kr3-st1-capability-check-deferred
-    — Python mirror of TS-side ``assertKoraCanPerform`` (Plan 04
-    helper) lands in KR-6. Until then this is a no-op that logs every
-    invocation so operators can grep the deviation ID and see which
-    surface relied on the deferred check.
-    """
-    logger.warning(
-        "[kora.isokron.todo] capability check stub allowed '%s' "
-        "(D-kr3-st1-capability-check-deferred — KR-6 wires the real check)",
-        capability,
-    )
+# Capability check (KR-6): the real Python mirror of TS-side
+# ``actorHasCapability``. Re-exported from this module to preserve
+# the existing import path used by iso_link.py + tests. KR-3 ST1's
+# stub (which always allowed + logged D-kr3-st1) was replaced in KR-6;
+# D-kr3-st1-capability-check-deferred is Closed.
+from ..capability_check import (  # noqa: F401 — re-exported
+    CapabilityDeniedError,
+    actor_has_capability,
+    assert_kora_can_perform,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -634,12 +630,23 @@ def handle_iso_node_tool_call(
     """Route a tool call to the right ``iso_node_*`` handler.
 
     Returns a JSON string per the ``MemoryProvider.handle_tool_call``
-    ABC contract.
+    ABC contract. Catches :class:`CapabilityDeniedError` and surfaces
+    it as a structured envelope (``{"ok": false, "denied": true,
+    "capability": ..., "reason": ...}``) so the model can reason about
+    which capability was denied rather than seeing a runtime crash.
     """
     handler = _HANDLERS.get(tool_name)
     if handler is None:
         raise NotImplementedError(
             f"Provider isokron does not handle tool {tool_name!r}"
         )
-    result = handler(provider, args)
+    try:
+        result = handler(provider, args)
+    except CapabilityDeniedError as exc:
+        result = {
+            "ok": False,
+            "denied": True,
+            "capability": exc.capability,
+            "reason": exc.reason,
+        }
     return json.dumps(result, default=str)

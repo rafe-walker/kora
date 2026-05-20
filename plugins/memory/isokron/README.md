@@ -91,9 +91,9 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 
 ## Operator pitfalls
 
-### Deferred-surface summary (5 open BUILD_DEVIATIONS as of KR-3 ST3)
+### Deferred-surface summary (4 open BUILD_DEVIATIONS as of KR-6)
 
-All five follow the same shape: signature is forward-stable, body
+All four follow the same shape: signature is forward-stable, body
 swaps from `raise <DeferredError>` to `mcp_client.invoke(...)` when
 the substrate-side dependency lands. **No caller refactor needed**.
 Operators grep the deviation_id in logs to track defer rates.
@@ -103,8 +103,14 @@ Operators grep the deviation_id in logs to track defer rates.
 | `D-kr2-st2-capability-matrix-mirror` | C2 Python mirror of `ACTOR_CAPABILITY_MATRIX` Kora column (parity test guards drift) | K-7 ships Sea MCP `kora__read_kora_capability_row` |
 | `D-kr2-st3-no-scratchpad-write-mcp-tool` | Scratchpad writes from `sync_turn` / `on_memory_write` / `iso_node_create` / `iso_node_supersede` | K-8 ships Sea MCP `kora__write_agent_scratchpad` |
 | `D-kr2-st4-no-chain-emit-mcp-tool` | Chain event emission from `on_session_end` / `on_delegation` / `iso_node_supersede` | K-9 ships Sea MCP `kora__append_event` |
-| `D-kr3-st1-capability-check-deferred` | `assert_kora_can_perform` (every `iso_*` tool call) — stub always allows + logs | KR-6 ships Python `actorHasCapability` mirror (CC#3 lane — cheapest unlock) |
 | `D-kr3-st2-no-relationlink-write-mcp-tool` | `iso_link_create` writes — 3 substrate blockers in one (actor_kind CHECK + missing MCP tool + chain_event_id SECDEF) | K-10 ships the bundled substrate bucket |
+
+**Recently closed**: `D-kr3-st1-capability-check-deferred` — KR-6
+shipped the Python `actor_has_capability` helper at
+`plugins/memory/isokron/capability_check.py`. Every `iso_*` tool now
+gates through a real check; denied calls surface a structured
+`{"ok": false, "denied": true, "capability": ..., "reason": ...}`
+envelope.
 
 ### Individual pitfalls
 

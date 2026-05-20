@@ -480,21 +480,20 @@ def test_provider_handle_tool_call_routes_iso_link_prefix():
     assert decoded["ok"] is True
 
 
-def test_iso_link_traverse_capability_check_logs_deviation(caplog):
-    """The shared assert_kora_can_perform stub fires + logs the deviation."""
+def test_iso_link_traverse_capability_check_passes_silently():
+    """KR-6: the real check passes for caps Kora has (no raise, no log).
+
+    ``cap_read_unfiltered_relationlink`` is True in the C2 mirror —
+    the helper short-circuits and the traverse handler runs normally.
+    """
     conn = _FakeConnection(traverse_rows=[])
     provider, _conn = _make_provider(conn=conn)
-    with caplog.at_level(
-        logging.WARNING, logger="plugins.memory.isokron.tools.iso_node"
-    ):
-        handle_iso_link_tool_call(
-            provider,
-            "iso_link_traverse",
-            {
-                "from_entity_id": "start",
-                "link_types": ["relates_to"],
-            },
-        )
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any("D-kr3-st1-capability-check-deferred" in m for m in msgs)
-    assert any("cap_read_unfiltered_relationlink" in m for m in msgs)
+    result = handle_iso_link_tool_call(
+        provider,
+        "iso_link_traverse",
+        {"from_entity_id": "start", "link_types": ["relates_to"]},
+    )
+    decoded = json.loads(result)
+    # No denial envelope — the call ran through the read path.
+    assert decoded["ok"] is True
+    assert "denied" not in decoded

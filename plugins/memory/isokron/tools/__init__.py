@@ -37,6 +37,11 @@ in KR-6 — until then ``assert_kora_can_perform`` is a stub that always
 allows and logs ``D-kr3-st1-capability-check-deferred``.
 """
 
+from ..capability_check import (
+    CapabilityDeniedError,
+    actor_has_capability,
+    assert_kora_can_perform,
+)
 from .iso_link import (
     ISO_LINK_TOOL_SCHEMAS,
     handle_iso_link_tool_call,
@@ -44,7 +49,6 @@ from .iso_link import (
 from .iso_node import (
     ISO_NODE_TOOL_SCHEMAS,
     NODE_KINDS,
-    assert_kora_can_perform,
     handle_iso_node_tool_call,
 )
 
@@ -68,11 +72,13 @@ when they flow into the dynamic prompt surface.
 
 
 __all__ = [
+    "CapabilityDeniedError",
     "ISO_LINK_TOOL_SCHEMAS",
     "ISO_NODE_TOOL_SCHEMAS",
     "ISO_TYPED_GRAPH_TOOL_SCHEMAS",
     "ISOKRON_TOOLSET_NAME",
     "NODE_KINDS",
+    "actor_has_capability",
     "assert_kora_can_perform",
     "handle_iso_link_tool_call",
     "handle_iso_node_tool_call",
