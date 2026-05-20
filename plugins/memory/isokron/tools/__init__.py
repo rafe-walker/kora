@@ -53,10 +53,25 @@ ISO_TYPED_GRAPH_TOOL_SCHEMAS = ISO_NODE_TOOL_SCHEMAS + ISO_LINK_TOOL_SCHEMAS
 """Combined 4 + 3 = 7 tool schemas for the typed-graph surface."""
 
 
+ISOKRON_TOOLSET_NAME = "isokron_memory"
+"""Logical toolset name used in Kora config to enable / disable the
+typed-graph tools as a group.
+
+Note: memory-provider plugins surface tools through
+``MemoryProvider.get_tool_schemas`` (consumed by ``MemoryManager``),
+not through ``PluginContext.register_tool`` — the memory plugin's
+``PluginContext.register_tool`` shim is a no-op. The toolset name is
+still useful for operator-facing config (``~/.kora/config.yaml``
+``memory.toolsets.isokron_memory: true``) and for tagging the schemas
+when they flow into the dynamic prompt surface.
+"""
+
+
 __all__ = [
     "ISO_LINK_TOOL_SCHEMAS",
     "ISO_NODE_TOOL_SCHEMAS",
     "ISO_TYPED_GRAPH_TOOL_SCHEMAS",
+    "ISOKRON_TOOLSET_NAME",
     "NODE_KINDS",
     "assert_kora_can_perform",
     "handle_iso_link_tool_call",
