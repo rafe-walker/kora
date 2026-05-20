@@ -184,7 +184,43 @@ def test_init_kora_home_env_mirrors_hermes_to_kora(monkeypatch, capsys):
     assert mutated is True
     assert os.environ.get("KORA_HOME") == "/legacy/path"
     err = capsys.readouterr().err
-    assert "HERMES_HOME is set but KORA_HOME is not" in err
+    # New ST4 generic format mentions HERMES_HOME in the detected-keys list.
+    assert "Legacy HERMES_* env vars detected" in err
+    assert "HERMES_HOME" in err
+
+
+def test_init_kora_home_env_generic_mirror_for_any_hermes_var(monkeypatch, capsys):
+    """KR-1 ST4 widened the sync from HERMES_HOME-only to all HERMES_* vars."""
+    monkeypatch.delenv("KORA_ACCEPT_HOOKS", raising=False)
+    monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+    monkeypatch.delenv("KORA_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("HERMES_LOG_LEVEL", raising=False)
+    monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+    monkeypatch.setenv("HERMES_LOG_LEVEL", "DEBUG")
+    import kora_bootstrap
+    kora_bootstrap._kora_home_env_init_applied = False
+    kora_bootstrap._kora_home_env_warned = False
+    mutated = kora_bootstrap.init_kora_home_env()
+    assert mutated is True
+    assert os.environ.get("KORA_ACCEPT_HOOKS") == "1"
+    assert os.environ.get("KORA_LOG_LEVEL") == "DEBUG"
+    # Warn fires once and lists both keys.
+    err = capsys.readouterr().err
+    assert "HERMES_ACCEPT_HOOKS" in err
+    assert "HERMES_LOG_LEVEL" in err
+
+
+def test_init_kora_home_env_mirrors_kora_back_to_hermes_for_any_var(monkeypatch):
+    """Symmetric direction — operator-set KORA_* propagates to HERMES_* for BC readers."""
+    monkeypatch.delenv("KORA_ACCEPT_HOOKS", raising=False)
+    monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+    monkeypatch.setenv("KORA_ACCEPT_HOOKS", "1")
+    import kora_bootstrap
+    kora_bootstrap._kora_home_env_init_applied = False
+    kora_bootstrap._kora_home_env_warned = False
+    mutated = kora_bootstrap.init_kora_home_env()
+    assert mutated is True
+    assert os.environ.get("HERMES_ACCEPT_HOOKS") == "1"
 
 
 def test_init_kora_home_env_noop_when_both_set(monkeypatch):
