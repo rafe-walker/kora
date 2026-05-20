@@ -81,20 +81,26 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 
 | Sub-task | Surface |
 |---|---|
-| ST1 (this PR) | skeleton; config schema; connection plumbing (IO loop, no real handshakes); plugin discovery wiring; 4+ smoke tests |
-| ST2 | reads: `read_active_role_charter` (SHA-256 integrity), `read_kora_capability_row` (Approach A/B/C STOP-gate decision), `read_kora_policy_registry` (31-row sanity); 60s TTL cache; `system_prompt_block` assembles identity prompt block from these |
+| ST1 | skeleton; config schema; connection plumbing (IO loop, no real handshakes); plugin discovery wiring; smoke tests |
+| ST2 (this PR) | reads: `read_active_role_charter` (SHA-256 integrity, asyncpg), `read_kora_capability_row` (C2 Python mirror — see "Operator pitfalls"), `read_kora_policy_registry` (RLS GUC + 31-row sanity, asyncpg); 60s TTL cache wired per-workspace; `system_prompt_block` assembles identity / CAN / CANNOT / active policies / granted caps / Rule-6 honest-label; `on_turn_start` pre-fetches all three in parallel via `asyncio.gather` |
 | ST3 | scratchpad reads + writes against `kronicle.agent_scratchpad_entries`; JOIN `public.actor_registry`; visibility_scope enum; writes always via Sea MCP, never direct DB |
 | ST4 | `kora.*` chain event emission via Sea MCP `append_event`; recent events read from `hivex_foundation.event_log`; E2E test removes the last `NotImplementedError` stubs |
 
-## Operator pitfalls (KR-2 ST1)
+## Operator pitfalls
 
-* **`memory.provider: isokron` will half-work today.** The provider registers, `is_available()` returns True (if config + deps are present), and `initialize()` brings up the IO loop — but the first call to `system_prompt_block()` / `prefetch()` / `sync_turn()` raises `NotImplementedError`. Do NOT enable on the live Kora session until ST2 lands. Keep the default (Hermes-inherited flat MEMORY.md) for now.
+* **Capability matrix is currently a Python mirror; parity test guards drift but a Sea MCP tool is the proper substrate path.** KR-2 ST2 ships `plugins/memory/isokron/capability_matrix_mirror.py` as a hand-translated copy of `ACTOR_CAPABILITY_MATRIX`'s Kora column (the TS const at `packages/sea-mcp-server/src/capability-matrix.ts`). A parity test (`tests/plugins/memory/test_capability_matrix_parity.py`) reads the TS source at test time and asserts every `cap_name → kora_value` matches in both directions. **CI must set `KORA_ISOKRON_REPO` to point at a cloned IsoKron substrate**, otherwise the parity test skips silently and drift won't be caught. Tracked as `D-kr2-st2-capability-matrix-mirror` in `BUILD_DEVIATIONS.md`; closes when K-7 (Sea MCP `kora__read_kora_capability_row` tool) ships.
 
-* **No connection happens at construct time.** Misconfigured `isokron_dsn` (wrong port, wrong credentials) surfaces as a connection error when ST2's first real query runs, not at plugin load. ST2 will add a fast-fail health check during `initialize()`.
+* **Policy registry reads MUST set the RLS GUC inside the transaction.** `kora_policy_registry` has `ENABLE ROW LEVEL SECURITY` with a policy keyed off `current_setting('app.current_workspace_id', true)`. The reader calls `SELECT set_config('app.current_workspace_id', $1, true)` before the SELECT; without that, the query returns 0 rows silently. If you bypass `reads.read_kora_policy_registry` and write your own query, replicate the pattern or you'll get a confusing empty result.
+
+* **Role Charter integrity check is fail-closed.** Recomputed SHA-256 mismatch → `RoleCharterIntegrityError`. NULL `content_md` / `content_hash` (= unpopulated K-1 ST1 shell) → same error. The provider does NOT degrade to flat MEMORY.md in either case; the session surfaces the error. Set `enable_legacy_fallback: true` to opt into the BC bridge during the cutover, but understand that means stale identity data leaks into the system prompt.
+
+* **`memory.provider: isokron` requires a configured workspace_id.** Either set `default_workspace_id` in the config, or pass `workspace_id` via session kwargs. Without it, `system_prompt_block` returns empty string + logs a warning — Kora session runs without the Role Charter identity block, which is degraded but not broken.
+
+* **No fast-fail connection check at `initialize()`.** Misconfigured `isokron_dsn` (wrong port, wrong credentials) surfaces as a connection error when `on_turn_start` pre-fetches, not at plugin load. By design — the pool open is lazy so lifecycle tests run without a live Postgres.
 
 * **MCP transport choice deferred.** The `mcp_endpoint` config field accepts either `stdio://` (subprocess) or `http(s)://`. ST3 picks one and STOP-gates if neither works against the Sea MCP server's actual exposed surface.
 
-* **Legacy fallback off by default.** If the substrate is unreachable in production, `IsoKronConnection.start()` raises rather than silently degrading to flat MEMORY.md. Set `enable_legacy_fallback: true` to opt into the BC bridge during the KR-2 cutover.
+* **Legacy fallback off by default.** If the substrate is unreachable in production, `IsoKronConnection.start()` does not raise on cold IO loop, but the first read against the pool will. Set `enable_legacy_fallback: true` to opt into the BC bridge during the KR-2 cutover; ST2 does not yet implement the fallback wiring (deferred to ST3).
 
 ## Provenance
 

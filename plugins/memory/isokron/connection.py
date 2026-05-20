@@ -7,11 +7,10 @@ async. We run a dedicated asyncio event loop on a background daemon
 thread and submit coroutines via ``run_coroutine_threadsafe`` — matches
 the pattern in ``tools/mcp_tool.py`` (upstream Hermes' MCP client).
 
-**KR-2 ST1 — skeleton.** Connection objects exist with correct shapes
-and lifecycle hooks; calls into them raise ``NotImplementedError`` until
-ST2 (reads) and ST3 (writes) land. The IO loop is real and starts during
-``initialize()`` so smoke tests can exercise the lifecycle without
-mocking the threading layer.
+**KR-2 ST2 wires the asyncpg pool.** Pool open is lazy (deferred until
+the first read), so the existing ST1 lifecycle tests that don't issue
+queries keep working without a live Postgres. The MCP client path
+stays stubbed for ST3.
 
 **Why a background loop instead of `asyncio.run` per call:**
 asyncpg's connection pool benefits from being kept warm across calls;
@@ -20,15 +19,16 @@ likewise wants a persistent subprocess. The Hermes upstream chose
 ``threading.Thread + asyncio.new_event_loop()`` for the same reason in
 ``tools/mcp_tool.py``; we follow the same pattern.
 
-Rule-6 honest label: KR-2 ST1's connection wrapper does NOT open any
-real network connections. ``initialize()`` only starts the event loop.
-ST2 actually opens the asyncpg pool; ST3 opens the MCP stdio /
-HTTP transport.
+Rule-6 honest label: ``start()`` only spins the event loop. The
+asyncpg pool opens on first ``get_pg_pool()`` (or ``submit_and_wait``
+for a coroutine that needs the pool). ST3 opens the MCP stdio /
+HTTP transport on first ``mcp_client()``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 from typing import Any, Optional
@@ -155,8 +155,17 @@ class IsoKronConnection:
         """Tear down loop + pool + MCP transport (idempotent)."""
         if not self._started:
             return
-        # ST2 will close the pg pool; ST3 closes the MCP client.
-        # For ST1 we just stop the loop.
+        # Close the asyncpg pool on the dedicated loop, then stop the loop.
+        if self._pg_pool is not None:
+            try:
+                fut = self._loop.submit(self._pg_pool.close())
+                fut.result(timeout=5.0)
+            except Exception:  # pragma: no cover — close failures are non-fatal
+                logger.exception(
+                    "[isokron.connection] error closing pg pool — continuing"
+                )
+            self._pg_pool = None
+        # ST3 will close the MCP client here.
         self._loop.stop()
         self._started = False
         logger.info("[isokron.connection] IO loop stopped")
@@ -175,26 +184,69 @@ class IsoKronConnection:
             )
         return self._loop.submit(coro)
 
-    # -- Pool accessor (ST2 fills the implementation) ------------------------
+    def submit_and_wait(self, coro, *, timeout: float = 10.0):
+        """Submit ``coro`` to the dedicated loop and block for its result.
 
-    def pg_pool(self):
-        """Return the asyncpg pool (lazy). KR-2 ST2 implements; ST1 raises."""
+        Convenience wrapper around ``_submit_async(coro).result(timeout)``.
+        Used by the sync provider hooks (``system_prompt_block``,
+        ``on_turn_start``) to drive the async read functions.
+        """
+        return self._submit_async(coro).result(timeout=timeout)
+
+    # -- Pool accessor (lazy open) -------------------------------------------
+
+    async def _create_pg_pool(self):
+        """Coroutine that opens the asyncpg pool with the JSONB codec.
+
+        Runs on the dedicated IO loop. The JSONB codec hands Python
+        ``dict``/``list`` directly to callers (rather than raw JSON
+        strings), matching the shape ``reads.py`` expects.
+        """
+        import asyncpg  # imported lazily so plugin discovery doesn't pin asyncpg
+
+        async def _init_conn(conn):
+            await conn.set_type_codec(
+                "jsonb",
+                encoder=json.dumps,
+                decoder=json.loads,
+                schema="pg_catalog",
+            )
+
+        return await asyncpg.create_pool(
+            self._config.isokron_dsn,
+            init=_init_conn,
+            min_size=1,
+            max_size=4,
+        )
+
+    def get_pg_pool(self):
+        """Return the asyncpg pool, opening it on first access.
+
+        Lazy so that lifecycle smokes (``start()`` / ``close()``) work
+        without a live Postgres. The first read path that needs the
+        pool triggers the open.
+        """
+        if not self.is_started:
+            raise IsoKronConnectionError(
+                "IsoKronConnection.start() must be called before opening the pool"
+            )
         if self._pg_pool is None:
-            raise NotImplementedError(
-                "[isokron.connection] Postgres pool not opened — "
-                "KR-2 ST2 ships this. Rule-6: ST1 is a structural "
-                "skeleton; no real reads happen yet."
+            fut = self._loop.submit(self._create_pg_pool())
+            self._pg_pool = fut.result(timeout=10.0)
+            logger.info(
+                "[isokron.connection] asyncpg pool opened (min=1, max=4, "
+                "JSONB codec=dict)"
             )
         return self._pg_pool
 
     # -- MCP client accessor (ST3 fills the implementation) ------------------
 
     def mcp_client(self):
-        """Return the MCP client. KR-2 ST3 implements; ST1 raises."""
+        """Return the MCP client. KR-2 ST3 implements; ST2 still raises."""
         if self._mcp_client is None:
             raise NotImplementedError(
                 "[isokron.connection] MCP client not opened — "
-                "KR-2 ST3 ships this. Rule-6: ST1 is a structural "
-                "skeleton; no real writes happen yet."
+                "KR-2 ST3 ships this. Rule-6: writes (scratchpad + chain "
+                "events) are not yet wired."
             )
         return self._mcp_client
