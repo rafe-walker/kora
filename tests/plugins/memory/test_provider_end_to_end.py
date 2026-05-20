@@ -161,17 +161,39 @@ class _FakePool:
         return _FakeAcquireCtx(self._conn)
 
 
+class _FakeMcpClient:
+    """KR-7-era fake MCP client — records calls + returns a mock event_id.
+
+    Chain emit paths post-KR-7 fetch the client via
+    ``IsoKronConnection.get_mcp_client()`` then call
+    ``mcp_client.invoke('kora__append_event', …)``. The E2E test wires
+    this fake so emits succeed (operator-visible log path, not the
+    fail-and-recover path).
+    """
+
+    def __init__(self):
+        self.invoke_calls: list[tuple[str, dict]] = []
+
+    async def invoke(self, tool_name: str, args: dict):
+        self.invoke_calls.append((tool_name, dict(args)))
+        return {"event_id": f"evt-mock-{len(self.invoke_calls):03d}"}
+
+
 class _FakeProviderConnection:
     """Drop-in for IsoKronConnection in the E2E test."""
 
     def __init__(self):
         self._conn = _FakeConnection()
         self._pool = _FakePool(self._conn)
+        self._mcp_client = _FakeMcpClient()
         self.submitted: list = []
         self.closed = False
 
     def get_pg_pool(self):
         return self._pool
+
+    def get_mcp_client(self):
+        return self._mcp_client
 
     def submit_and_wait(self, coro, *, timeout: float = 10.0):
         self.submitted.append(coro)
@@ -289,11 +311,35 @@ def test_provider_end_to_end_full_lifecycle(caplog):
         assert WORKSPACE_ID not in provider._events_cache
 
     # No NotImplementedError surfaced anywhere through the full lifecycle.
-    # Deferred-write WARNINGs were logged but caught.
-    deferred = [r for r in caplog.records if "skipped" in r.getMessage()]
-    # Expect at least: sync_turn (1) + on_memory_write (1) + on_delegation
-    # scratchpad (1) + on_delegation emit (1) + on_session_end emit (1) = 5
-    assert len(deferred) >= 5
+    # Post-KR-7 reality:
+    #   - Scratchpad-write deferrals stay (D-kr2-st3 still open) — 3 WARNINGs
+    #     tagged "scratchpad write skipped" (sync_turn + on_memory_write +
+    #     on_delegation).
+    #   - Chain emits now succeed via the fake MCP client (KR-7 closed
+    #     D-kr2-st4) — 2 INFO logs tagged [kora.chain.emit].
+    scratchpad_skipped = [
+        r for r in caplog.records if "scratchpad write skipped" in r.getMessage()
+    ]
+    assert len(scratchpad_skipped) == 3
+
+    chain_emitted = [
+        r for r in caplog.records if "[kora.chain.emit]" in r.getMessage()
+    ]
+    assert len(chain_emitted) == 2  # on_delegation + on_session_end
+    assert any(
+        "kora.handoff.to_claude_pm" in r.getMessage() for r in chain_emitted
+    )
+    assert any(
+        "kora.session.ended" in r.getMessage() for r in chain_emitted
+    )
+
+    # The fake MCP client recorded both emit calls with the spec-pinned
+    # tool name + arg shape.
+    fake_client = fake_conn._mcp_client
+    assert len(fake_client.invoke_calls) == 2
+    for tool_name, args in fake_client.invoke_calls:
+        assert tool_name == "kora__append_event"
+        assert set(args.keys()) == {"workspace_id", "event_type", "payload"}
 
     provider.shutdown()
     assert provider._initialized is False

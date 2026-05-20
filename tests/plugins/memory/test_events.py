@@ -164,23 +164,127 @@ def test_read_recent_kora_events_handles_datetime_occurred_at():
 
 
 # ---------------------------------------------------------------------------
-# Deferred emit
+# KR-7 — MCP-backed emit via kora__append_event
 # ---------------------------------------------------------------------------
 
 
-def test_emit_kora_event_raises_deferred_write_error():
-    """Until the Sea MCP tool ships, emit raises ChainEventEmitNotAvailableError."""
+class _FakeMcpClient:
+    """Minimal duck-type for IsoKronMCPClient used in emit tests.
+
+    Records every ``invoke`` call so tests can assert on the tool
+    name + payload. Configured to return a canned ``event_id`` by
+    default; tests override ``invoke_result`` or set ``invoke_raises``
+    to drive error paths.
+    """
+
+    def __init__(self, *, invoke_result=None, invoke_raises=None):
+        self.invoke_calls: list[tuple[str, dict]] = []
+        self._invoke_result = invoke_result or {"event_id": "evt-mock-001"}
+        self._invoke_raises = invoke_raises
+
+    async def invoke(self, tool_name: str, args: dict):
+        self.invoke_calls.append((tool_name, dict(args)))
+        if self._invoke_raises is not None:
+            raise self._invoke_raises
+        return self._invoke_result
+
+
+def test_emit_kora_event_invokes_kora__append_event_with_expected_args():
+    """The swap routes through ``mcp_client.invoke('kora__append_event', …)``
+    with the spec-pinned arg shape."""
+
+    client = _FakeMcpClient(invoke_result={"event_id": "evt-abc-123"})
+
+    async def _run():
+        return await emit_kora_event(
+            workspace_id=WORKSPACE_ID,
+            event_type="kora.session.ended",
+            payload={"turn_count": 5},
+            mcp_client=client,
+        )
+
+    event_id = asyncio.run(_run())
+    assert event_id == "evt-abc-123"
+    assert len(client.invoke_calls) == 1
+    tool_name, args = client.invoke_calls[0]
+    assert tool_name == "kora__append_event"
+    assert args == {
+        "workspace_id": WORKSPACE_ID,
+        "event_type": "kora.session.ended",
+        "payload": {"turn_count": 5},
+    }
+
+
+def test_emit_kora_event_propagates_mcp_invocation_error():
+    """Substrate-side errors propagate as IsoKronMCPInvocationError."""
+    from plugins.memory.isokron.mcp_client import IsoKronMCPInvocationError
+
+    client = _FakeMcpClient(
+        invoke_raises=IsoKronMCPInvocationError(
+            "kora__append_event", "tenant_id not found"
+        )
+    )
 
     async def _run():
         await emit_kora_event(
             workspace_id=WORKSPACE_ID,
             event_type="kora.session.ended",
-            payload={"turn_count": 5},
+            payload={"turn_count": 1},
+            mcp_client=client,
         )
 
-    with pytest.raises(ChainEventEmitNotAvailableError) as excinfo:
+    with pytest.raises(IsoKronMCPInvocationError) as excinfo:
         asyncio.run(_run())
-    msg = str(excinfo.value)
-    assert "[kora.isokron.todo]" in msg
-    assert "D-kr2-st4-no-chain-emit-mcp-tool" in msg
-    assert "BUILD_DEVIATIONS" in msg
+    assert excinfo.value.tool_name == "kora__append_event"
+    assert "tenant_id not found" in excinfo.value.message
+
+
+def test_emit_kora_event_rejects_none_mcp_client():
+    """Defensive: caller must resolve mcp_client before invoking."""
+
+    async def _run():
+        await emit_kora_event(
+            workspace_id=WORKSPACE_ID,
+            event_type="kora.session.ended",
+            payload={},
+            mcp_client=None,
+        )
+
+    with pytest.raises(ValueError) as excinfo:
+        asyncio.run(_run())
+    assert "mcp_client is required" in str(excinfo.value)
+
+
+def test_emit_kora_event_rejects_unexpected_response_shape():
+    """If the substrate tool returns a non-dict or missing event_id,
+    surface the drift with a RuntimeError rather than returning bogus."""
+
+    client = _FakeMcpClient(invoke_result={"oops_no_event_id": "x"})
+
+    async def _run():
+        await emit_kora_event(
+            workspace_id=WORKSPACE_ID,
+            event_type="kora.session.ended",
+            payload={},
+            mcp_client=client,
+        )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(_run())
+    assert "kora__append_event returned unexpected shape" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# Deprecation runway — ChainEventEmitNotAvailableError still importable
+# ---------------------------------------------------------------------------
+
+
+def test_chain_event_emit_not_available_error_still_importable_post_kr7():
+    """KR-7 marks the class @deprecated but keeps it importable for one
+    release so any pinned downstream tests resolve. Message now flags
+    the deprecation (no longer raised by emit_kora_event)."""
+
+    err = ChainEventEmitNotAvailableError()
+    msg = str(err)
+    assert "[kora.isokron.deprecated]" in msg
+    assert "obsolete after KR-7" in msg

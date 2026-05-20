@@ -585,27 +585,21 @@ def _handle_iso_node_supersede(
             "message": str(exc),
         }
 
-    # Successful write would trigger an emit of kora.node.superseded
-    # (also deferred per D-kr2-st4). Unreachable in v0.1.
-    try:
-        from ..events import emit_kora_event
-
-        assert provider._connection is not None
-        provider._connection.submit_and_wait(
-            emit_kora_event(
-                workspace_id=workspace_id,
-                event_type="kora.node.superseded",
-                payload={
-                    "superseded_entry_id": superseded_entry_id,
-                    "reason": supersession_reason,
-                },
-            ),
-            timeout=10.0,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[kora.isokron] iso_node_supersede emit deferred — %s", exc
-        )
+    # KR-7 closed D-kr2-st4: the supersession emit now routes through
+    # the live kora__append_event MCP tool via the provider's
+    # _attempt_chain_event_emit helper (which fetches IsoKronMCPClient
+    # via get_mcp_client + handles error logging at ERROR level).
+    # Unreachable in v0.1 anyway because the scratchpad write above
+    # still defers via D-kr2-st3.
+    provider._attempt_chain_event_emit(
+        workspace_id=workspace_id,
+        event_type="kora.node.superseded",
+        payload={
+            "superseded_entry_id": superseded_entry_id,
+            "reason": supersession_reason,
+        },
+        origin="iso_node_supersede",
+    )
     return {"ok": True, "entry_id": "<assigned-by-substrate>"}
 
 

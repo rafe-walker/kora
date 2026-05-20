@@ -1,4 +1,4 @@
-"""Chain event emit + recent events read (KR-2 ST4).
+"""Chain event emit + recent events read (KR-2 ST4 + KR-7).
 
 Two halves:
 
@@ -11,15 +11,16 @@ Two halves:
   t.clerk_org_id = $1``. Matches the TS reader at
   ``packages/sea-mcp-server/src/kora/context-assembler/index.ts:287``.
 
-- :func:`emit_kora_event` — deferred write surface. Chain events go
-  through the substrate's ``_emit_chain_event`` SECDEF (which sets
-  ``prev_event_hash`` / ``this_event_hash`` to maintain chain witness
-  integrity); calling it from runtime Python without the SECDEF wrapper
-  would break the witness chain. The path is a Sea MCP tool
-  (working name ``kora__append_event``); as of substrate main
-  ``28ff4f78``, no such tool is registered. Raises
-  :class:`ChainEventEmitNotAvailableError` until the tool ships.
-  BUILD_DEVIATIONS ``D-kr2-st4-no-chain-emit-mcp-tool``.
+- :func:`emit_kora_event` — chain event emit via the
+  ``kora__append_event`` Sea MCP tool. K-9 shipped the substrate tool
+  (`f8487059`); KR-7 (this swap) replaced the previous
+  ``ChainEventEmitNotAvailableError`` defer with a real
+  ``mcp_client.invoke`` call. Returns the new event_id (UUID string).
+  Production-test posture: substrate-team's dispatch tier (queued)
+  bridges Layer-A wsk_* auth → Layer-B ``actor_kind='kora'`` and
+  un-stubs the K-9 handler; until that lands, live calls return
+  substrate-side errors but the code shape is correct. KR-7a's
+  ``IsoKronMCPClient`` handles the transport.
 """
 
 from __future__ import annotations
@@ -37,21 +38,25 @@ logger = logging.getLogger(__name__)
 
 
 class ChainEventEmitNotAvailableError(RuntimeError):
-    """Raised by :func:`emit_kora_event` until the Sea MCP tool ships.
+    """[DEPRECATED in KR-7] Raised by the pre-K-9 deferred-emit path.
 
-    Same pattern as :class:`scratchpad.ScratchpadWriteNotAvailableError`
-    — runtime callers MUST NOT bypass with direct INSERT or
-    ``_emit_chain_event`` calls (would break chain witness integrity).
+    Kept exported for one release so any downstream code or pinned
+    tests that still reference the class still resolve. After KR-7
+    (which swapped the defer for a real ``mcp_client.invoke`` call)
+    this class is no longer raised by ``emit_kora_event``; substrate-
+    side failures now surface as
+    :class:`IsoKronMCPInvocationError` from ``mcp_client``.
+
+    BUILD_DEVIATIONS ``D-kr2-st4-no-chain-emit-mcp-tool`` is Closed in
+    KR-7. Remove this class when KR-N audits show no remaining
+    references.
     """
 
     DEFAULT_MESSAGE = (
-        "[kora.isokron.todo] chain event emit deferred — Sea MCP server "
-        "does not yet expose kora__append_event (or equivalent). Tracked "
-        "in BUILD_DEVIATIONS.md as D-kr2-st4-no-chain-emit-mcp-tool. "
-        "Direct INSERT into hivex_foundation.event_log bypasses the "
-        "prev_event_hash / this_event_hash chain — do NOT do that; the "
-        "MCP tool wraps the substrate's _emit_chain_event SECDEF which "
-        "preserves chain witness integrity."
+        "[kora.isokron.deprecated] ChainEventEmitNotAvailableError is "
+        "obsolete after KR-7 — chain event emits now route through "
+        "kora__append_event via IsoKronMCPClient. Substrate-side "
+        "failures surface as IsoKronMCPInvocationError."
     )
 
     def __init__(self, message: Optional[str] = None):
@@ -171,22 +176,49 @@ async def emit_kora_event(
     workspace_id: str,
     event_type: str,
     payload: Any,
-    mcp_client: Any = None,
+    mcp_client: Any,
 ) -> str:
-    """Emit a ``kora.*`` chain event via the Sea MCP tool surface.
+    """Emit a ``kora.*`` chain event via the ``kora__append_event`` MCP tool.
 
-    Raises ``ChainEventEmitNotAvailableError`` until
-    ``kora__append_event`` (or equivalent) lands in the Sea MCP
-    server. Caller signature matches the future MCP-backed
-    implementation; when the tool ships the body switches to an
-    ``mcp_client.invoke('kora__append_event', ...)`` call without
-    any caller-side refactor.
+    Returns the new ``event_id`` (UUID string) on success.
+    ``mcp_client`` must be a started :class:`IsoKronMCPClient`
+    (typically obtained via ``IsoKronConnection.get_mcp_client()``).
 
     ``event_type`` must start with ``kora.`` and appear in the
     ``event_log_event_type_check`` constraint set (foundation/0136 +
-    foundation/0138 ship the canonical vocabulary). Validation is
-    enforced substrate-side by the MCP tool — runtime callers pass
-    the literal through.
+    foundation/0138 ship the canonical vocabulary). The Sea MCP tool
+    validates with a Zod regex ``^kora\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$``
+    — runtime callers pass the literal through; bad values surface as
+    ``IsoKronMCPInvocationError`` from the MCP boundary.
+
+    Raises:
+        IsoKronMCPInvocationError — substrate-side error (CHECK violation,
+            actor_kind resolution failure, chain lock failure, etc.).
+        IsoKronMCPNotStartedError — ``mcp_client`` is not started.
+        ValueError — ``mcp_client`` is ``None`` (defensive: should have
+            been resolved before calling).
     """
-    del workspace_id, event_type, payload, mcp_client
-    raise ChainEventEmitNotAvailableError()
+    if mcp_client is None:
+        raise ValueError(
+            "emit_kora_event: mcp_client is required (resolve via "
+            "IsoKronConnection.get_mcp_client() before calling)"
+        )
+    result = await mcp_client.invoke(
+        "kora__append_event",
+        {
+            "workspace_id": workspace_id,
+            "event_type": event_type,
+            "payload": payload,
+        },
+    )
+    # K-9 contract: tool returns {'event_id': '<uuid>'}.
+    event_id = result.get("event_id") if isinstance(result, dict) else None
+    if not isinstance(event_id, str):
+        # Defensive: surface a clear error if the substrate response
+        # shape drifts (the parity is informal — Zod-strict on the
+        # input side, but the output is just a dict).
+        raise RuntimeError(
+            f"kora__append_event returned unexpected shape: {result!r}; "
+            f"expected {{'event_id': '<uuid>'}}"
+        )
+    return event_id

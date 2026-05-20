@@ -57,41 +57,6 @@ Format:
   - `tests/plugins/memory/test_iso_link_tools.py:test_create_relationlink_raises_deferred_write_error`
     asserts the message contains all three blockers.
 
-### D-kr2-st4-no-chain-emit-mcp-tool
-
-- **Bucket**: KR-2 ST4 (chain event emission + recent events read + finalize)
-- **Why**: Spec § ST4 § 1 mandates chain events go through a Sea MCP
-  tool (working name `kora__append_event`) — direct INSERT into
-  `hivex_foundation.event_log` is forbidden because it would skip the
-  substrate's `_emit_chain_event` SECDEF (which sets `prev_event_hash` /
-  `this_event_hash` to maintain chain witness integrity). The Sea MCP
-  server on substrate main `28ff4f78` exposes only
-  `kora__propose_convention`, `kora__read_escalation_queue`,
-  `kora__propose_policy_change` — no append-event tool. Same pattern
-  as the ST3 scratchpad-write deferral.
-- **Closes when**: A Sea MCP append-event tool ships (working name
-  `kora__append_event`; PM coordinates with substrate-team / files
-  the substrate dispatch — likely K-9 on CC#1's lane, queued behind
-  K-7 + K-8). When it lands, `events.emit_kora_event` body switches
-  from `raise ChainEventEmitNotAvailableError()` to
-  `mcp_client.invoke('kora__append_event', ...)`. Caller signature
-  stays unchanged — `provider._attempt_chain_event_emit` and every
-  lifecycle hook that uses it (`sync_turn`, `on_memory_write`,
-  `on_session_end`, `on_delegation`) keep working without refactor.
-- **Guarded by**:
-  - `plugins/memory/isokron/events.py` — top-of-module `[kora.isokron.todo]`
-    tag; `ChainEventEmitNotAvailableError` carries the deviation ID in
-    every raised message.
-  - `IsoKronMemoryProvider._attempt_chain_event_emit` — catches
-    `ChainEventEmitNotAvailableError` + logs a one-line WARNING
-    tagged with the deviation ID and the event_type that was skipped.
-    Operators grep `D-kr2-st4-no-chain-emit-mcp-tool` in logs.
-  - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
-    chain event deferral notice.
-  - `tests/plugins/memory/test_events.py` —
-    `test_emit_kora_event_raises_deferred_write_error` asserts the
-    error message + tag stay correct.
-
 ### D-kr2-st3-no-scratchpad-write-mcp-tool
 
 - **Bucket**: KR-2 ST3 (Scratchpad reads + writes)
@@ -153,6 +118,51 @@ Format:
     operator-facing drift notice.
 
 ## Closed
+
+### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
+
+- **Bucket**: KR-2 ST4 (chain event emission)
+- **Resolved by**: KR-7 — `plugins/memory/isokron/events.py:emit_kora_event`
+  body swaps from `raise ChainEventEmitNotAvailableError()` to
+  `await mcp_client.invoke('kora__append_event', {...})`. Returns the
+  K-9 substrate tool's `event_id` (UUID string). The provider's
+  `_attempt_chain_event_emit` fetches the real
+  :class:`IsoKronMCPClient` via `IsoKronConnection.get_mcp_client()`
+  (wired in KR-7a) and surfaces substrate-side failures as
+  `IsoKronMCPInvocationError` logged at ERROR (lifecycle hooks catch
+  + log so the session stays alive). `iso_node_supersede`'s
+  `kora.node.superseded` emit routes through the same helper instead
+  of duplicating the wiring.
+- **Spec quote** (KR-7 § 0): *"CC#1 just shipped K-9 (`f8487059`):
+  the `kora__append_event` Sea MCP tool now exists. KR-7 swaps CC#3's
+  KR-2 ST4 deferred-emit path from the placeholder error to a real
+  MCP call. ~20-40 lines Python; single PR; closes one
+  BUILD_DEVIATIONS."*
+- **Production-test posture** (IsoKron PM #27): K-9's
+  `kora__append_event` handler is currently a `notImplementedHandler`
+  stub on substrate main; substrate-team's dispatch tier (queued)
+  bridges Layer-A `wsk_*` auth → Layer-B `actor_kind='kora'` and
+  un-stubs the handler. KR-7's code shape is sound and ships green
+  with mock tests; production deploys wait on the dispatch tier
+  landing. Verify-at-first-live-emit step: confirm
+  `event_log.actor_id` resolves to the 0076-seeded canonical Kora
+  actor (`actor_kind='kora' AND workspace_id=<Flynn workspace
+  clerk_org_id>`) — if it resolves to a token-UUIDv5 instead (the
+  `cowork-claude-pm` precedent), small substrate patch needed.
+- **Deprecation runway**: `ChainEventEmitNotAvailableError` class
+  kept exported (tagged `[kora.isokron.deprecated]`) for one release
+  so any pinned downstream tests still import it. Class removal
+  scheduled when KR-N audits show no remaining references.
+- **Guarded by**:
+  - `tests/plugins/memory/test_events.py` — replaced the
+    deferred-error test with four MCP-call-path tests covering happy,
+    error propagation, None-client defense, and unexpected-response
+    shape; deprecation-runway test asserts the class is still
+    importable.
+  - `tests/plugins/memory/test_provider_end_to_end.py` —
+    `_FakeProviderConnection` now exposes `get_mcp_client()` returning
+    a `_FakeMcpClient`; E2E asserts both emits succeed with the
+    spec-pinned tool name + arg shape.
 
 ### D-kr3-st1-capability-check-deferred — closed by KR-6 (2026-05-20)
 
