@@ -93,31 +93,55 @@ Format:
     `test_write_scratchpad_entry_raises_deferred_write_error` asserts
     the error message + tag stay correct.
 
-### D-kr2-st2-capability-matrix-mirror
-
-- **Bucket**: KR-2 ST2 (IsoKron memory provider — read paths)
-- **Why**: Sea MCP server does not expose a `kora__read_kora_capability_row`
-  tool on main (`b0804640`, 2026-05-20). The `ACTOR_CAPABILITY_MATRIX`
-  source of truth is a TS const at
-  `packages/sea-mcp-server/src/capability-matrix.ts`, not a Postgres
-  table — so Approach B (asyncpg SELECT) is not viable. PM-decided
-  STOP-gate resolution on 2026-05-20: ship C2 (Python mirror) now
-  rather than block CC#3 on a CC#1 dependency.
-- **Closes when**: K-7 (Sea MCP capability-row tool) ships — at that
-  point the read path swaps to call the MCP tool, the Python mirror
-  becomes a test fixture only, and the parity test stays in place
-  as a smoke check across CI configurations that still hit the
-  mirror as a fallback. PM is drafting the K-7 bucket.
-- **Guarded by**:
-  - `plugins/memory/isokron/capability_matrix_mirror.py` — top-of-file
-    `[kora.isokron.todo]` tag.
-  - `tests/plugins/memory/test_capability_matrix_parity.py` —
-    parses the TS source and asserts every cap_name → kora_value
-    matches the Python mirror in both directions.
-  - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
-    operator-facing drift notice.
-
 ## Closed
+
+### D-kr2-st2-capability-matrix-mirror — closed by KR-7b (2026-05-20)
+
+- **Bucket**: KR-2 ST2 (capability matrix Kora row)
+- **Resolved by**: KR-7b — `populate_capability_matrix_from_mcp` in
+  `plugins/memory/isokron/capability_matrix_mirror.py` fetches the
+  authoritative Kora-row matrix from K-7's `kora__read_kora_capability_row`
+  Sea MCP tool (substrate `ee730853`) at `IsoKronMemoryProvider.initialize()`
+  via the KR-7a-wired `IsoKronMCPClient`, replacing the hand-mirrored
+  49-entry C2 dict in place. The dict identity is preserved, so
+  `capability_check.actor_has_capability` keeps consuming it by
+  reference — no caller-side refactor needed. Forward-stable: K-13's
+  upcoming capability additions flow through automatically at the
+  next provider start.
+- **Spec quote** (KR-7b § 90): *"KR-7b ships boot-time MCP fetch
+  replacing hand-mirrored TS-source dict. K-7 (ee730853) shipped the
+  substrate-side tool. Forward-stable; KR-7a transport wiring is
+  independent and may eventually consolidate to a unified MCP client."*
+  CC#3 elected Option A (use KR-7a's `IsoKronMCPClient`) over Option
+  B (parallel httpx fetch path) since KR-7a is shipped — one
+  canonical MCP-call pattern across all closure swaps.
+- **Production-test posture** (same as KR-7): K-7's handler is a
+  `notImplementedHandler` stub on substrate main; dispatch tier
+  (queued substrate-team) un-stubs it. KR-7b's code shape is sound;
+  mock tests verify the populate machinery; production deploys wait
+  on dispatch tier. On fetch failure, hand-mirrored fallback stays in
+  place + `[kora.capability_matrix.fallback]` WARNING logged so
+  dev/test ergonomics survive substrate downtime.
+- **Hand-mirrored fallback retained**: 49-entry C2 dict stays as the
+  default at module import — same content, repurposed from "C2
+  interim" to "dev/test fallback". The parity test at
+  `tests/plugins/memory/test_capability_matrix_parity.py` keeps
+  guarding the fallback against TS-source drift so dev parity matches
+  production-substrate parity (and so when K-13 ships, the parity
+  test catches the 2-line bump that the fallback needs even though
+  production picks up the new caps automatically).
+- **Guarded by**:
+  - `tests/plugins/memory/test_capability_matrix_mcp_fetch.py` —
+    11 tests covering happy populate, in-place dict mutation, defensive
+    error paths (None client / missing key / non-dict / non-bool /
+    non-str / propagated underlying error), and provider.initialize
+    success-INFO + dual-fallback-WARNING paths.
+  - `tests/plugins/memory/test_provider_end_to_end.py` —
+    `_FakeMcpClient.invoke` routes by tool_name and returns a
+    canonical-shape matrix for `kora__read_kora_capability_row`;
+    E2E asserts the initialize-time fetch fired + replaced the dict.
+
+### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
 
 ### D-kr2-st4-no-chain-emit-mcp-tool — closed by KR-7 (2026-05-20)
 

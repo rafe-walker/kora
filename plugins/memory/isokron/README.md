@@ -93,28 +93,33 @@ This `README.md` ships with **KR-2 ST1**, which delivers the structural skeleton
 
 ## Operator pitfalls
 
-### Deferred-surface summary (3 open BUILD_DEVIATIONS as of KR-7)
+### Deferred-surface summary (2 open BUILD_DEVIATIONS as of KR-7b)
 
-All three follow the same shape: signature is forward-stable, body
-swaps from `raise <DeferredError>` to `mcp_client.invoke(...)` when
-the substrate-side dependency lands. **No caller refactor needed**.
+Both follow the same shape: signature is forward-stable, body swaps
+from `raise <DeferredError>` to `mcp_client.invoke(...)` when the
+substrate-side dependency lands. **No caller refactor needed**.
 Operators grep the deviation_id in logs to track defer rates.
 
 | Deviation | What's deferred | Closes when |
 |---|---|---|
-| `D-kr2-st2-capability-matrix-mirror` | C2 Python mirror of `ACTOR_CAPABILITY_MATRIX` Kora column (parity test guards drift) | K-7→KR-N swap (Sea MCP `kora__read_kora_capability_row` shipped 2026-05-20; PM drafts swap bucket) |
-| `D-kr2-st3-no-scratchpad-write-mcp-tool` | Scratchpad writes from `sync_turn` / `on_memory_write` / `iso_node_create` / `iso_node_supersede` | K-8 ships Sea MCP `kora__write_agent_scratchpad` |
-| `D-kr3-st2-no-relationlink-write-mcp-tool` | `iso_link_create` writes — 3 substrate blockers in one (actor_kind CHECK + missing MCP tool + chain_event_id SECDEF) | K-10 ships the bundled substrate bucket |
+| `D-kr2-st3-no-scratchpad-write-mcp-tool` | Scratchpad writes from `sync_turn` / `on_memory_write` / `iso_node_create` / `iso_node_supersede` | K-8 ships Sea MCP `kora__write_agent_scratchpad` (now merged → KR-8 dispatchable) |
+| `D-kr3-st2-no-relationlink-write-mcp-tool` | `iso_link_create` writes — 3 substrate blockers in one (actor_kind CHECK + missing MCP tool + chain_event_id SECDEF) | K-10 ships the bundled substrate bucket (now merged → KR-9 dispatchable) |
 
 **Recently closed**:
+- `D-kr2-st2-capability-matrix-mirror` — KR-7b replaced the hand-
+  mirrored C2 dict with an authoritative MCP fetch via
+  `kora__read_kora_capability_row` at provider initialize. The
+  hand-mirrored 49 entries stay as a dev/test fallback (parity test
+  still guards drift) so substrate downtime falls back to the same
+  data dev sees. Production posture per IsoKron PM #27: same as
+  KR-7 — substrate dispatch tier un-stubs the K-7 handler;
+  operators grep `[kora.capability_matrix.fallback]` to confirm
+  fetch health.
 - `D-kr2-st4-no-chain-emit-mcp-tool` — KR-7 swapped `emit_kora_event`
   to route through `kora__append_event` via the KR-7a-wired
   `IsoKronMCPClient`. Substrate-side failures surface as
   `IsoKronMCPInvocationError` logged at ERROR; lifecycle hooks catch
-  + log so the session stays alive. Production-test posture per
-  IsoKron PM #27: substrate-team dispatch tier (queued) un-stubs the
-  K-9 handler; live emits will fail until then but the code shape is
-  correct.
+  + log so the session stays alive.
 - `D-kr3-st1-capability-check-deferred` — KR-6 shipped the Python
   `actor_has_capability` helper at
   `plugins/memory/isokron/capability_check.py`. Every `iso_*` tool
@@ -171,7 +176,7 @@ idempotency) is fully tested with mocked transports.
 
 * **Scratchpad BLAKE3 integrity is warn-only, NOT fail-closed.** Unlike the Role Charter (which raises on hash mismatch), `read_own_scratchpad` and `read_cross_agent_scratchpad` log a WARNING and return the entry on mismatch. Spec § ST3: scratchpad is mutable working memory; refusing to surface a drifted entry would block sessions on transient state. Operators monitoring chain-of-custody should grep `content_hash drift` in logs.
 
-* **Capability matrix is currently a Python mirror; parity test guards drift but a Sea MCP tool is the proper substrate path.** KR-2 ST2 ships `plugins/memory/isokron/capability_matrix_mirror.py` as a hand-translated copy of `ACTOR_CAPABILITY_MATRIX`'s Kora column (the TS const at `packages/sea-mcp-server/src/capability-matrix.ts`). A parity test (`tests/plugins/memory/test_capability_matrix_parity.py`) reads the TS source at test time and asserts every `cap_name → kora_value` matches in both directions. **CI must set `KORA_ISOKRON_REPO` to point at a cloned IsoKron substrate**, otherwise the parity test skips silently and drift won't be caught. Tracked as `D-kr2-st2-capability-matrix-mirror` in `BUILD_DEVIATIONS.md`; closes when K-7 (Sea MCP `kora__read_kora_capability_row` tool) ships.
+* **Capability matrix is now MCP-fetched at provider initialize (KR-7b).** `IsoKronMemoryProvider.initialize()` calls `populate_capability_matrix_from_mcp` via the KR-7a-wired `IsoKronMCPClient`, replacing the hand-mirrored dict contents in place. The hand-mirrored 49 entries remain as a dev/test fallback so substrate downtime is non-fatal; the parity test (`tests/plugins/memory/test_capability_matrix_parity.py`) still guards the fallback against TS-source drift. **CI must set `KORA_ISOKRON_REPO`** for the parity test, otherwise it skips silently. Operators grep `[kora.capability_matrix.fallback]` in production logs to confirm the substrate fetch is succeeding (per IsoKron PM #27 production-test posture, the K-7 handler is currently a `notImplementedHandler` stub awaiting dispatch tier; until then the fallback is the operating state). Closed as `D-kr2-st2-capability-matrix-mirror` in `BUILD_DEVIATIONS.md`.
 
 * **Policy registry reads MUST set the RLS GUC inside the transaction.** `kora_policy_registry` has `ENABLE ROW LEVEL SECURITY` with a policy keyed off `current_setting('app.current_workspace_id', true)`. The reader calls `SELECT set_config('app.current_workspace_id', $1, true)` before the SELECT; without that, the query returns 0 rows silently. If you bypass `reads.read_kora_policy_registry` and write your own query, replicate the pattern or you'll get a confusing empty result.
 

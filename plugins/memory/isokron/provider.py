@@ -230,7 +230,15 @@ class IsoKronMemoryProvider(MemoryProvider):
     # -- Lifecycle -----------------------------------------------------------
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        """Open the connection (IO loop in ST1; real handshake in ST2+)."""
+        """Open the connection + refresh the capability matrix from MCP.
+
+        KR-7b: replaces the hand-mirrored capability matrix with the
+        authoritative substrate fetch (``kora__read_kora_capability_row``).
+        On fetch failure the hand-mirrored fallback stays in place + a
+        WARNING is logged so dev/test ergonomics survive substrate
+        downtime. Operators grep ``[kora.capability_matrix.fallback]``
+        in production logs to confirm the fetch is succeeding.
+        """
         if self._connection is None:
             raise RuntimeError(
                 "[kora.isokron] initialize called before construct — "
@@ -239,13 +247,53 @@ class IsoKronMemoryProvider(MemoryProvider):
         self._connection.start()
         self._session_id = session_id
         self._initialized = True
+        self._refresh_capability_matrix_from_mcp()
         logger.info(
-            "[kora.isokron] initialize OK (Rule-6: KR-2 ST1 skeleton — "
-            "real substrate handshake lands in ST2). session_id=%s "
-            "actor_kind=%s",
+            "[kora.isokron] initialize OK. session_id=%s actor_kind=%s",
             session_id,
             self._config.actor_kind if self._config else "<unset>",
         )
+
+    def _refresh_capability_matrix_from_mcp(self) -> None:
+        """Try to fetch the capability matrix from MCP; fall back on failure.
+
+        Production: fetch succeeds → matrix is authoritative.
+        Dev/test (or substrate down): fetch raises → fallback intact +
+        WARNING logged.
+
+        Same production-test posture as KR-7's chain-emit closure —
+        code shape ships green; substrate-team dispatch tier (queued)
+        un-stubs the K-7 handler. Operators grep
+        ``[kora.capability_matrix.fallback]`` to confirm production
+        fetch health.
+        """
+        from .capability_matrix_mirror import populate_capability_matrix_from_mcp
+
+        if self._connection is None:  # pragma: no cover — guarded above
+            return
+        try:
+            mcp_client = self._connection.get_mcp_client()
+        except Exception as exc:
+            logger.warning(
+                "[kora.capability_matrix.fallback] could not reach MCP "
+                "client (%s); using hand-mirrored fallback. Production "
+                "deploys must verify substrate dispatch tier is live.",
+                exc,
+            )
+            return
+        try:
+            self._connection.submit_and_wait(
+                populate_capability_matrix_from_mcp(mcp_client),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.capability_matrix.fallback] MCP fetch of "
+                "kora__read_kora_capability_row failed (%s); using "
+                "hand-mirrored fallback. Production deploys must verify "
+                "substrate dispatch tier is live.",
+                exc,
+            )
 
     def shutdown(self) -> None:
         """Tear down the connection (idempotent, safe on partial init)."""
