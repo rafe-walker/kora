@@ -41,6 +41,7 @@ import {
   Terminal,
   UserCircle,
   Users,
+  Waves,
   Wrench,
   X,
   Zap,
@@ -68,6 +69,7 @@ import CronPage from "@/pages/CronPage";
 import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
+import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
@@ -114,6 +116,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
+  "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -148,6 +151,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "operationalState",
     label: "Operational",
     icon: Activity,
+  },
+  {
+    path: "/sea-tickets",
+    labelKey: "seaTickets",
+    label: "Sea Tickets",
+    icon: Waves,
   },
   {
     path: "/analytics",
