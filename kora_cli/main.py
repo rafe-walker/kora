@@ -10445,6 +10445,13 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
+    # boot command (KR-P2-H ST4) — R4.1 §9.2 gate sequence dry-run
+    # =========================================================================
+    from kora_cli.boot_cmd import add_boot_parser
+
+    add_boot_parser(subparsers)
+
+    # =========================================================================
     # model command
     # =========================================================================
     model_parser = subparsers.add_parser(
