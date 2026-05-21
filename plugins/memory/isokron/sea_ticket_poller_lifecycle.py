@@ -102,6 +102,24 @@ async def build_and_start_sea_ticket_poller(
         )
         return None
 
+    # KR-P2-CLEANUP ST2: register the now-initialized provider as the
+    # process-wide active provider so cross-cutting admin-panel
+    # endpoints (sea-tickets, kora_control observed state, etc.) can
+    # read substrate state without going through an agent session.
+    try:
+        from plugins.memory.isokron.active_provider import set_active_provider
+
+        set_active_provider(provider)
+    except Exception:
+        # Best-effort: if the active-provider singleton is unavailable,
+        # the poller still starts, just without the cross-cutting read
+        # surface. Endpoints will fall back to their stub branches.
+        logger.exception(
+            "[sea_ticket_poller_lifecycle] could not register "
+            "active provider; admin-panel live reads will fall back "
+            "to their stub branches."
+        )
+
     try:
         mcp_client = provider._connection.get_mcp_client()
     except Exception:
