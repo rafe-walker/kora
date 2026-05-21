@@ -35,7 +35,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable, Optional
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable, Optional
 
 from agent.operational_state import (
     ClaimPermission,
@@ -55,6 +58,37 @@ StateTransitionListener = Callable[
 
 Listeners are called once per successful transition, after the held
 state has been swapped to ``new_state`` and the lock released."""
+
+
+# Last N transitions retained in-memory for the admin panel's
+# "recent transitions" view. Durable history lives in the chain-event
+# log (every transition writes ``kora.operational_state.transitioned``
+# via ST2's emit listener); this ring is for the cockpit's
+# immediate-history rendering and only survives until process restart.
+_HISTORY_RING_SIZE = 10
+
+
+@dataclass(frozen=True, slots=True)
+class TransitionRecord:
+    """One row of the in-memory transition history.
+
+    Field shape matches the dict the ``/api/operational-state``
+    endpoint returns under ``transition_history`` — kept small so
+    the admin-panel payload stays trim.
+    """
+
+    timestamp: str  # ISO-8601 UTC, e.g. "2026-05-21T17:00:00Z"
+    from_state: str  # PrimaryState.value
+    to_state: str
+    trigger: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "from_state": self.from_state,
+            "to_state": self.to_state,
+            "trigger": self.trigger,
+        }
 
 
 class InvalidStateTransitionError(ValueError):
@@ -78,6 +112,12 @@ class OperationalStateHolder:
         self._state: OperationalState = initial_state
         self._lock: asyncio.Lock = asyncio.Lock()
         self._listeners: list[StateTransitionListener] = []
+        # Ring buffer for the admin panel's recent-transitions view.
+        # Append-on-transition under the holder lock; read via
+        # ``history()`` (returns a snapshot list).
+        self._history: deque[TransitionRecord] = deque(
+            maxlen=_HISTORY_RING_SIZE
+        )
 
     @property
     def current(self) -> OperationalState:
@@ -142,6 +182,21 @@ class OperationalStateHolder:
 
             self._state = new_state
 
+            # Record the transition in the in-memory ring buffer. We
+            # append under the lock so the buffer ordering matches
+            # the held-state swap. Listeners read the buffer outside
+            # the lock — that's fine, deque appends are atomic.
+            self._history.append(
+                TransitionRecord(
+                    timestamp=datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    ),
+                    from_state=old_state.primary_state.value,
+                    to_state=new_state.primary_state.value,
+                    trigger=trigger,
+                )
+            )
+
         # Fire listeners outside the lock so a listener that reads the
         # holder (or — defensively — calls transition_to) doesn't
         # deadlock.
@@ -160,6 +215,20 @@ class OperationalStateHolder:
                 )
 
         return new_state
+
+    def history(self, *, limit: int = _HISTORY_RING_SIZE) -> list[dict[str, Any]]:
+        """Return the most recent ``limit`` transitions as a list of dicts.
+
+        Ordered oldest → newest (matches the deque iteration order),
+        so the admin panel can render them top-to-bottom without
+        reversing. ``limit`` is clamped to the actual ring size; the
+        durable history lives in the chain-event log.
+        """
+        # Snapshot via ``list()`` so the caller can't mutate our deque.
+        records = list(self._history)
+        if limit is not None and limit < len(records):
+            records = records[-limit:]
+        return [r.to_dict() for r in records]
 
     def add_listener(self, listener: StateTransitionListener) -> None:
         """Register a listener fired after every successful transition.
