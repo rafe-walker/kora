@@ -75,6 +75,8 @@ export const api = {
     ),
   getBootStatus: () => fetchJSON<BootStatusResponse>("/api/boot-status"),
   getCostState: () => fetchJSON<CostStateResponse>("/api/cost-state"),
+  getCapabilities: () =>
+    fetchJSON<CapabilitiesResponse>("/api/capabilities"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1159,4 +1161,29 @@ export interface CostStateResponse {
   deferred_tickets: DeferredTicket[];
   reconciliation_history: ReconciliationEntry[];
   stub: boolean;
+}
+
+// Capabilities inspector (KR-P2-CAP-PANEL). Live read — no stub flag.
+// ``unmapped_in_c2_mirror`` is the documented fail-CLOSED state per
+// D-krp2a-st1-infra-tier-caps-missing-from-c2-mirror; surfaces when
+// the C2 mirror doesn't yet know about a cap_* the Python side
+// references. Closes when KR-P2-N extends the mirror.
+export type CapVerdict =
+  | "granted"
+  | "denied"
+  | "unmapped_in_c2_mirror"
+  | "error";
+
+export interface CapabilityGroup {
+  cap_name: string;
+  verdict: CapVerdict;
+  tools: string[];
+}
+
+export interface CapabilitiesResponse {
+  groups: CapabilityGroup[];
+  substrate_tier: string[];
+  total_tools: number;
+  total_caps: number;
+  unmapped_count: number;
 }

@@ -39,6 +39,7 @@ import {
   RotateCw,
   Settings,
   Shield,
+  ShieldCheck,
   Sparkles,
   Star,
   Terminal,
@@ -74,6 +75,7 @@ import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
 import BootStatusPage from "@/pages/BootStatusPage";
 import CostStatePage from "@/pages/CostStatePage";
+import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
@@ -124,6 +126,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/operational-state": OperationalStatePage,
   "/boot-status": BootStatusPage,
   "/cost-state": CostStatePage,
+  "/capabilities": CapabilitiesPage,
   "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
@@ -172,6 +175,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "costState",
     label: "Cost",
     icon: DollarSign,
+  },
+  {
+    path: "/capabilities",
+    labelKey: "capabilities",
+    label: "Capabilities",
+    icon: ShieldCheck,
   },
   {
     path: "/kora-control",

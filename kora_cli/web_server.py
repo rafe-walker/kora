@@ -3623,6 +3623,85 @@ async def get_cost_state():
 
 
 # ---------------------------------------------------------------------------
+# Capabilities inspector — live read (KR-P2-CAP-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Real data out of the gate (no stub flag): reads the 64-tool
+# ``TOOL_CAPABILITY_MAP`` shipped by KR-P2-A and resolves each unique
+# ``cap_*`` via ``actor_has_capability``. ``KeyError`` from the cap
+# helper means the cap isn't in the C2 mirror yet — that's the
+# documented fail-CLOSED state per
+# D-krp2a-st1-infra-tier-caps-missing-from-c2-mirror; the verdict
+# surfaces as ``unmapped_in_c2_mirror`` so the operator sees real
+# permission shape rather than a swallowed error.
+#
+# The four substrate-tier ``kora__*`` tools (K-7/8/9/10) are NOT in
+# TOOL_CAPABILITY_MAP — the pre-screen short-circuits any name
+# starting with ``kora__`` with PASS because substrate-side dispatch
+# is the authoritative gate. They surface in their own ``substrate_tier``
+# array so the panel can render the full surface as "always PASS".
+
+# Substrate-tier (always-PASS) tools. Pinned by name to match the
+# bucket §3 contract + the test_substrate_tier_contains_exactly_four
+# guard. If a 5th ``kora__*`` tool ever ships, both this list and the
+# test need updating in lockstep with the bucket spec.
+_CAP_PANEL_SUBSTRATE_TIER_TOOLS: List[str] = [
+    "kora__append_event",
+    "kora__write_agent_scratchpad",
+    "kora__create_relationlink",
+    "kora__read_kora_capability_row",
+]
+
+
+@app.get("/api/capabilities")
+async def get_capabilities():
+    """Return the 64-tool capability map + live per-cap verdict.
+
+    Live read — no stub flag. Reflects current C2 mirror state.
+    """
+    from agent.tool_capability_map import TOOL_CAPABILITY_MAP
+    from plugins.memory.isokron.capability_check import actor_has_capability
+
+    # Resolve each unique cap once (17 lookups, not 64).
+    caps_seen: Dict[str, str] = {}
+    for cap in set(TOOL_CAPABILITY_MAP.values()):
+        try:
+            granted = actor_has_capability(cap)
+            caps_seen[cap] = "granted" if granted else "denied"
+        except KeyError:
+            caps_seen[cap] = "unmapped_in_c2_mirror"
+        except Exception:
+            _log.exception("Unexpected error resolving capability %s", cap)
+            caps_seen[cap] = "error"
+
+    # Build per-cap-group entries (cap_name → {cap_name, verdict, tools[]})
+    groups: Dict[str, Dict[str, Any]] = {}
+    for tool_name, cap_name in TOOL_CAPABILITY_MAP.items():
+        if cap_name not in groups:
+            groups[cap_name] = {
+                "cap_name": cap_name,
+                "verdict": caps_seen[cap_name],
+                "tools": [],
+            }
+        groups[cap_name]["tools"].append(tool_name)
+
+    # Sort tools within each group; sort groups by cap_name alphabetical
+    for grp in groups.values():
+        grp["tools"].sort()
+    sorted_groups = sorted(groups.values(), key=lambda g: g["cap_name"])
+
+    return {
+        "groups": sorted_groups,
+        "substrate_tier": list(_CAP_PANEL_SUBSTRATE_TIER_TOOLS),
+        "total_tools": len(TOOL_CAPABILITY_MAP) + len(_CAP_PANEL_SUBSTRATE_TIER_TOOLS),
+        "total_caps": len(caps_seen),
+        "unmapped_count": sum(
+            1 for v in caps_seen.values() if v == "unmapped_in_c2_mirror"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
