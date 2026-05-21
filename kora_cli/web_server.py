@@ -3366,15 +3366,59 @@ def _kora_assigned_sea_tickets_stub(*, error: str) -> dict:
 async def get_kora_control_observed_state():
     """Return kora_control commands as observed by the runtime.
 
-    Grouped by lifecycle position:
-      active             — open commands (in-flight: created/visible/
-                           observed/acknowledged/enforcing)
-      recently_enforced  — last N enforced commands
-      history            — older terminal-state commands (enforced,
-                           superseded, expired, failed, escalated)
+    Live source (KR-P2-CLEANUP ST3): reads via
+    ``plugins.memory.isokron.observed_kora_control.get_observed_state_via_provider``
+    against the gateway-level active ``IsoKronMemoryProvider`` (set
+    at gateway boot by ``sea_ticket_poller_lifecycle``). Workspace-
+    scoped via the substrate's ``app.workspace_id`` GUC.
 
-    v1 stub. Replace body with a projection of
-    ``KoraControlReader.get_all_observed_commands()`` when KR-P2-J lands.
+    Grouped by lifecycle position:
+      active             — open commands (lifecycle ∈ {created,
+                           visible_to_runtime, acknowledged,
+                           enforcing})
+      recently_enforced  — last 10 enforced
+      history            — older terminal-state commands (enforced
+                           overflow, superseded, expired, failed,
+                           escalated; capped at 30)
+
+    When the active provider isn't registered (early boot, isolated-
+    test contexts), returns the stub-shape with ``stub: True`` + an
+    ``error`` field naming the cause.
+    """
+    from plugins.memory.isokron.active_provider import get_active_provider
+    from plugins.memory.isokron.observed_kora_control import (
+        get_observed_state_via_provider,
+    )
+
+    provider = get_active_provider()
+    if provider is None:
+        return _kora_control_observed_state_stub(
+            error=(
+                "IsoKronMemoryProvider not yet registered as active "
+                "(gateway boot in progress, or provider failed to "
+                "initialize)"
+            )
+        )
+
+    grouped = await get_observed_state_via_provider(provider=provider)
+    if grouped is None:
+        return _kora_control_observed_state_stub(
+            error=(
+                "substrate read returned None — see "
+                "``[observed_kora_control]`` log lines for the cause"
+            )
+        )
+
+    return grouped
+
+
+def _kora_control_observed_state_stub(*, error: str) -> dict:
+    """Stub-shape returned on the uninitialized / read-failure branch.
+
+    Same three buckets the live read produces + ``stub: True`` +
+    ``error`` naming the cause. The panel's stub banner activates on
+    ``stub`` truthiness; the ``error`` line is rendered underneath
+    to distinguish "no provider yet" from cold-stub.
     """
     return {
         "active": [
@@ -3454,6 +3498,7 @@ async def get_kora_control_observed_state():
             },
         ],
         "stub": True,
+        "error": error,
     }
 
 
