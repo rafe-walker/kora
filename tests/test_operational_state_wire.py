@@ -1,29 +1,31 @@
-"""Integration tests for ``agent/operational_state_wire.py`` (KR-P2-I-integration ST3).
+"""Tests for ``agent/operational_state_wire.py`` (updated for KR-P2-H ST3).
 
-Covers:
-  - Happy path: wire-in creates the holder, registers the emit listener,
-    runs the BOOTING → READY transition, and emits the chain event
-  - No-connection branch: provider without _connection — holder stays
-    in BOOTING with a WARNING in the logs
-  - Connection-raises branch: submit_and_wait raises — wire-in is
-    fail-soft and does NOT propagate the exception
-  - Idempotence: second wire_operational_state call doesn't double-emit
-    the initial transition (holder is a singleton)
+KR-P2-H ST3 replaces the previous unconditional ``BOOTING → READY``
+transition with the R4.1 §9.2 boot gate sequence. These tests verify
+the new behavior:
+
+- Happy path: boot-coordinator returns ``BootResult.READY`` → holder
+  transitions to READY + ``claim_permission`` bump to NORMAL.
+- STOPPED outcome: coordinator returns ``BootResult.STOPPED`` → wire-in
+  calls ``sys.exit(1)``.
+- No-connection branch: holder stays in BOOTING + WARN.
+- Coordinator raises: wire-in catches + WARNs (fail-soft for
+  programmer-error / import failures; ``SystemExit`` is NOT caught).
 """
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import logging
+from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.boot_coordinator import BootResult, BootSummary
+from agent.boot_gates import GateClass, GateOutcome, GateResult
 from agent.operational_state import (
     ClaimPermission,
-    OperationalState,
     PrimaryState,
 )
 from agent.operational_state_holder import (
@@ -41,179 +43,324 @@ def _reset_singleton():
 
 
 # ---------------------------------------------------------------------------
-# Stub IsoKron provider — captures emit calls
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-class _FakeMcpClient:
-    """Captures every kora__append_event invocation."""
+def _gate_result(
+    gate_id: str = "1_claude_auth",
+    *,
+    outcome: GateOutcome = GateOutcome.PASS,
+    gate_class: GateClass = GateClass.TRANSIENT,
+    attempts: int = 1,
+    detail: str = "ok",
+) -> GateResult:
+    now = datetime.now(timezone.utc)
+    return GateResult(
+        gate_id=gate_id,
+        gate_class=gate_class,
+        outcome=outcome,
+        detail=detail,
+        elapsed_ms=1,
+        started_at=now,
+        completed_at=now,
+        attempts=attempts,
+    )
 
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
 
-    async def invoke(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
-        self.calls.append({"tool_name": tool_name, "args": args})
-        return {"event_id": f"evt-{len(self.calls)}"}
+def _make_provider(
+    *,
+    has_connection: bool = True,
+    summary_to_return: BootSummary | None = None,
+    bump_should_raise: BaseException | None = None,
+) -> Any:
+    """Build a stubbed IsoKronMemoryProvider.
 
-
-class _FakeConnection:
-    """Lightweight stand-in for IsoKronConnection.
-
-    submit_and_wait runs the coro on the current asyncio loop synchronously
-    (test-only — production uses a dedicated thread loop). _submit_async
-    wraps the awaited result in a concurrent.futures.Future the emit
-    module can asyncio.wrap_future().
+    The fake ``submit_and_wait`` is path-aware: the first call
+    (run_boot_sequence) returns the canned BootSummary; subsequent
+    calls (the holder claim_permission bump) close the coroutine and
+    return None (or raise if ``bump_should_raise`` is set).
     """
+    if summary_to_return is None:
+        summary_to_return = BootSummary(
+            result=BootResult.READY,
+            gate_results=[_gate_result()],
+            failed_gate=None,
+        )
 
-    def __init__(self, mcp_client: _FakeMcpClient) -> None:
-        self._mcp_client = mcp_client
-        self.submit_calls = 0
-        self.submit_should_raise: Exception | None = None
+    call_count = {"n": 0}
 
-    def get_mcp_client(self) -> _FakeMcpClient:
-        return self._mcp_client
-
-    def _submit_async(self, coro):
-        result = asyncio.get_event_loop().run_until_complete(coro)
-        fut: concurrent.futures.Future = concurrent.futures.Future()
-        fut.set_result(result)
-        return fut
-
-    def submit_and_wait(self, coro, *, timeout: float = 10.0):
-        self.submit_calls += 1
-        if self.submit_should_raise is not None:
-            # Eat the coroutine (Python warns about unawaited coros).
+    def _submit_and_wait(coro, *, timeout=10.0):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call = run_boot_sequence — close the coro (we won't
+            # actually execute it) and return the canned summary.
             try:
                 coro.close()
             except Exception:
                 pass
-            raise self.submit_should_raise
-        return asyncio.get_event_loop().run_until_complete(coro)
+            return summary_to_return
+        # Subsequent calls (holder.transition_to for claim_permission bump)
+        if bump_should_raise is not None:
+            try:
+                coro.close()
+            except Exception:
+                pass
+            raise bump_should_raise
+        # Actually drive the transition_to coro on a test loop so the
+        # state change applies. We need to execute the coro because it
+        # mutates holder state.
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
+    connection = MagicMock()
+    connection.submit_and_wait = MagicMock(side_effect=_submit_and_wait)
 
-def _make_provider(connection: _FakeConnection | None) -> Any:
     provider = MagicMock()
-    provider._connection = connection
-    provider._resolve_workspace_id.return_value = "org_test_workspace"
+    provider._connection = connection if has_connection else None
+    provider._resolve_workspace_id.return_value = "ws-test"
     return provider
 
 
+def _patch_make_emit_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The wire-in registers an emit listener on the holder. The real
+    listener emits chain events; in these tests we replace it with a
+    no-op AsyncMock so the holder's listener-fire path doesn't try to
+    call substrate-side emit code.
+    """
+    monkeypatch.setattr(
+        "agent.operational_state_emit.make_emit_listener",
+        lambda provider: AsyncMock(return_value=None),
+    )
+
+
 # ---------------------------------------------------------------------------
-# Happy path
+# Happy path — BootResult.READY transitions holder + bumps claim_permission
 # ---------------------------------------------------------------------------
 
 
-def test_happy_path_initializes_holder_and_emits():
-    mcp = _FakeMcpClient()
-    conn = _FakeConnection(mcp)
-    provider = _make_provider(conn)
+def test_ready_outcome_transitions_holder_and_bumps_claim_permission(
+    monkeypatch,
+):
+    """When the coordinator returns READY, the wire-in logs + bumps
+    ``claim_permission`` to NORMAL via a second transition_to call.
+
+    Note: the coordinator itself does the BOOTING → READY transition
+    internally (mocked here via submit_and_wait returning the summary
+    directly). The wire-in's responsibility post-coordinator is the
+    claim_permission bump.
+    """
+    _patch_make_emit_listener(monkeypatch)
+
+    # The coordinator runs the BOOTING → READY transition internally
+    # in real code. The mocked submit_and_wait short-circuits that,
+    # so we manually advance the holder to READY before the wire-in
+    # checks holder state. In production, the coordinator would have
+    # done this already.
+    summary = BootSummary(
+        result=BootResult.READY,
+        gate_results=[_gate_result(), _gate_result(gate_id="7_canonical_kora_actor", gate_class=GateClass.INVARIANT)],
+        failed_gate=None,
+    )
+    provider = _make_provider(summary_to_return=summary)
+
+    # Pre-advance holder to READY so the second-call bump's
+    # READY → READY (same-state) lands cleanly. In production the
+    # coordinator did this BEFORE the wire-in's second submit_and_wait.
+    def _advance_holder_before_bump(*args, **kwargs):
+        from agent.operational_state_holder import init_holder
+        from agent.operational_state import OperationalState
+        holder = init_holder(
+            OperationalState(
+                primary_state=PrimaryState.BOOTING,
+                claim_permission=ClaimPermission.NONE,
+            )
+        )
+        # The coordinator would have done this; simulate for the test.
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                holder.transition_to(
+                    PrimaryState.READY,
+                    trigger="boot gates passed (see kora.boot.ready event for per-gate detail)",
+                )
+            )
+        finally:
+            loop.close()
+        return summary
+
+    provider._connection.submit_and_wait.side_effect = (
+        lambda coro, **kw: _drive_through_test_loop(
+            coro, fallback=_advance_holder_before_bump
+        )
+    )
 
     wire_operational_state(provider)
 
     holder = get_holder()
     assert holder is not None
-    # Initial BOOTING → READY transition has applied.
     assert holder.current.primary_state is PrimaryState.READY
     assert holder.current.claim_permission is ClaimPermission.NORMAL
-    assert not holder.current.is_degraded()
 
-    # Two events emitted: generic + boot.ready informational.
-    assert len(mcp.calls) == 2
-    event_types = [c["args"]["event_type"] for c in mcp.calls]
-    assert event_types == [
-        "kora.operational_state.transitioned",
-        "kora.boot.ready",
-    ]
-    # Payload trigger matches the canonical TRANSITION_TABLE wording so
-    # ST2's substring match for boot.ready fires.
-    generic_payload = mcp.calls[0]["args"]["payload"]
-    assert generic_payload["from_primary_state"] == "booting"
-    assert generic_payload["to_primary_state"] == "ready"
-    assert generic_payload["trigger"] == "all §9.2 gates pass"
+
+def _drive_through_test_loop(coro, *, fallback):
+    """Execute the coroutine on a test event loop; if it's not a coro,
+    fall back to ``fallback()``.
+
+    We use this so the wire-in's holder.transition_to call (for the
+    claim_permission bump) actually executes and mutates holder state.
+    The run_boot_sequence coro is closed without execution; we return
+    a canned BootSummary via the ``fallback``.
+    """
+    import asyncio
+    import inspect
+
+    if inspect.iscoroutine(coro):
+        # Detect run_boot_sequence vs holder.transition_to by the
+        # coroutine's qualname.
+        name = getattr(coro.cr_code, "co_qualname", "") or coro.cr_code.co_name
+        if "run_boot_sequence" in name:
+            coro.close()
+            return fallback()
+        # Real coro (holder.transition_to) — drive it.
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    return fallback()
 
 
 # ---------------------------------------------------------------------------
-# No-connection branch — fail-soft warning
+# STOPPED outcome — wire-in calls sys.exit(1)
 # ---------------------------------------------------------------------------
 
 
-def test_provider_without_connection_logs_warning_and_leaves_holder_in_booting(
-    caplog,
-):
-    provider = _make_provider(None)
+def test_stopped_outcome_calls_sys_exit_with_non_zero(monkeypatch, caplog):
+    """When the coordinator returns STOPPED, the wire-in logs ERROR and
+    calls sys.exit(1). The coordinator already emitted kora.boot.failed
+    and transitioned the holder to STOPPED."""
+    _patch_make_emit_listener(monkeypatch)
 
-    with caplog.at_level(logging.WARNING, logger="agent.operational_state_wire"):
+    failed = _gate_result(
+        gate_id="7_canonical_kora_actor",
+        outcome=GateOutcome.FAIL,
+        gate_class=GateClass.INVARIANT,
+        attempts=1,
+        detail="no actor_kind='kora' row in actor_registry",
+    )
+    summary = BootSummary(
+        result=BootResult.STOPPED,
+        gate_results=[_gate_result(), failed],
+        failed_gate=failed,
+    )
+    provider = _make_provider(summary_to_return=summary)
+
+    with caplog.at_level(
+        logging.ERROR, logger="agent.operational_state_wire"
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            wire_operational_state(provider)
+
+    assert exc_info.value.code == 1
+    # Failure message names the failing gate for operator triage.
+    assert any(
+        "boot gate failed" in record.message
+        and "7_canonical_kora_actor" in record.message
+        for record in caplog.records
+    )
+
+
+# ---------------------------------------------------------------------------
+# No-connection branch — holder stays in BOOTING, WARN logged
+# ---------------------------------------------------------------------------
+
+
+def test_no_connection_leaves_holder_in_booting_and_warns(monkeypatch, caplog):
+    _patch_make_emit_listener(monkeypatch)
+    provider = _make_provider(has_connection=False)
+
+    with caplog.at_level(
+        logging.WARNING, logger="agent.operational_state_wire"
+    ):
         wire_operational_state(provider)
 
     holder = get_holder()
     assert holder is not None
-    # Holder was created with BOOTING but transition never happened.
     assert holder.current.primary_state is PrimaryState.BOOTING
     assert holder.current.claim_permission is ClaimPermission.NONE
-    # Operator-greppable warning emitted.
     assert any(
-        "kora.operational_state.wire_in" in record.message
-        and "no _connection" in record.message
+        "no _connection" in record.message
+        and "boot gate sequence" in record.message
         for record in caplog.records
     )
 
 
 # ---------------------------------------------------------------------------
-# Connection-raises branch — fail-soft
+# Coordinator raises → wire-in catches + WARNs (fail-soft for
+# programmer-error / import failures; NOT for STOPPED outcome which is
+# expressed via BootSummary, not exception).
 # ---------------------------------------------------------------------------
 
 
-def test_submit_raises_does_not_propagate(caplog):
-    mcp = _FakeMcpClient()
-    conn = _FakeConnection(mcp)
-    conn.submit_should_raise = RuntimeError("Sea MCP unavailable")
-    provider = _make_provider(conn)
+def test_coordinator_raises_unexpectedly_is_caught_and_warned(
+    monkeypatch, caplog
+):
+    """A submit_and_wait raise (e.g. import failure inside the
+    coordinator) is caught + logged WARN. The wire-in is fail-soft on
+    programmer errors. STOPPED outcomes use SystemExit instead."""
+    _patch_make_emit_listener(monkeypatch)
 
-    # Must NOT raise.
-    with caplog.at_level(logging.WARNING, logger="agent.operational_state_wire"):
+    provider = MagicMock()
+    provider._resolve_workspace_id.return_value = "ws-test"
+    connection = MagicMock()
+    connection.submit_and_wait = MagicMock(
+        side_effect=RuntimeError("coordinator import failed")
+    )
+    provider._connection = connection
+
+    with caplog.at_level(
+        logging.WARNING, logger="agent.operational_state_wire"
+    ):
+        # Must NOT raise.
         wire_operational_state(provider)
 
-    holder = get_holder()
-    # Holder was created (init happens before submit), but the
-    # transition never landed.
-    assert holder is not None
-    assert holder.current.primary_state is PrimaryState.BOOTING
-    # Greppable warning landed.
     assert any(
-        "kora.operational_state.wire_in" in record.message
-        and "wire-in raised" in record.message
+        "wire-in raised" in record.message
+        and "coordinator import failed" in record.message
         for record in caplog.records
     )
 
 
 # ---------------------------------------------------------------------------
-# Idempotence — init_holder is first-wins (no double transition)
+# SystemExit is not caught (it's how STOPPED propagates)
 # ---------------------------------------------------------------------------
 
 
-def test_second_call_does_not_re_run_initial_transition():
-    mcp = _FakeMcpClient()
-    conn = _FakeConnection(mcp)
-    provider = _make_provider(conn)
+def test_system_exit_from_inside_propagates(monkeypatch):
+    """The wire-in's catch-all explicitly does NOT swallow SystemExit
+    so the STOPPED-outcome ``sys.exit(1)`` actually exits the process."""
+    _patch_make_emit_listener(monkeypatch)
 
-    wire_operational_state(provider)
-    first_call_count = len(mcp.calls)
-    first_submit_count = conn.submit_calls
+    provider = MagicMock()
+    provider._resolve_workspace_id.return_value = "ws-test"
+    connection = MagicMock()
 
-    # Second call: holder already in READY, init_holder is no-op, but
-    # the wire-in still adds another listener and re-attempts the
-    # BOOTING → READY transition. The transition itself will be a
-    # READY → READY (no primary_state change) which is allowed by the
-    # same-state bypass; the listener fires the emit again.
-    wire_operational_state(provider)
+    def _submit(coro, *, timeout=10.0):
+        try:
+            coro.close()
+        except Exception:
+            pass
+        raise SystemExit(1)  # simulate the STOPPED-exit path
 
-    # Two listeners now, each fired on the second-call transition →
-    # 1 generic emit × 2 listeners = 2 additional emits. boot.ready
-    # only fires when from == BOOTING; since holder is READY at second
-    # call, the supplementary literal does NOT fire — only the generic.
-    second_call_emits = len(mcp.calls) - first_call_count
-    assert second_call_emits == 2  # generic × 2 listeners
-    # submit_and_wait fired again at the wire-in level.
-    assert conn.submit_calls == first_submit_count + 1
-    # State unchanged at READY.
-    assert get_holder().current.primary_state is PrimaryState.READY
+    connection.submit_and_wait = MagicMock(side_effect=_submit)
+    provider._connection = connection
+
+    with pytest.raises(SystemExit) as exc_info:
+        wire_operational_state(provider)
+    assert exc_info.value.code == 1

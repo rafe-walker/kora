@@ -48,7 +48,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, ClassVar, Optional
 
 if TYPE_CHECKING:
     from agent.operational_state_holder import OperationalStateHolder
@@ -203,6 +203,9 @@ class BootGateRunner:
         retry_budget: int = _DEFAULT_RETRY_BUDGET,
         backoff_base_seconds: float = _DEFAULT_BACKOFF_BASE_SECONDS,
         backoff_cap_seconds: float = _DEFAULT_BACKOFF_CAP_SECONDS,
+        on_retry_attempt: Optional[
+            Callable[[Gate, "GateResult", int, int], Awaitable[None]]
+        ] = None,
     ) -> None:
         if retry_budget < 1:
             raise ValueError(
@@ -223,6 +226,7 @@ class BootGateRunner:
         self._retry_budget = retry_budget
         self._backoff_base_seconds = backoff_base_seconds
         self._backoff_cap_seconds = backoff_cap_seconds
+        self._on_retry_attempt = on_retry_attempt
 
     @property
     def diagnostic_mode(self) -> bool:
@@ -288,6 +292,27 @@ class BootGateRunner:
                 return last_result
             if attempt >= max_attempts:
                 return last_result
+            # Fire the on_retry_attempt callback BEFORE the backoff sleep
+            # so callers (e.g. the coordinator's degradation-reason
+            # staging) can update operational state while the gate is
+            # still in its retry window. Listener exceptions are logged
+            # but do not abort the retry — the callback is observability,
+            # not policy.
+            if self._on_retry_attempt is not None:
+                try:
+                    await self._on_retry_attempt(
+                        gate, last_result, attempt, max_attempts
+                    )
+                except Exception as cb_exc:
+                    logger.warning(
+                        "[kora.boot.gate] on_retry_attempt callback "
+                        "raised for %s on attempt %d/%d: %r — "
+                        "continuing retry sequence.",
+                        gate.gate_id,
+                        attempt,
+                        max_attempts,
+                        cb_exc,
+                    )
             await self._backoff_sleep(attempt)
         # Defensive — loop always returns inside; reached only if
         # max_attempts was 0 (caught above).
