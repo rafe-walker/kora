@@ -3147,22 +3147,28 @@ async def set_gateway_platform_identity(
 # Operational state read endpoint (KR-P2-OPS-PANEL)
 # ---------------------------------------------------------------------------
 #
-# v1 returns a hardcoded READY/normal/no-degradation stub so the admin panel
-# can ship before the OperationalState singleton from KR-P2-I-skeleton is
-# wired into the agent loop (that's the follow-on KR-P2-I-integration
-# bucket, post-substrate-round Bucket C). The ``stub: True`` flag is the
-# explicit "this is not real runtime state" signal — the frontend renders
-# a banner when it sees True so operators are never misled during a real
-# outage. When wire-in lands, replace the return body with a projection
-# of the real OperationalState and drop the ``stub`` flag.
+# KR-P2-I-integration ST5: the endpoint now reads the live
+# ``OperationalStateHolder`` singleton from
+# ``agent.operational_state_holder`` (wired at IsoKron provider init by
+# ST3). When the holder is initialized, the response carries the real
+# state + the in-memory transition-history ring; the ``stub`` flag is
+# dropped so the admin panel auto-stops rendering its stub banner.
+#
+# When the holder is NOT yet initialized (boot in progress, or the
+# IsoKron provider failed to construct), the endpoint returns the
+# stub-shape with ``stub: True`` PLUS an ``error`` field naming the
+# specific cause — the panel renders a "holder not initialized" banner
+# distinct from the cold-stub banner so operators can distinguish
+# "no wire-in yet" from "real runtime is up".
 
 
 @app.get("/api/operational-state")
 async def get_operational_state():
     """Return Kora's current operational state.
 
-    v1 stub: hardcoded READY/normal/no-degradation. Replace with a real
-    ``OperationalState`` read once KR-P2-I-integration lands.
+    Live source: ``agent.operational_state_holder.get_holder()``.
+    The OperationalStateHolder is initialized at IsoKron-provider
+    boot (see ``agent.operational_state_wire.wire_operational_state``).
 
     Enum values pinned to R4.1 §9.1:
       primary_state     ∈ {booting, ready, active, paused, stopped}
@@ -3170,25 +3176,42 @@ async def get_operational_state():
       degradation_reason∈ {cost, auth, dispatch, substrate, migration,
                            operator, token_expiring, retry_ceiling}
     """
+    from agent.operational_state import transitions_from
+    from agent.operational_state_holder import get_holder
+
+    holder = get_holder()
+    if holder is None:
+        # Holder not yet initialized — boot incomplete or the IsoKron
+        # provider failed to construct. Keep the stub shape so the
+        # admin panel renders gracefully; surface the cause via
+        # ``error`` so the operator knows it's not cold-stub state.
+        return {
+            "primary_state": "booting",
+            "claim_permission": "none",
+            "degradation_reasons": [],
+            "is_degraded": False,
+            "transition_history": [],
+            "valid_next_states": [],
+            "stub": True,
+            "error": "OperationalStateHolder not yet initialized",
+        }
+
+    state = holder.current
     return {
-        "primary_state": "ready",
-        "claim_permission": "normal",
-        "degradation_reasons": [],
-        "is_degraded": False,
-        "transition_history": [
-            {
-                "timestamp": "2026-05-21T17:00:00Z",
-                "from_state": "booting",
-                "to_state": "ready",
-                "trigger": "all §9.2 gates pass",
-            },
-        ],
+        "primary_state": state.primary_state.value,
+        "claim_permission": state.claim_permission.value,
+        "degradation_reasons": sorted(
+            r.value for r in state.degradation_reasons
+        ),
+        "is_degraded": state.is_degraded(),
+        "transition_history": holder.history(limit=10),
         "valid_next_states": [
-            {"to_state": "active", "trigger": "claim acquired"},
-            {"to_state": "paused", "trigger": "STOP-KORA L1–3, cost 100%, operator"},
-            {"to_state": "stopped", "trigger": "STOP-KORA L4/L5"},
+            {"to_state": t.to_state.value, "trigger": t.trigger}
+            for t in transitions_from(state.primary_state)
         ],
-        "stub": True,
+        # ``stub`` field intentionally absent on the live-state path —
+        # the admin panel renders its stub banner only when the field
+        # is present and truthy.
     }
 
 
