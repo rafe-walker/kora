@@ -3193,6 +3193,93 @@ async def get_operational_state():
 
 
 # ---------------------------------------------------------------------------
+# Sea_Tickets — Kora-assigned read endpoint (KR-P2-SEA-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded grouped-by-status stub so the admin panel can
+# ship before KR-P2-E (consumer loop) wires Kora as a real Sea_Tickets
+# consumer. The ``stub: True`` flag is the explicit "this is sample
+# data, not real tickets" signal — the frontend renders a banner when
+# True so operators don't get misled during a real outage.
+#
+# Flip-over: when KR-P2-E lands and ``IsoKronMemoryProvider`` grows a
+# ``get_assigned_sea_tickets(actor_id)`` helper, replace the body with
+# a projection of that read and drop the ``stub`` flag. Page shape is
+# unchanged.
+
+
+@app.get("/api/sea-tickets/kora-assigned")
+async def get_kora_assigned_sea_tickets():
+    """Return Sea_Tickets currently assigned to the Kora actor.
+
+    Grouped by status:
+      in_progress       — claimed and being worked
+      queued            — assigned, waiting for claim (deferred if
+                          ``next_eligible_at`` is in the future)
+      recently_resolved — last N resolved (completed / released /
+                          failed_* / blocked_needs_operator /
+                          deferred_cost_limit)
+      failed_or_blocked — currently in ``failed_terminal`` or
+                          ``blocked_needs_operator`` (operator
+                          intervention happens cockpit-side)
+
+    v1 stub. Internal idempotency tokens (e.g. ``claim_fence_token``)
+    are intentionally not included in the API shape.
+    """
+    return {
+        "in_progress": [
+            {
+                "id": "sea_ticket_stub_001",
+                "title": "Stub ticket — currently in progress (sample data)",
+                "criticality": "normal",
+                "claimed_at": "2026-05-21T17:30:00Z",
+                "claim_count": 1,
+                "work_attempt_count": 1,
+            },
+        ],
+        "queued": [
+            {
+                "id": "sea_ticket_stub_002",
+                "title": "Stub ticket — queued (sample data)",
+                "criticality": "low",
+                "assigned_at": "2026-05-21T17:25:00Z",
+                "next_eligible_at": None,
+            },
+            {
+                "id": "sea_ticket_stub_003",
+                "title": "Stub ticket — queued, deferred (sample data)",
+                "criticality": "normal",
+                "assigned_at": "2026-05-21T17:20:00Z",
+                "next_eligible_at": "2026-05-21T18:00:00Z",
+            },
+        ],
+        "recently_resolved": [
+            {
+                "id": "sea_ticket_stub_004",
+                "title": "Stub ticket — resolved (sample data)",
+                "criticality": "normal",
+                "resolved_at": "2026-05-21T16:00:00Z",
+                "resolution": "completed",
+                "model_tier_used": "sonnet",
+            },
+        ],
+        "failed_or_blocked": [
+            {
+                "id": "sea_ticket_stub_005",
+                "title": "Stub ticket — blocked needs operator (sample data)",
+                "criticality": "normal",
+                "state": "blocked_needs_operator",
+                "failure_count_by_reason": {
+                    "agent_loop_timeout": 1,
+                    "tool_exec_failure": 0,
+                },
+            },
+        ],
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

@@ -65,6 +65,10 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getOperationalState: () =>
     fetchJSON<OperationalStateResponse>("/api/operational-state"),
+  getKoraAssignedSeaTickets: () =>
+    fetchJSON<KoraAssignedSeaTicketsResponse>(
+      "/api/sea-tickets/kora-assigned",
+    ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -947,5 +951,60 @@ export interface OperationalStateResponse {
   is_degraded: boolean;
   transition_history: OperationalStateTransition[];
   valid_next_states: ValidNextState[];
+  stub: boolean;
+}
+
+// Sea_Tickets — Kora-assigned viewer panel (KR-P2-SEA-PANEL).
+// Enum values match the substrate Sea_Tickets schema; if the Python
+// side drifts the typed shape will surface the mismatch at compile time.
+export type Criticality = "low" | "normal" | "high" | "frontier";
+export type ModelTier = "haiku" | "sonnet" | "opus";
+export type Resolution =
+  | "completed"
+  | "released"
+  | "failed_retryable"
+  | "failed_terminal"
+  | "blocked_needs_operator"
+  | "deferred_cost_limit";
+
+export interface InProgressTicket {
+  id: string;
+  title: string;
+  criticality: Criticality;
+  claimed_at: string;
+  claim_count: number;
+  work_attempt_count: number;
+}
+
+export interface QueuedTicket {
+  id: string;
+  title: string;
+  criticality: Criticality;
+  assigned_at: string;
+  next_eligible_at: string | null;
+}
+
+export interface ResolvedTicket {
+  id: string;
+  title: string;
+  criticality: Criticality;
+  resolved_at: string;
+  resolution: Resolution;
+  model_tier_used: ModelTier;
+}
+
+export interface FailedOrBlockedTicket {
+  id: string;
+  title: string;
+  criticality: Criticality;
+  state: "failed_terminal" | "blocked_needs_operator";
+  failure_count_by_reason: Record<string, number>;
+}
+
+export interface KoraAssignedSeaTicketsResponse {
+  in_progress: InProgressTicket[];
+  queued: QueuedTicket[];
+  recently_resolved: ResolvedTicket[];
+  failed_or_blocked: FailedOrBlockedTicket[];
   stub: boolean;
 }
