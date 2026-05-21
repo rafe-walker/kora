@@ -22,6 +22,7 @@ import {
   Code,
   Cpu,
   Database,
+  DollarSign,
   Download,
   Eye,
   FileText,
@@ -72,6 +73,7 @@ import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
 import BootStatusPage from "@/pages/BootStatusPage";
+import CostStatePage from "@/pages/CostStatePage";
 import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
@@ -121,6 +123,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
   "/boot-status": BootStatusPage,
+  "/cost-state": CostStatePage,
   "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
@@ -163,6 +166,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "bootStatus",
     label: "Boot Status",
     icon: PowerSquare,
+  },
+  {
+    path: "/cost-state",
+    labelKey: "costState",
+    label: "Cost",
+    icon: DollarSign,
   },
   {
     path: "/kora-control",

@@ -3524,6 +3524,105 @@ async def get_boot_status():
 
 
 # ---------------------------------------------------------------------------
+# Cost ladder — current burn + rung + deferred (KR-P2-COST-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded mid-month sample of a cost ladder at the 75% rung
+# (Opus → Sonnet downshift active, one deferred frontier-only ticket, two
+# reconciliation entries within tolerance). Flips to real data via the
+# KR-P2-K CostStateHolder accessors + a substrate query for tickets in
+# the ``deferred_cost_limit`` state.
+#
+# Read-only by design: rung transitions happen automatically in KR-P2-K's
+# runtime; the "extra-usage OFF" hard cap is an Anthropic-console toggle
+# (out-of-process). No control surface lives here.
+#
+# Security: response shape carries dollar amounts + model tier + ticket
+# IDs only. Never includes raw credentials. The §8 grep check enforces
+# that no token/secret/api-key-shaped field leaks into this endpoint.
+
+
+@app.get("/api/cost-state")
+async def get_cost_state():
+    """Return Kora's current cost-ladder state.
+
+    Shape: current rung + burn summary, latest rate-limit pulse, list of
+    cost-deferred tickets, recent reconciliation entries. v1 stub.
+
+    Replace body with ``CostStateHolder.current()`` +
+    ``.rate_limit_pulse()`` + ``.recent_reconciliations(limit=N)`` +
+    a substrate scan for ``state == deferred_cost_limit`` tickets once
+    KR-P2-K lands.
+    """
+    return {
+        "current": {
+            "billing_period_start": "2026-05-01T00:00:00Z",
+            "billing_period_end": "2026-05-31T23:59:59Z",
+            "days_remaining": 10,
+            "credit_pool_usd": 200.00,
+            "spent_to_date_usd": 87.43,
+            "burn_rate_usd_per_day": 4.17,
+            "projected_end_of_period_usd": 128.13,
+            "active_rung": "warn_75",
+            "active_rung_threshold_pct": 75,
+            "current_pct_used": 43.7,
+            "effective_model_tier": "sonnet",
+            "downshift_active": True,
+            "downshift_reason": (
+                "75% rung crossed at 2026-05-15T14:22Z; Opus→Sonnet "
+                "downshift for downshift-eligible tickets"
+            ),
+            "extra_usage_off": True,
+        },
+        "rate_limit_pulse": {
+            "captured_at": "2026-05-21T22:00:00Z",
+            "requests": {
+                "limit": 4000,
+                "remaining": 3712,
+                "reset_at": "2026-05-21T22:05:00Z",
+            },
+            "tokens": {
+                "limit": 400000,
+                "remaining": 312000,
+                "reset_at": "2026-05-21T22:05:00Z",
+            },
+        },
+        "deferred_tickets": [
+            {
+                "id": "sea_ticket_stub_deferred_001",
+                "title": "Stub ticket — deferred frontier-only (sample data)",
+                "criticality": "frontier",
+                "state": "deferred_cost_limit",
+                "deferred_at": "2026-05-21T20:15:00Z",
+                "reason": (
+                    "90% rung crossed; frontier-only ticket cannot "
+                    "downshift; deferred until next refresh or operator override"
+                ),
+            },
+        ],
+        "reconciliation_history": [
+            {
+                "reconciled_at": "2026-05-21T18:00:00Z",
+                "local_estimator_usd": 86.12,
+                "anthropic_reported_usd": 87.43,
+                "delta_usd": 1.31,
+                "delta_pct": 1.52,
+                "within_tolerance": True,
+            },
+            {
+                "reconciled_at": "2026-05-21T12:00:00Z",
+                "local_estimator_usd": 71.05,
+                "anthropic_reported_usd": 71.50,
+                "delta_usd": 0.45,
+                "delta_pct": 0.63,
+                "within_tolerance": True,
+            },
+        ],
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
