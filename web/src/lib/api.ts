@@ -184,6 +184,23 @@ export const api = {
       { method: "POST" },
     ),
 
+  // Gateway platform identity (KR-P2-G)
+  listGatewayPlatforms: () =>
+    fetchJSON<GatewayPlatformIdentity[]>("/api/gateway/platforms"),
+  getGatewayPlatform: (platform_id: string) =>
+    fetchJSON<GatewayPlatformIdentity>(
+      `/api/gateway/platforms/${encodeURIComponent(platform_id)}`,
+    ),
+  updateGatewayPlatformIdentity: (platform_id: string, display_name: string) =>
+    fetchJSON<GatewayPlatformIdentity>(
+      `/api/gateway/platforms/${encodeURIComponent(platform_id)}/identity`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ display_name }),
+      },
+    ),
+
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -875,4 +892,14 @@ export interface MCPProbeResponse {
   name: string;
   elapsed_ms: number;
   tools: MCPProbeTool[];
+}
+
+export interface GatewayPlatformIdentity {
+  platform_id: string;
+  enabled: boolean;
+  display_name: string;
+  display_name_source: "config" | "extra" | "default";
+  supported: boolean;
+  token_status: "configured" | "missing" | "env_referenced";
+  extra_keys: string[];
 }
