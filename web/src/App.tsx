@@ -33,6 +33,7 @@ import {
   OctagonAlert,
   Package,
   Plug,
+  PowerSquare,
   Puzzle,
   RotateCw,
   Settings,
@@ -70,6 +71,7 @@ import CronPage from "@/pages/CronPage";
 import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
+import BootStatusPage from "@/pages/BootStatusPage";
 import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
@@ -118,6 +120,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
+  "/boot-status": BootStatusPage,
   "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
@@ -154,6 +157,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "operationalState",
     label: "Operational",
     icon: Activity,
+  },
+  {
+    path: "/boot-status",
+    labelKey: "bootStatus",
+    label: "Boot Status",
+    icon: PowerSquare,
   },
   {
     path: "/kora-control",

@@ -3416,6 +3416,114 @@ async def get_kora_control_observed_state():
 
 
 # ---------------------------------------------------------------------------
+# Boot status — gate sequence outcome (KR-P2-BOOT-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded sample of a successful boot (current) plus one
+# failed boot (history) so the admin panel renders meaningfully. Flips
+# to real data via ``BootGateRunner.last_result()`` +
+# ``BootGateRunner.recent_history(limit=20)`` once KR-P2-H lands.
+#
+# Operator intervention on a stuck boot is operator-side (flyctl restart,
+# Doppler env-var fix, etc.); the panel is observation-only. No "force
+# re-boot" or "skip gate" buttons live here.
+
+
+@app.get("/api/boot-status")
+async def get_boot_status():
+    """Return the most-recent boot's gate-sequence outcome + history.
+
+    v1 stub. Replace body with ``BootGateRunner.last_result()`` projection
+    + ``BootGateRunner.recent_history(limit=20)`` once KR-P2-H lands.
+
+    Outcome enum: booting | ready | failed.
+    Gate outcome enum: pass | fail.
+    Gate class enum: transient (re-runnable) | invariant (must hold).
+    """
+    return {
+        "current": {
+            "boot_id": "boot_stub_001",
+            "primary_state": "ready",
+            "started_at": "2026-05-21T19:30:00Z",
+            "completed_at": "2026-05-21T19:30:08Z",
+            "elapsed_ms": 8120,
+            "outcome": "ready",
+            "gates": [
+                {
+                    "gate_id": "1",
+                    "title": "Claude auth valid",
+                    "gate_class": "transient",
+                    "outcome": "pass",
+                    "elapsed_ms": 412,
+                    "detail": "claude auth status: ok",
+                },
+                {
+                    "gate_id": "4",
+                    "title": "kora_runtime role perms",
+                    "gate_class": "transient",
+                    "outcome": "pass",
+                    "elapsed_ms": 89,
+                    "detail": "expected pass + expected deny both confirmed",
+                },
+                {
+                    "gate_id": "5",
+                    "title": "kronicle-mcp reachable",
+                    "gate_class": "transient",
+                    "outcome": "pass",
+                    "elapsed_ms": 64,
+                    "detail": "kronicle-mcp.internal:8443/health 200",
+                },
+                {
+                    "gate_id": "6",
+                    "title": "wsk_* token valid",
+                    "gate_class": "transient",
+                    "outcome": "pass",
+                    "elapsed_ms": 220,
+                    "detail": "kora__read_kora_capability_row probe ok",
+                },
+                {
+                    "gate_id": "7",
+                    "title": "canonical kora actor row exists",
+                    "gate_class": "invariant",
+                    "outcome": "pass",
+                    "elapsed_ms": 41,
+                    "detail": "actor_registry row present for kora actor_kind",
+                },
+                {
+                    "gate_id": "8",
+                    "title": "Charter + capability matrix load",
+                    "gate_class": "transient",
+                    "outcome": "pass",
+                    "elapsed_ms": 720,
+                    "detail": "constitution_cache populated; 1 active revision",
+                },
+                {
+                    "gate_id": "10",
+                    "title": "KR-7 boot smoke check (read-only)",
+                    "gate_class": "invariant",
+                    "outcome": "pass",
+                    "elapsed_ms": 95,
+                    "detail": "dispatch tier would attribute canonical 0076 actor",
+                },
+            ],
+        },
+        "history": [
+            {
+                "boot_id": "boot_stub_000",
+                "started_at": "2026-05-21T19:00:00Z",
+                "completed_at": "2026-05-21T19:00:12Z",
+                "elapsed_ms": 12450,
+                "outcome": "failed",
+                "failed_gate_id": "5",
+                "failed_gate_title": "kronicle-mcp reachable",
+                "detail": "kronicle-mcp.internal:8443 connection timeout after 3 retries",
+            },
+        ],
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

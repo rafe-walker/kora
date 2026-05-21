@@ -73,6 +73,7 @@ export const api = {
     fetchJSON<KoraControlObservedStateResponse>(
       "/api/kora-control/observed-state",
     ),
+  getBootStatus: () => fetchJSON<BootStatusResponse>("/api/boot-status"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1050,5 +1051,47 @@ export interface KoraControlObservedStateResponse {
   active: KoraControlCommand[];
   recently_enforced: KoraControlCommand[];
   history: KoraControlCommand[];
+  stub: boolean;
+}
+
+// Boot status (KR-P2-BOOT-PANEL). Enum values match the Python
+// BootGateRunner / GateResult schema landed by KR-P2-H.
+export type GateOutcome = "pass" | "fail";
+export type GateClass = "transient" | "invariant";
+export type BootOutcome = "booting" | "ready" | "failed";
+
+export interface GateResult {
+  gate_id: string;
+  title: string;
+  gate_class: GateClass;
+  outcome: GateOutcome;
+  elapsed_ms: number;
+  detail: string;
+}
+
+export interface CurrentBoot {
+  boot_id: string;
+  primary_state: string;
+  started_at: string;
+  completed_at: string | null;
+  elapsed_ms: number;
+  outcome: BootOutcome;
+  gates: GateResult[];
+}
+
+export interface BootHistoryEntry {
+  boot_id: string;
+  started_at: string;
+  completed_at: string | null;
+  elapsed_ms: number;
+  outcome: BootOutcome;
+  failed_gate_id?: string;
+  failed_gate_title?: string;
+  detail?: string;
+}
+
+export interface BootStatusResponse {
+  current: CurrentBoot;
+  history: BootHistoryEntry[];
   stub: boolean;
 }
