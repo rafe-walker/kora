@@ -481,10 +481,12 @@ def test_gate10_is_invariant():
 # ===========================================================================
 
 
-def test_default_gate_sequence_has_7_gates_in_r41_order():
+def test_default_gate_sequence_has_gates_in_r41_order():
+    """KR-P2-M ST1 inserted gate 3 between gate 1 and gate 4."""
     seq = build_default_gate_sequence()
     assert [g.gate_id for g in seq] == [
         "1_claude_auth",
+        "3_substrate_contract_version",  # KR-P2-M ST1
         "4_kora_runtime_role_perms",
         "5_kronicle_mcp_reachable",
         "6_wsk_token_valid",
@@ -495,10 +497,11 @@ def test_default_gate_sequence_has_7_gates_in_r41_order():
 
 
 def test_default_gate_sequence_class_mix():
-    """Gates 7 + 10 are INVARIANT per R4.1 §9.2; rest are TRANSIENT."""
+    """Gates 3 + 7 + 10 are INVARIANT per R4.1 §9.2 / §9.8; rest TRANSIENT."""
     seq = build_default_gate_sequence()
     by_class = {g.gate_id: g.gate_class for g in seq}
     assert by_class["1_claude_auth"] is GateClass.TRANSIENT
+    assert by_class["3_substrate_contract_version"] is GateClass.INVARIANT
     assert by_class["4_kora_runtime_role_perms"] is GateClass.TRANSIENT
     assert by_class["5_kronicle_mcp_reachable"] is GateClass.TRANSIENT
     assert by_class["6_wsk_token_valid"] is GateClass.TRANSIENT
