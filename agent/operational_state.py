@@ -107,6 +107,52 @@ class ClaimPermission(Enum):
     NORMAL = "normal"
 
 
+class HeartbeatProgress(Enum):
+    """R4.1 §9.3 P2 — what counts as "heartbeat progress" for the
+    cockpit-BFF SLA-exception watcher.
+
+    Pinned per the verification-5 ruling on KR-P2-J: this is a
+    **documentation/type artifact** for the Runtime Contract, NOT a
+    chain-emit literal. The two members enumerate the exact signals
+    that satisfy the SLA-exception clause:
+
+    - ``STREAMING_TOKEN_ADVANCED`` — the SDK streaming-token-event
+      counter advanced for an in-flight inference call. Observable
+      out-of-band (SDK telemetry / structured logs); not a substrate
+      artifact.
+
+    - ``TOOL_CALL_BOUNDARY`` — the agent loop crossed a tool-call
+      boundary (next dispatch started). Observable from
+      ``public.kora_operation_ledger.updated_at`` — the ledger row
+      ``updated_at`` is auto-touched by the
+      ``_kora_operation_ledger_touch_updated_at`` trigger on every
+      status transition, so the cockpit-BFF watcher's ≤5s poll sees
+      the advancement without a dedicated chain emit.
+
+    A bare liveness pulse (e.g. an HTTP /alive ping that always
+    returns 200 regardless of agent state) does NOT satisfy the
+    exception. Listed here so the runtime + cockpit BFF share one
+    definition.
+
+    # Why no emit function
+
+    There is no ``kora.heartbeat.*`` literal in
+    ``foundation/0159_kora_r41_operational_state_event_vocabulary.sql``
+    — adding a per-tool-call emit would be the audit-class flood the
+    substrate's terminal-only-emit design avoids. The cockpit-BFF
+    watcher reads the progress condition from substrate table
+    side-effects (``kora_operation_ledger.updated_at``,
+    ``kora_control.acknowledged_at``), not from chain events.
+
+    Future helper that may read this enum: a ``is_progress_signal_recent``
+    query helper for KR-P2-I-integration's drain-state logic. Not
+    needed for KR-P2-J ST3.
+    """
+
+    STREAMING_TOKEN_ADVANCED = "streaming_token_advanced"
+    TOOL_CALL_BOUNDARY = "tool_call_boundary"
+
+
 @dataclass(frozen=True, slots=True)
 class OperationalState:
     """Snapshot of Kora's runtime operational state.

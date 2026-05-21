@@ -43,6 +43,10 @@ from agent.constitution_pre_screen import (
     constitution_pre_screen,
 )
 from agent.constitution_audit import emit_constitution_audit_event
+from agent.stop_kora_pre_flight import (
+    build_stop_kora_block_result,
+    run_stop_kora_pre_flight,
+)
 from tools.terminal_tool import (
     _get_approval_callback,
     _get_sudo_password_callback,
@@ -231,6 +235,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         agent, function_name, function_args, _pre_verdict
                     )
                     block_result = _build_constitution_block_result(_pre_verdict)
+
+            # STOP-KORA pre-flight (KR-P2-J ST3). Coarser-grained than
+            # Constitution — runs AFTER pre-screen so Constitution rejects
+            # (specific tool denied) take precedence over STOP-KORA
+            # (global drain/abort). Best-effort lifecycle advance to
+            # ``enforced`` is performed inside ``run_stop_kora_pre_flight``;
+            # substrate emits ``kora_control.enforced`` internally on
+            # the terminal transition. No per-stage runtime emit.
+            if block_result is None:
+                _stop_verdict = run_stop_kora_pre_flight(agent)
+                if _stop_verdict is not None and _stop_verdict.is_blocking():
+                    block_result = build_stop_kora_block_result(_stop_verdict)
 
             if block_result is None:
                 guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
@@ -630,8 +646,21 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 _constitution_block_verdict = _pre_verdict
 
-        _guardrail_block_decision: ToolGuardrailDecision | None = None
+        # STOP-KORA pre-flight (KR-P2-J ST3). See concurrent path for
+        # the layering rationale (Constitution first, then STOP-KORA,
+        # then guardrails).
+        _stop_kora_block_verdict = None
         if _block_msg is None and _constitution_block_verdict is None:
+            _stop_verdict = run_stop_kora_pre_flight(agent)
+            if _stop_verdict is not None and _stop_verdict.is_blocking():
+                _stop_kora_block_verdict = _stop_verdict
+
+        _guardrail_block_decision: ToolGuardrailDecision | None = None
+        if (
+            _block_msg is None
+            and _constitution_block_verdict is None
+            and _stop_kora_block_verdict is None
+        ):
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
@@ -639,6 +668,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _execution_blocked = (
             _block_msg is not None
             or _constitution_block_verdict is not None
+            or _stop_kora_block_verdict is not None
             or _guardrail_block_decision is not None
         )
 
@@ -724,6 +754,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # constitution_escalate) so downstream consumers (ST3 chain-event
             # emit, cockpit alerts) can branch on the outcome.
             function_result = _build_constitution_block_result(_constitution_block_verdict)
+            tool_duration = 0.0
+        elif _stop_kora_block_verdict is not None:
+            # Tool blocked by KR-P2-J ST3 STOP-KORA pre-flight — synthesize
+            # a tool result encoding block_kind="stop_kora" with the
+            # action + command_id for downstream consumers.
+            function_result = build_stop_kora_block_result(_stop_kora_block_verdict)
             tool_duration = 0.0
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one

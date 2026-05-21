@@ -18,6 +18,7 @@ import pytest
 from agent.operational_state import (
     ClaimPermission,
     DegradationReason,
+    HeartbeatProgress,
     OperationalState,
     PrimaryState,
     StateTransition,
@@ -317,3 +318,44 @@ def test_degradation_reason_round_trips_through_value_string(member):
 @pytest.mark.parametrize("member", list(ClaimPermission))
 def test_claim_permission_round_trips_through_value_string(member):
     assert ClaimPermission(member.value) is member
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatProgress — R4.1 §9.3 P2 documentation/type artifact
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_progress_has_exactly_two_members():
+    """R4.1 §9.3 P2 defines two concrete progress signals; a bare
+    liveness pulse is explicitly NOT one of them. Cardinality is
+    load-bearing — the cockpit-BFF SLA watcher consumes the same
+    contract."""
+    assert {m.value for m in HeartbeatProgress} == {
+        "streaming_token_advanced",
+        "tool_call_boundary",
+    }
+    assert len(list(HeartbeatProgress)) == 2
+
+
+@pytest.mark.parametrize("member", list(HeartbeatProgress))
+def test_heartbeat_progress_round_trips_through_value_string(member):
+    """String values are stable wire format — consumed by the future
+    Runtime Contract manifest reference (cockpit-BFF side)."""
+    assert HeartbeatProgress(member.value) is member
+
+
+def test_heartbeat_progress_is_not_a_chain_emit_literal():
+    """Sanity guard: the enum exists only as a documentation /
+    type artifact. No `kora.heartbeat.*` literal is admitted by
+    `foundation/0159_kora_r41_operational_state_event_vocabulary.sql`;
+    adding one would be the audit-class flood the substrate's
+    terminal-only-emit design avoids.
+
+    This test asserts the doc intent — if anyone adds an
+    ``emit_heartbeat_progress`` function in this module, they'll
+    need to either (a) remove this test with a clear PR-body
+    justification OR (b) get substrate-team to ship a new event
+    literal first.
+    """
+    import agent.operational_state as os_mod
+    assert not hasattr(os_mod, "emit_heartbeat_progress")
