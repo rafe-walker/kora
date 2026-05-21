@@ -5,11 +5,19 @@ Covers:
 - Slack handoff-thread seed (gateway/platforms/slack.py:create_handoff_thread)
 - Email subject default across all three send paths
   (_send_email, _send_email_with_attachments, _send_email_with_attachment)
+- Discord slash-command descriptions registered via _register_slash_commands
+- Home Assistant persistent_notification.create title (send())
+- WhatsApp DEFAULT_REPLY_PREFIX (per-instance, populated in __init__)
+- Matrix device_name — see TestMatrixDeviceNameIdentity (intentionally
+  skipped; the literal is inline at the mautrix.Client.login call site
+  with no instance attribute to inspect — adapter restructuring is
+  out-of-scope per spec §6).
 """
 
 import os
 import sys
 from email.message import Message
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -208,3 +216,252 @@ class TestEmailSubjectIdentity:
         subject = _captured_subject(mock_smtp)
         assert "Help with Python" in subject
         assert "Kora Agent" not in subject
+
+
+# ---------------------------------------------------------------------------
+# Discord (slash-command descriptions)
+# ---------------------------------------------------------------------------
+
+def _ensure_discord_mock():
+    """Stub discord modules so DiscordAdapter can be imported without the
+    real library. Modeled on tests/gateway/test_discord_slash_commands.py
+    so the registration code-path is exercised the same way."""
+    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+        return
+
+    if sys.modules.get("discord") is None:
+        discord_mod = MagicMock()
+        discord_mod.Intents.default.return_value = MagicMock()
+        discord_mod.DMChannel = type("DMChannel", (), {})
+        discord_mod.Thread = type("Thread", (), {})
+        discord_mod.ForumChannel = type("ForumChannel", (), {})
+        discord_mod.Interaction = object
+
+        class _FakeGroup:
+            def __init__(self, *, name, description, parent=None):
+                self.name = name
+                self.description = description
+                self.parent = parent
+                self._children: dict = {}
+                if parent is not None:
+                    parent.add_command(self)
+
+            def add_command(self, cmd):
+                self._children[cmd.name] = cmd
+
+        class _FakeCommand:
+            def __init__(self, *, name, description, callback, parent=None):
+                self.name = name
+                self.description = description
+                self.callback = callback
+                self.parent = parent
+
+        discord_mod.app_commands = SimpleNamespace(
+            describe=lambda **kwargs: (lambda fn: setattr(fn, "_describe", kwargs) or fn),
+            choices=lambda **kwargs: (lambda fn: fn),
+            autocomplete=lambda **kwargs: (lambda fn: fn),
+            Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+            Group=_FakeGroup,
+            Command=_FakeCommand,
+        )
+
+        ext_mod = MagicMock()
+        commands_mod = MagicMock()
+        commands_mod.Bot = MagicMock
+        ext_mod.commands = commands_mod
+
+        sys.modules["discord"] = discord_mod
+        sys.modules.setdefault("discord.ext", ext_mod)
+        sys.modules.setdefault("discord.ext.commands", commands_mod)
+
+    _app = getattr(sys.modules["discord"], "app_commands", None)
+    if _app is not None and not hasattr(_app, "autocomplete"):
+        try:
+            _app.autocomplete = lambda **kwargs: (lambda fn: fn)
+        except Exception:
+            pass
+
+
+_ensure_discord_mock()
+
+from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+
+
+class _DescTree:
+    """FakeTree that captures the ``description`` kwarg of each
+    @tree.command(...) registration so descriptions can be asserted."""
+
+    def __init__(self):
+        self.commands: dict = {}
+        self.descriptions: dict = {}
+
+    def command(self, *, name, description):
+        self.descriptions[name] = description
+
+        def decorator(fn):
+            self.commands[name] = fn
+            return fn
+
+        return decorator
+
+    def add_command(self, cmd):
+        self.commands[cmd.name] = cmd
+        self.descriptions[cmd.name] = getattr(cmd, "description", "")
+
+    def get_commands(self):
+        return [SimpleNamespace(name=n) for n in self.commands]
+
+
+def _build_discord_adapter(display_name: str) -> DiscordAdapter:
+    config = PlatformConfig(enabled=True, token="discord-fake", display_name=display_name)
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(
+        tree=_DescTree(),
+        get_channel=lambda _id: None,
+        fetch_channel=AsyncMock(),
+        user=SimpleNamespace(id=99999, name="KoraBot"),
+    )
+    adapter._text_batch_delay_seconds = 0
+    adapter._check_slash_authorization = AsyncMock(return_value=True)
+    return adapter
+
+
+class TestDiscordSlashCommandDescriptionIdentity:
+    """All seven PM-listed Discord slash-command descriptions interpolate
+    ``self.config.display_name``."""
+
+    def test_default_display_name_renders_kora_in_descriptions(self):
+        adapter = _build_discord_adapter(display_name="Kora")
+        adapter._register_slash_commands()
+
+        descs = adapter._client.tree.descriptions
+        # Spot-check each of the seven sites that contain the
+        # display_name interpolation (lines 2920, 2947, 2955, 3017, 3021,
+        # 3035, 3337 pre-edit).
+        assert "Kora" in descs["reset"]
+        assert "Kora" in descs["status"]
+        assert "Kora" in descs["stop"]
+        assert "Kora" in descs["update"]
+        assert "Kora" in descs["restart"]
+        assert "Kora" in descs["thread"]
+        # /skill is registered as a Command via _register_skill_group
+        assert "Kora" in descs["skill"]
+
+        for cmd_name, desc in descs.items():
+            assert "Hermes" not in desc, f"/{cmd_name} still says Hermes: {desc!r}"
+
+    def test_overridden_display_name_propagates_into_descriptions(self):
+        adapter = _build_discord_adapter(display_name="testkoraalpha")
+        adapter._register_slash_commands()
+
+        descs = adapter._client.tree.descriptions
+        for key in ("reset", "status", "stop", "update", "restart", "thread", "skill"):
+            assert "testkoraalpha" in descs[key]
+            assert "Hermes" not in descs[key]
+
+
+# ---------------------------------------------------------------------------
+# Home Assistant (persistent_notification.create title)
+# ---------------------------------------------------------------------------
+
+class _CapturePost:
+    """Minimal aiohttp-style async context manager that records the JSON
+    payload posted and returns a 200-status response."""
+
+    def __init__(self):
+        self.calls: list = []
+
+    def __call__(self, url, *, headers=None, json=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers, "json": json})
+
+        class _Resp:
+            status = 200
+
+            async def text(self):
+                return ""
+
+            async def __aenter__(self_inner):
+                return self_inner
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Resp()
+
+
+def _build_ha_adapter(display_name: str, monkeypatch):
+    from gateway.platforms.homeassistant import HomeAssistantAdapter
+
+    monkeypatch.setenv("HASS_TOKEN", "fake-token")
+    monkeypatch.setenv("HASS_URL", "http://hass.test")
+    adapter = HomeAssistantAdapter(
+        PlatformConfig(enabled=True, display_name=display_name)
+    )
+    capture = _CapturePost()
+    adapter._rest_session = SimpleNamespace(post=capture)
+    return adapter, capture
+
+
+class TestHomeAssistantNotificationIdentity:
+    @pytest.mark.asyncio
+    async def test_default_display_name_renders_kora_agent_title(self, monkeypatch):
+        adapter, capture = _build_ha_adapter("Kora", monkeypatch)
+
+        result = await adapter.send("dm-1", "hello")
+
+        assert result.success
+        assert capture.calls, "expected HA REST POST to fire"
+        payload = capture.calls[0]["json"]
+        assert payload["title"] == "Kora Agent"
+
+    @pytest.mark.asyncio
+    async def test_overridden_display_name_propagates_into_title(self, monkeypatch):
+        adapter, capture = _build_ha_adapter("testkoraalpha", monkeypatch)
+
+        await adapter.send("dm-1", "hello")
+
+        payload = capture.calls[0]["json"]
+        assert payload["title"] == "testkoraalpha Agent"
+        assert "Hermes" not in payload["title"]
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp (DEFAULT_REPLY_PREFIX, populated in __init__)
+# ---------------------------------------------------------------------------
+
+class TestWhatsAppReplyPrefixIdentity:
+    def test_default_display_name_renders_kora_agent_prefix(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(PlatformConfig(enabled=True, display_name="Kora"))
+        assert adapter.DEFAULT_REPLY_PREFIX == "⚕ *Kora Agent*\n────────────\n"
+        assert "Hermes" not in adapter.DEFAULT_REPLY_PREFIX
+
+    def test_overridden_display_name_propagates_into_prefix(self):
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        adapter = WhatsAppAdapter(
+            PlatformConfig(enabled=True, display_name="testkoraalpha")
+        )
+        assert "testkoraalpha" in adapter.DEFAULT_REPLY_PREFIX
+        assert "Hermes" not in adapter.DEFAULT_REPLY_PREFIX
+
+
+# ---------------------------------------------------------------------------
+# Matrix (device_name)
+# ---------------------------------------------------------------------------
+
+class TestMatrixDeviceNameIdentity:
+    @pytest.mark.skip(
+        reason=(
+            "Matrix device_name is interpolated inline at the mautrix Client.login "
+            "call in connect() — there is no instance attribute to inspect without "
+            "either (a) restructuring the adapter to cache the value, or (b) running "
+            "the full mautrix mock stack to capture login() kwargs. Both are "
+            "out-of-scope per KR-P2-B2 spec §6 ('don't restructure adapter init "
+            "signatures'). The literal is verified by the grep in §9; once a new "
+            "device registers, the homeserver receives ``{display_name} Agent``."
+        )
+    )
+    def test_matrix_device_name_uses_display_name(self):
+        pass

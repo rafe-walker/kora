@@ -242,13 +242,17 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
-    
+
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
+        # KR-P2-B: parameterized default prefix. Instance attribute (not
+        # class const) because it interpolates ``config.display_name``.
+        # Existing call sites read ``self.DEFAULT_REPLY_PREFIX`` /
+        # ``adapter.DEFAULT_REPLY_PREFIX`` — both keep working unchanged.
+        self.DEFAULT_REPLY_PREFIX = f"⚕ *{config.display_name} Agent*\n────────────\n"
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(
