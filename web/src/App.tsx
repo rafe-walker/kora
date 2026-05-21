@@ -28,6 +28,7 @@ import {
   FileText,
   Globe,
   Heart,
+  HeartPulse,
   KeyRound,
   Menu,
   MessageSquare,
@@ -73,6 +74,7 @@ import CronPage from "@/pages/CronPage";
 import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
+import HealthRollupPage from "@/pages/HealthRollupPage";
 import BootStatusPage from "@/pages/BootStatusPage";
 import CostStatePage from "@/pages/CostStatePage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
@@ -124,6 +126,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
+  "/health-rollup": HealthRollupPage,
   "/boot-status": BootStatusPage,
   "/cost-state": CostStatePage,
   "/capabilities": CapabilitiesPage,
@@ -163,6 +166,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "operationalState",
     label: "Operational",
     icon: Activity,
+  },
+  {
+    path: "/health-rollup",
+    labelKey: "healthRollup",
+    label: "Health",
+    icon: HeartPulse,
   },
   {
     path: "/boot-status",
