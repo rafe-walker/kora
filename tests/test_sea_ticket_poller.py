@@ -26,6 +26,11 @@ import pytest
 from types import SimpleNamespace
 
 from plugins.memory.isokron.kora_control_reader import KoraControlReader
+from plugins.memory.isokron.kora_operation_ledger import (
+    KoraOperationLedger,
+    KoraOperationLedgerError,
+    KoraOperationRow,
+)
 from plugins.memory.isokron.sea_ticket_poller import (
     KORA_CLAIM_RESULT_ALREADY_CLAIMED,
     KORA_CLAIM_RESULT_CLAIMED,
@@ -96,6 +101,54 @@ def _make_memory_provider(
     provider._connection = _FakeConnection(pool)
     provider._resolve_workspace_id.return_value = workspace_id
     return provider
+
+
+class _FakeLedger:
+    """Test double for KoraOperationLedger.
+
+    Records calls + lets tests inject failures. Avoids the need to
+    extend _FakePool to handle the CTE INSERT and the subsequent
+    state-transition UPDATEs — those are tested in
+    test_kora_operation_ledger.py."""
+
+    def __init__(self) -> None:
+        self.allocate_calls: list[dict[str, Any]] = []
+        self.allocate_raises: Optional[Exception] = None
+
+    async def allocate_operation(
+        self,
+        *,
+        work_attempt_id: str,
+        workspace_id: str,
+        ticket_id: str,
+        tool_name: str,
+    ) -> KoraOperationRow:
+        self.allocate_calls.append(
+            {
+                "work_attempt_id": work_attempt_id,
+                "workspace_id": workspace_id,
+                "ticket_id": ticket_id,
+                "tool_name": tool_name,
+            }
+        )
+        if self.allocate_raises is not None:
+            raise self.allocate_raises
+        return KoraOperationRow(
+            work_attempt_id=work_attempt_id,
+            sequence_within_attempt=0,
+            kora_operation_id="ddddddd0-dddd-dddd-dddd-dddddddddddd",
+            workspace_id=workspace_id,
+            ticket_id=ticket_id,
+            status="allocated",
+            tool_name=tool_name,
+            dispatch_result=None,
+            dispatch_error=None,
+            created_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 5, 21, tzinfo=timezone.utc),
+        )
+
+
+from typing import Optional  # noqa: E402 — used by _FakeLedger above
 
 
 def _seeded_ticket_row(**overrides: Any) -> dict[str, Any]:
@@ -187,6 +240,7 @@ async def test_poll_once_returns_zero_when_no_ticket_available():
     poller = SeaTicketPoller(
         mcp_client=MagicMock(),
         memory_provider=_make_memory_provider(pool),
+        ledger=_FakeLedger(),
     )
     assert await poller._poll_once() == 0
 
@@ -216,6 +270,7 @@ async def test_poll_once_full_happy_path_claims_works_releases():
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
         agent_loop_invoker=invoker,
+        ledger=_FakeLedger(),
     )
 
     assert await poller._poll_once() == 1
@@ -271,6 +326,7 @@ async def test_already_claimed_response_skips_agent_loop_and_release():
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
         agent_loop_invoker=invoker,
+        ledger=_FakeLedger(),
     )
     assert await poller._poll_once() == 1
 
@@ -300,6 +356,7 @@ async def test_claim_returns_null_fence_token_refuses_to_proceed():
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
         agent_loop_invoker=invoker,
+        ledger=_FakeLedger(),
     )
     await poller._poll_once()
 
@@ -327,6 +384,7 @@ async def test_agent_loop_exception_still_releases_claim():
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
         agent_loop_invoker=invoker,
+        ledger=_FakeLedger(),
     )
     await poller._poll_once()
 
@@ -335,6 +393,79 @@ async def test_agent_loop_exception_still_releases_claim():
         "kora__claim_sea_ticket",
         "kora__release_claim",
     ]
+
+
+@pytest.mark.asyncio
+async def test_ledger_allocate_called_after_claim_with_right_args():
+    """After a successful claim, the poller MUST allocate the ledger
+    row before any refresh or release call — both substrate SECDEFs
+    (kora_refresh_claim, kora_release_claim) require an 'allocated'
+    row to exist at the claim's kora_operation_id (migration 0103)."""
+    pool = _FakePool()
+    pool.queue(_seeded_actor_row())
+    pool.queue(_seeded_ticket_row())
+
+    mcp = MagicMock()
+    mcp.invoke = AsyncMock()
+    mcp.invoke.side_effect = [
+        _claim_response(),
+        {"result": "released", "chain_event_id": None},
+    ]
+
+    ledger = _FakeLedger()
+    poller = SeaTicketPoller(
+        mcp_client=mcp,
+        memory_provider=_make_memory_provider(pool),
+        ledger=ledger,
+    )
+    await poller._poll_once()
+
+    assert len(ledger.allocate_calls) == 1
+    call = ledger.allocate_calls[0]
+    assert call["work_attempt_id"] == _claim_response()["work_attempt_id"]
+    assert call["workspace_id"] == "org_test"
+    assert call["ticket_id"] == "11111111-1111-1111-1111-111111111111"
+    assert call["tool_name"] == "kora__claim_sea_ticket"
+
+
+@pytest.mark.asyncio
+async def test_ledger_allocate_failure_aborts_work_no_release():
+    """If the ledger.allocate_operation raises (e.g. the 0093
+    BEFORE-INSERT trigger rejects because tickets.work_attempt_id has
+    rotated), the poller must NOT proceed to start the agent loop or
+    call release. The lease expires naturally."""
+    pool = _FakePool()
+    pool.queue(_seeded_actor_row())
+    pool.queue(_seeded_ticket_row())
+
+    mcp = MagicMock()
+    mcp.invoke = AsyncMock(return_value=_claim_response())  # only claim fires
+
+    ledger = _FakeLedger()
+    ledger.allocate_raises = KoraOperationLedgerError(
+        "allocate_operation: 0093 trigger rejected work_attempt mismatch"
+    )
+
+    invoked: list = []
+
+    async def invoker(_t, _c, _hb):
+        invoked.append(1)
+        return SeaTicketResolution.COMPLETED
+
+    poller = SeaTicketPoller(
+        mcp_client=mcp,
+        memory_provider=_make_memory_provider(pool),
+        agent_loop_invoker=invoker,
+        ledger=ledger,
+    )
+    await poller._poll_once()
+
+    # Claim fired; allocate attempted; agent loop never invoked; no
+    # release.
+    assert mcp.invoke.await_count == 1
+    assert mcp.invoke.await_args.args[0] == "kora__claim_sea_ticket"
+    assert len(ledger.allocate_calls) == 1
+    assert invoked == []
 
 
 @pytest.mark.asyncio
@@ -363,6 +494,7 @@ async def test_heartbeat_lease_lost_skips_release():
         memory_provider=_make_memory_provider(pool),
         agent_loop_invoker=invoker,
         heartbeat_interval_seconds=60,  # never fires in this test window
+        ledger=_FakeLedger(),
     )
     await poller._poll_once()
 
@@ -387,6 +519,7 @@ async def test_release_error_is_swallowed():
     poller = SeaTicketPoller(
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
+        ledger=_FakeLedger(),
     )
     # Must not raise — release errors live the lease expire path.
     await poller._poll_once()
@@ -427,6 +560,7 @@ async def test_stop_kora_level_1_blocks_claim():
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
         kora_control_reader=_StopKoraReader(),
+        ledger=_FakeLedger(),
     )
     assert await poller._poll_once() == 1  # ticket was "processed" (skipped)
 
@@ -498,6 +632,7 @@ async def test_actor_id_resolved_once_then_cached():
     poller = SeaTicketPoller(
         mcp_client=mcp,
         memory_provider=_make_memory_provider(pool),
+        ledger=_FakeLedger(),
     )
     await poller._poll_once()
     await poller._poll_once()
@@ -527,6 +662,7 @@ async def test_run_forever_exits_on_stop_signal():
         mcp_client=MagicMock(),
         memory_provider=_make_memory_provider(pool),
         poll_interval_seconds=0,  # tight loop for the test
+        ledger=_FakeLedger(),
     )
     # Stop after a short delay.
     async def stopper():
