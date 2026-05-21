@@ -1016,6 +1016,22 @@ class _AnthropicCompletionsAdapter:
                 anthropic_kwargs["temperature"] = temperature
 
         response = self._client.messages.create(**anthropic_kwargs)
+
+        # KR-P2-K ST2 — secondary rate-limit signal (best-effort).
+        # Only direct-Anthropic responses carry anthropic-ratelimit-*
+        # headers; this is one of the two surfaces that does.
+        try:
+            from agent.cost_ladder_wire import (
+                record_rate_limit_pulse_from_response,
+            )
+            record_rate_limit_pulse_from_response(response)
+        except Exception as _cl_exc:
+            logger.debug(
+                "[kora.cost_ladder] AnthropicAuxiliaryClient "
+                "rate-limit-pulse capture failed: %r",
+                _cl_exc,
+            )
+
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -5287,3 +5303,69 @@ async def async_call_llm(
                 logger.debug("Auxiliary (async): cache eviction after connection error failed",
                              exc_info=True)
         raise
+
+
+# ---------------------------------------------------------------------------
+# KR-P2-K ST2 — cost-ladder estimator wrap
+# ---------------------------------------------------------------------------
+#
+# The primary estimator signal feeds the cost-ladder holder after every
+# auxiliary inference returns. Wrapping ``call_llm`` + ``async_call_llm``
+# at module-level captures all 16+ internal return paths (success +
+# retry + fallback chains) in one place — simpler than threading the
+# kwargs through each individual return site.
+#
+# The wrappers store the resolved model/provider/base_url from the
+# caller's kwargs; ``record_inference_from_response`` falls back to
+# ``response.model`` when those are absent, so the cost holder gets a
+# usable model identifier even when fallback rerouted to a different
+# provider mid-call.
+#
+# Fail-soft: the wrapper catches every estimator failure path and logs
+# DEBUG; the underlying ``call_llm`` / ``async_call_llm`` response is
+# always returned unchanged to the caller.
+
+_call_llm_inner = call_llm
+_async_call_llm_inner = async_call_llm
+
+
+def call_llm(*args, **kwargs):
+    """KR-P2-K ST2 wrap of :func:`call_llm` that feeds the cost-ladder
+    estimator after the inner call returns. Failed calls (which raise
+    before producing a response) correctly do NOT contribute to the
+    spent_to_date counter — only successful inferences burn the pool.
+    """
+    response = _call_llm_inner(*args, **kwargs)
+    try:
+        from agent.cost_ladder_wire import record_inference_from_response
+        record_inference_from_response(
+            response,
+            model=kwargs.get("model"),
+            provider=kwargs.get("provider"),
+            base_url=kwargs.get("base_url"),
+        )
+    except Exception as _cl_exc:
+        logger.debug(
+            "[kora.cost_ladder] call_llm wrap feed failed: %r", _cl_exc
+        )
+    return response
+
+
+async def async_call_llm(*args, **kwargs):
+    """KR-P2-K ST2 wrap of :func:`async_call_llm`. Same semantics as
+    the sync wrap above."""
+    response = await _async_call_llm_inner(*args, **kwargs)
+    try:
+        from agent.cost_ladder_wire import record_inference_from_response
+        record_inference_from_response(
+            response,
+            model=kwargs.get("model"),
+            provider=kwargs.get("provider"),
+            base_url=kwargs.get("base_url"),
+        )
+    except Exception as _cl_exc:
+        logger.debug(
+            "[kora.cost_ladder] async_call_llm wrap feed failed: %r",
+            _cl_exc,
+        )
+    return response
