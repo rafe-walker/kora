@@ -364,3 +364,48 @@ def test_system_exit_from_inside_propagates(monkeypatch):
     with pytest.raises(SystemExit) as exc_info:
         wire_operational_state(provider)
     assert exc_info.value.code == 1
+
+
+# ===========================================================================
+# KR-P2-M ST3 — BootResult.PAUSED branch (wire-in does NOT sys.exit)
+# ===========================================================================
+
+
+def test_paused_outcome_does_not_call_sys_exit(monkeypatch, caplog):
+    """BootResult.PAUSED — coordinator already transitioned holder to
+    PAUSED{substrate} and emitted kora.dr.observed (via gate 3b). The
+    wire-in just logs and returns; process stays running for operator
+    clearance."""
+    _patch_make_emit_listener(monkeypatch)
+
+    failed = _gate_result(
+        gate_id="3b_epoch_dr_check",
+        outcome=GateOutcome.FAIL,
+        gate_class=GateClass.INVARIANT_PAUSE,
+        attempts=1,
+        detail="epoch mismatch — observed substrate_epoch=8 vs kora_known_epoch=3",
+    )
+    summary = BootSummary(
+        result=BootResult.PAUSED,
+        gate_results=[_gate_result(), failed],
+        failed_gate=failed,
+    )
+    provider = _make_provider(summary_to_return=summary)
+
+    with caplog.at_level(
+        logging.WARNING, logger="agent.operational_state_wire"
+    ):
+        # Must NOT raise SystemExit
+        wire_operational_state(provider)
+
+    # Operator-greppable warning naming the failed gate and the
+    # operator-clearance pathway.
+    assert any(
+        "PAUSED" in record.message
+        and "3b_epoch_dr_check" in record.message
+        for record in caplog.records
+    )
+    assert any(
+        "kora_control reset" in record.message
+        for record in caplog.records
+    )

@@ -37,7 +37,7 @@ reads it via the existing asyncpg pool (no SECDEF call needed).
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, Optional
 
 from agent.boot_gates import (
     BootContext,
@@ -159,3 +159,147 @@ async def _read_substrate_contract_version(provider: Any) -> int:
             "kora_dr_epoch_substrate singleton may be missing"
         )
     return int(row["version"])
+
+
+# ---------------------------------------------------------------------------
+# Gate 3b — kora_known_epoch vs substrate_epoch (DR check)
+# ---------------------------------------------------------------------------
+
+
+class Gate3bEpochCheck(Gate):
+    """Gate 3b — R4.1 §9.8 DR epoch check.
+
+    Reads both ``public.substrate_epoch()`` and
+    ``public.kora_known_epoch()``. Branches:
+
+      - ``kora_known_epoch IS NULL`` (Kora's first boot): PASS — no
+        history to compare against. ST4 writes the initial value at
+        end-of-boot.
+      - ``substrate_epoch == kora_known_epoch``: PASS — Kora is on
+        the same timeline as her last boot.
+      - ``substrate_epoch != kora_known_epoch``: epoch mismatch.
+        Invokes :mod:`agent.dr_handler` to emit ``kora.dr.observed``
+        + transition the holder to ``PAUSED{substrate}``, then returns
+        a FAIL ``GateResult`` with class ``INVARIANT_PAUSE``. The
+        coordinator detects this class and routes to
+        ``BootResult.PAUSED`` (NOT ``STOPPED``); the wire-in skips
+        ``sys.exit`` so the process stays running for operator
+        clearance.
+
+    INVARIANT_PAUSE class — fail-fast, no retry, but the coordinator
+    routes to PAUSED instead of STOPPED. The substrate_epoch could
+    have advanced because of a legitimate post-PITR DR-runbook bump,
+    so a "STOPPED+alert" posture would be too aggressive — operator
+    clearance via cockpit ``kora_control`` reset is the right path.
+    """
+
+    gate_id: ClassVar[str] = "3b_epoch_dr_check"
+    gate_class: ClassVar[GateClass] = GateClass.INVARIANT_PAUSE
+    title: ClassVar[str] = "kora_known_epoch vs substrate_epoch (R4.1 §9.8)"
+
+    async def run(self, context: BootContext) -> GateResult:
+        started_at, t0 = _begin()
+        provider = context.memory_provider
+        holder = context.holder
+        if provider is None:
+            return _fail_result(
+                self, started_at, t0,
+                "memory_provider is not set on BootContext",
+            )
+        if holder is None:
+            return _fail_result(
+                self, started_at, t0,
+                "holder is not set on BootContext (required for "
+                "PAUSED transition on mismatch)",
+            )
+
+        connection = getattr(provider, "_connection", None)
+        if connection is None:
+            return _fail_result(
+                self, started_at, t0,
+                "provider._connection is not initialized",
+            )
+
+        try:
+            substrate_epoch = connection.submit_and_wait(
+                _read_substrate_epoch_async(provider),
+                timeout=5.0,
+            )
+            known_epoch = connection.submit_and_wait(
+                _read_kora_known_epoch_async(provider),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            return _fail_result(
+                self, started_at, t0,
+                f"epoch read raised: {exc!r}",
+            )
+
+        # First-boot case: nothing to compare against. PASS.
+        if known_epoch is None:
+            return _pass_result(
+                self, started_at, t0,
+                f"first boot — no kora_known_epoch yet "
+                f"(substrate_epoch={substrate_epoch}); ST4 will write "
+                f"the initial value at end-of-boot",
+            )
+
+        # Match: PASS.
+        if substrate_epoch == known_epoch:
+            return _pass_result(
+                self, started_at, t0,
+                f"epochs match (both={substrate_epoch}); same timeline "
+                f"as last boot",
+            )
+
+        # Mismatch — invoke handler to emit + transition holder.
+        # The handler is best-effort on the emit; the transition fires
+        # regardless. If the handler raises unexpectedly, we still
+        # return FAIL so the coordinator routes to PAUSED.
+        try:
+            from agent.dr_handler import handle_epoch_mismatch
+
+            await handle_epoch_mismatch(
+                memory_provider=provider,
+                holder=holder,
+                observed_substrate_epoch=substrate_epoch,
+                last_known_epoch=known_epoch,
+            )
+        except Exception as exc:
+            logger.error(
+                "[kora.dr_handler] handle_epoch_mismatch raised: %r — "
+                "gate 3b still returns FAIL; coordinator routes to "
+                "PAUSED. Holder state may be partially advanced.",
+                exc,
+            )
+
+        return _fail_result(
+            self, started_at, t0,
+            f"epoch mismatch — observed substrate_epoch="
+            f"{substrate_epoch} vs kora_known_epoch={known_epoch}. "
+            f"R4.1 §9.8 DR signal — holder transitioned to "
+            f"PAUSED{{substrate}}; operator must clear via cockpit "
+            f"kora_control reset.",
+        )
+
+
+async def _read_substrate_epoch_async(provider: Any) -> int:
+    """Wrapper that pulls the pool from provider + calls the ST2 helper.
+
+    Defined here (not in dr_epoch.py) so the gate file is the single
+    place that talks to ``provider._connection``; ST2's
+    :mod:`plugins.memory.isokron.dr_epoch` takes only a pool and
+    stays substrate-side / provider-agnostic.
+    """
+    from plugins.memory.isokron.dr_epoch import read_substrate_epoch
+
+    pool = provider._connection.get_pg_pool()
+    return await read_substrate_epoch(pool)
+
+
+async def _read_kora_known_epoch_async(provider: Any) -> Optional[int]:
+    """Wrapper that pulls the pool + calls the ST2 helper."""
+    from plugins.memory.isokron.dr_epoch import read_kora_known_epoch
+
+    pool = provider._connection.get_pg_pool()
+    return await read_kora_known_epoch(pool)

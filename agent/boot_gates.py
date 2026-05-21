@@ -62,10 +62,30 @@ logger = logging.getLogger(__name__)
 
 
 class GateClass(Enum):
-    """R4.1 §9.2 gate classification."""
+    """R4.1 §9.2 gate classification.
+
+    Three values:
+
+      - ``TRANSIENT`` — transient failures retry with exponential backoff
+        (per-gate retry budget; default 5). Budget exhaustion → coordinator
+        routes to ``STOPPED``.
+      - ``INVARIANT`` — first failure stops the sequence. No retry.
+        Coordinator routes to ``STOPPED`` (process exits non-zero).
+      - ``INVARIANT_PAUSE`` — first failure stops the sequence. No retry.
+        Coordinator routes to ``PAUSED`` instead of ``STOPPED`` per
+        R4.1 §9.2 special-case for gate 3b (DR epoch mismatch). The
+        gate itself emits the dr-specific chain event + transitions
+        the holder; the coordinator detects the class and skips the
+        STOPPED transition.
+
+    For runner-side behavior (retry vs fail-fast), ``INVARIANT_PAUSE``
+    is treated identically to ``INVARIANT``: no retry, short-circuit
+    on fail. The split affects coordinator terminal-state routing.
+    """
 
     TRANSIENT = "transient"
     INVARIANT = "invariant"
+    INVARIANT_PAUSE = "invariant_pause"
 
 
 class GateOutcome(Enum):
@@ -323,7 +343,10 @@ class BootGateRunner:
         """How many attempts the runner will make for ``gate``."""
         if self._diagnostic_mode:
             return 1
-        if gate.gate_class is GateClass.INVARIANT:
+        # INVARIANT and INVARIANT_PAUSE both fail-fast; the coordinator
+        # distinguishes them via the result's gate_class to decide
+        # whether the terminal state is STOPPED or PAUSED.
+        if gate.gate_class is GateClass.INVARIANT or gate.gate_class is GateClass.INVARIANT_PAUSE:
             return 1
         # TRANSIENT
         return self._retry_budget
