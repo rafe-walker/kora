@@ -59,6 +59,78 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # --- Running as hermes from here ---
+
+# ---------------------------------------------------------------------------
+# R4.1 §9.2 gate 2 — fail closed if ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN
+# is present. Kora authenticates via CLAUDE_CODE_OAUTH_TOKEN exclusively;
+# a stray ANTHROPIC_* env var means a misconfigured deploy could silently
+# bill against a different account. Fail loud, emit a diagnostic to stderr.
+# ---------------------------------------------------------------------------
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "ERROR: ANTHROPIC_API_KEY is set — Kora deploys must use" >&2
+  echo "       CLAUDE_CODE_OAUTH_TOKEN exclusively (R4.1 §9.2 gate 2)." >&2
+  echo "       Remove ANTHROPIC_API_KEY from the deploy env and retry." >&2
+  exit 1
+fi
+if [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
+  echo "ERROR: ANTHROPIC_AUTH_TOKEN is set — Kora deploys must use" >&2
+  echo "       CLAUDE_CODE_OAUTH_TOKEN exclusively (R4.1 §9.2 gate 2)." >&2
+  echo "       Remove ANTHROPIC_AUTH_TOKEN from the deploy env and retry." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Required env vars (substrate connectivity — Doppler: kora-runtime-substrate)
+# ---------------------------------------------------------------------------
+REQUIRED_SUBSTRATE_VARS=(
+  KORA_SERVICE_TOKEN
+  KORA_ISOKRON_DSN
+  KORA_DEFAULT_WORKSPACE_ID
+  KORA_SEA_MCP_ENDPOINT
+)
+
+missing=()
+for v in "${REQUIRED_SUBSTRATE_VARS[@]}"; do
+  if [ -z "${!v:-}" ]; then
+    missing+=("$v")
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Required env vars (Anthropic auth — Doppler: kora-runtime-anthropic)
+# ---------------------------------------------------------------------------
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  missing+=("CLAUDE_CODE_OAUTH_TOKEN")
+fi
+
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "ERROR: Kora startup blocked — missing required env vars:" >&2
+  printf '  - %s\n' "${missing[@]}" >&2
+  echo "" >&2
+  echo "Source from 3 separate Doppler projects per R2 §5 / R4.1:" >&2
+  echo "  kora-runtime-substrate  → wsk_* / DSN / workspace / MCP" >&2
+  echo "  kora-runtime-anthropic  → CLAUDE_CODE_OAUTH_TOKEN" >&2
+  echo "  kora-runtime-gateways   → Slack / email / etc." >&2
+  echo "" >&2
+  echo "Compose with: doppler run -p kora-runtime-substrate -c prd -- \\" >&2
+  echo "              doppler run -p kora-runtime-anthropic -c prd -- \\" >&2
+  echo "              doppler run -p kora-runtime-gateways -c prd -- \\" >&2
+  echo "              /opt/hermes/docker/entrypoint.sh" >&2
+  exit 1
+fi
+
+# Slack gateway env vars — only validated if Slack is enabled.
+# Non-fatal: an operator may intentionally disable Slack while keeping
+# the YAML config block in place. Warn so the cause is visible in logs.
+if [ "${SLACK_GATEWAY_ENABLED:-true}" = "true" ]; then
+  SLACK_VARS=(SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_SIGNING_SECRET)
+  for v in "${SLACK_VARS[@]}"; do
+    if [ -z "${!v:-}" ]; then
+      echo "WARNING: Slack gateway enabled but $v missing — Slack will not start." >&2
+    fi
+  done
+fi
+
 source "${INSTALL_DIR}/.venv/bin/activate"
 
 # Stamp install method for detect_install_method()
