@@ -30,6 +30,7 @@ import {
   Heart,
   HeartPulse,
   KeyRound,
+  LayoutDashboard,
   Menu,
   MessageSquare,
   OctagonAlert,
@@ -86,6 +87,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import DashboardPage from "@/pages/DashboardPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -95,10 +97,6 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
-
-function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
-}
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
@@ -125,7 +123,7 @@ const CHAT_NAV_ITEM: NavItem = {
  * and nav highlight keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
+  "/": DashboardPage,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
   "/health-rollup": HealthRollupPage,
@@ -158,6 +156,12 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/",
+    labelKey: "overview",
+    label: "Overview",
+    icon: LayoutDashboard,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
