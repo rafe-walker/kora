@@ -558,12 +558,24 @@ class SeaTicketPoller:
             )
             return
 
-        # ST4 will emit ``kora.sea_ticket.resolved`` here with the
-        # resolution string + ``model_tier_used`` payload field. ST3
-        # still skips the emit; the chain-event log just shows the
-        # substrate-side ``sea_ticket.claim_released`` event from
-        # release.
-        _ = resolution  # claimed for ST4 wire-in
+        # ST4: emit kora.sea_ticket.resolved with the resolution. The
+        # emit is best-effort — a failure logs loudly but does NOT
+        # block the release (degraded observability vs blocked
+        # release; release wins).
+        from plugins.memory.isokron.sea_ticket_resolution import (
+            emit_sea_ticket_resolved,
+        )
+
+        await emit_sea_ticket_resolved(
+            provider=self._memory_provider,
+            ticket=ticket,
+            resolution=resolution,
+            resolution_summary=(
+                f"{resolution.value} via agent loop (work_attempt_id="
+                f"{claim_state.work_attempt_id})"
+            ),
+        )
+
         await self._release(
             workspace_id=ticket.workspace_id,
             kora_operation_id=kora_operation_id,
