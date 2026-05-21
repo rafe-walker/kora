@@ -3520,13 +3520,94 @@ def _kora_control_observed_state_stub(*, error: str) -> dict:
 async def get_boot_status():
     """Return the most-recent boot's gate-sequence outcome + history.
 
-    v1 stub. Replace body with ``BootGateRunner.last_result()`` projection
-    + ``BootGateRunner.recent_history(limit=20)`` once KR-P2-H lands.
+    Live source (KR-P2-CLEANUP ST4): reads ``BootGateRunner.last_result()``
+    + ``BootGateRunner.recent_history(limit=20)``. The runner's
+    in-memory ring is populated by ``agent.boot_coordinator.run_boot_sequence``
+    on every terminal outcome (READY / STOPPED, including diagnostic
+    runs). Ring wipes on process restart — durable history lives in
+    the chain-event log (``kora.boot.ready`` / ``kora.boot.failed``).
 
     Outcome enum: booting | ready | failed.
     Gate outcome enum: pass | fail.
     Gate class enum: transient (re-runnable) | invariant (must hold).
     """
+    from agent.boot_gates import BootGateRunner
+
+    last = BootGateRunner.last_result()
+    if last is None:
+        return _boot_status_stub(
+            error=(
+                "no boot has completed this process lifetime — "
+                "BootGateRunner._recent_history is empty"
+            )
+        )
+
+    history_entries = BootGateRunner.recent_history(limit=20)
+    # Most-recent first for the panel + drop the head (it's `current`).
+    history_entries_oldest_first = history_entries[:-1]
+
+    return {
+        "current": _project_boot_entry_current(last),
+        "history": [
+            _project_boot_entry_history(entry)
+            for entry in reversed(history_entries_oldest_first)
+        ],
+    }
+
+
+def _project_boot_entry_current(entry) -> dict:
+    """Project a BootHistoryEntry into the panel's `current` shape."""
+    summary = entry.summary
+    outcome = "ready" if summary.result.value == "ready" else "failed"
+    gates = [
+        {
+            "gate_id": g.gate_id,
+            "title": getattr(g, "title", g.gate_id),
+            "gate_class": g.gate_class.value,
+            "outcome": g.outcome.value,
+            "elapsed_ms": int(getattr(g, "elapsed_ms", 0) or 0),
+            "detail": getattr(g, "detail", "") or "",
+        }
+        for g in summary.gate_results
+    ]
+    return {
+        "boot_id": entry.boot_id,
+        "primary_state": outcome,
+        "started_at": entry.started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "completed_at": entry.completed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "elapsed_ms": entry.elapsed_ms,
+        "outcome": outcome,
+        "gates": gates,
+    }
+
+
+def _project_boot_entry_history(entry) -> dict:
+    """Project a past BootHistoryEntry into the panel's `history` shape.
+
+    History entries elide the per-gate detail (the panel only renders
+    summary rows) but call out the failing gate when one exists.
+    """
+    summary = entry.summary
+    outcome = "ready" if summary.result.value == "ready" else "failed"
+    out: dict = {
+        "boot_id": entry.boot_id,
+        "started_at": entry.started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "completed_at": entry.completed_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "elapsed_ms": entry.elapsed_ms,
+        "outcome": outcome,
+    }
+    if summary.failed_gate is not None:
+        out["failed_gate_id"] = summary.failed_gate.gate_id
+        out["failed_gate_title"] = getattr(
+            summary.failed_gate, "title", summary.failed_gate.gate_id
+        )
+        out["detail"] = getattr(summary.failed_gate, "detail", "") or ""
+    return out
+
+
+def _boot_status_stub(*, error: str) -> dict:
+    """Stub-shape returned when BootGateRunner's history is empty
+    (process just started; no boot has completed yet)."""
     return {
         "current": {
             "boot_id": "boot_stub_001",
@@ -3607,6 +3688,7 @@ async def get_boot_status():
             },
         ],
         "stub": True,
+        "error": error,
     }
 
 

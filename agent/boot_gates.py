@@ -191,6 +191,43 @@ _DEFAULT_BACKOFF_BASE_SECONDS: float = 2.0
 _DEFAULT_BACKOFF_CAP_SECONDS: float = 30.0
 
 
+# Module-level history ring (KR-P2-CLEANUP ST4). Accessed at class
+# level via ``BootGateRunner.last_result()`` and
+# ``BootGateRunner.recent_history(limit=20)``. Ring wipes on process
+# restart — consistent with the Hermes-fork "session state survives
+# only within a process" convention. Durable boot history lives in
+# the chain-event log (kora.boot.ready / kora.boot.failed via the
+# ST2 emit listener already wired by KR-P2-I-integration).
+from collections import deque  # noqa: E402 — kept near use site
+
+_RECENT_HISTORY_MAX: Final[int] = 20
+
+
+@dataclass(frozen=True, slots=True)
+class BootHistoryEntry:
+    """One snapshot of a completed boot sequence for the panel.
+
+    Wraps the underlying :class:`BootSummary` (from
+    ``agent.boot_coordinator``) with timing metadata the boot panel
+    renders. Stored in :data:`BootGateRunner._recent_history` and
+    surfaced via the class-level :meth:`BootGateRunner.last_result`
+    + :meth:`BootGateRunner.recent_history` accessors.
+    """
+
+    boot_id: str
+    started_at: datetime
+    completed_at: datetime
+    summary: Any  # BootSummary — typed Any to avoid circular import
+
+    @property
+    def elapsed_ms(self) -> int:
+        delta = self.completed_at - self.started_at
+        return int(delta.total_seconds() * 1000)
+
+
+_recent_history: deque["BootHistoryEntry"] = deque(maxlen=_RECENT_HISTORY_MAX)
+
+
 class BootGateRunner:
     """Runs the boot gate sequence in order.
 
@@ -251,6 +288,47 @@ class BootGateRunner:
     @property
     def diagnostic_mode(self) -> bool:
         return self._diagnostic_mode
+
+    # ------------------------------------------------------------------
+    # KR-P2-CLEANUP ST4: in-memory history ring + accessors
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def record(cls, entry: "BootHistoryEntry") -> None:
+        """Append a completed boot to the process-wide history ring.
+
+        Called by :func:`agent.boot_coordinator.run_boot_sequence`
+        after each terminal outcome (READY / STOPPED). Bounded by
+        ``_RECENT_HISTORY_MAX``; older entries roll off automatically.
+        """
+        _recent_history.append(entry)
+
+    @classmethod
+    def last_result(cls) -> Optional["BootHistoryEntry"]:
+        """Return the most-recent boot history entry, or ``None`` if no
+        boot has completed this process lifetime."""
+        if not _recent_history:
+            return None
+        return _recent_history[-1]
+
+    @classmethod
+    def recent_history(
+        cls, limit: int = _RECENT_HISTORY_MAX
+    ) -> list["BootHistoryEntry"]:
+        """Return the last ``limit`` boot history entries (oldest →
+        newest). The current boot is the final element; iterate in
+        reverse for newest-first rendering."""
+        if limit <= 0:
+            return []
+        entries = list(_recent_history)
+        if limit >= len(entries):
+            return entries
+        return entries[-limit:]
+
+    @classmethod
+    def _reset_history_for_tests(cls) -> None:
+        """Test-only: drop the in-memory history ring."""
+        _recent_history.clear()
 
     async def run_all(self) -> list[GateResult]:
         """Run gates in declared order. Return the result list.
