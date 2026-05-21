@@ -206,7 +206,9 @@ async def test_poll_once_full_happy_path_claims_works_releases():
 
     invoked: list[tuple[SeaTicket, Any]] = []
 
-    async def invoker(t: SeaTicket, claim: Any) -> SeaTicketResolution:
+    async def invoker(
+        t: SeaTicket, claim: Any, _hb: Any
+    ) -> SeaTicketResolution:
         invoked.append((t, claim))
         return SeaTicketResolution.COMPLETED
 
@@ -259,7 +261,9 @@ async def test_already_claimed_response_skips_agent_loop_and_release():
 
     invoked: list = []
 
-    async def invoker(_t: SeaTicket, _c: Any) -> SeaTicketResolution:
+    async def invoker(
+        _t: SeaTicket, _c: Any, _hb: Any
+    ) -> SeaTicketResolution:
         invoked.append(1)
         return SeaTicketResolution.COMPLETED
 
@@ -288,7 +292,7 @@ async def test_claim_returns_null_fence_token_refuses_to_proceed():
 
     invoked: list = []
 
-    async def invoker(_t, _c):
+    async def invoker(_t, _c, _hb):
         invoked.append(1)
         return SeaTicketResolution.COMPLETED
 
@@ -316,7 +320,7 @@ async def test_agent_loop_exception_still_releases_claim():
         {"result": "released", "chain_event_id": None},
     ]
 
-    async def invoker(_t, _c):
+    async def invoker(_t, _c, _hb):
         raise RuntimeError("agent loop boom")
 
     poller = SeaTicketPoller(
@@ -331,6 +335,40 @@ async def test_agent_loop_exception_still_releases_claim():
         "kora__claim_sea_ticket",
         "kora__release_claim",
     ]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lease_lost_skips_release():
+    """ST3: if the heartbeat detected substrate-side lease loss while
+    the agent loop was running, the poller must NOT call release —
+    the fence_token is already invalid and substrate's claim_expired
+    is the durable record."""
+    pool = _FakePool()
+    pool.queue(_seeded_actor_row())
+    pool.queue(_seeded_ticket_row())
+
+    mcp = MagicMock()
+    mcp.invoke = AsyncMock(return_value=_claim_response())  # only claim should fire
+
+    # Invoker that signals lease loss via the handle. The agent loop
+    # would have detected loss via `handle.lease_lost` and aborted; we
+    # simulate that by setting it directly on the handle the invoker
+    # receives.
+    async def invoker(_t, _c, hb):
+        hb.lease_lost = True
+        return SeaTicketResolution.RELEASED
+
+    poller = SeaTicketPoller(
+        mcp_client=mcp,
+        memory_provider=_make_memory_provider(pool),
+        agent_loop_invoker=invoker,
+        heartbeat_interval_seconds=60,  # never fires in this test window
+    )
+    await poller._poll_once()
+
+    # Only the claim was invoked — no release.
+    assert mcp.invoke.await_count == 1
+    assert mcp.invoke.await_args.args[0] == "kora__claim_sea_ticket"
 
 
 @pytest.mark.asyncio
