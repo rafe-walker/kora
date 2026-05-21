@@ -77,6 +77,43 @@ Format:
   - `plugins/memory/isokron/README.md` § "Operator pitfalls" —
     operator-facing drift notice.
 
+### D-krp2a-st1-infra-tier-caps-missing-from-c2-mirror
+
+- **Bucket**: KR-P2-A ST1 (Constitution pre-screen middleware +
+  capability lookup table)
+- **Why**: The bucket spec introduces a new **infrastructure-tier**
+  capability namespace (`cap_local_file_io`, `cap_local_shell_exec`,
+  `cap_browser_automation`, `cap_web_fetch`, `cap_voice_io`,
+  `cap_media_generate`, `cap_skill_invoke`, `cap_memory_io`,
+  `cap_agent_coord`, `cap_outbound_message`, `cap_local_task_mgmt`,
+  `cap_computer_use`, `cap_yuanbao_read`, `cap_homeassistant_read`,
+  `cap_homeassistant_control`, `cap_feishu_io`, `cap_ensemble_inference`)
+  to which the 64 Hermes model-callable tools are mapped. None of
+  these caps exist in the substrate-side C2 capability matrix mirror
+  (`plugins/memory/isokron/capability_matrix_mirror.py`), which today
+  holds only Sea/policy-tier caps (cap_sea_create, cap_propose_policy_change,
+  etc.). When the pre-screen looks up an infra-tier cap via
+  `actor_has_capability`, the helper raises `KeyError`; the pre-screen
+  catches that and returns `INCONCLUSIVE` (fail-CLOSED).
+- **Closes when**: A follow-up bucket extends the C2 capability
+  matrix mirror (and the TS source-of-truth at
+  `packages/sea-mcp-server/src/capability-matrix.ts`) with the
+  infra-tier `cap_*` rows. Pre-screen verdicts for infra-tier tools
+  will then shift from `INCONCLUSIVE` (escalate) to `PASS` or `FAIL`
+  based on whether Kora's row grants the cap. No pre-screen code
+  changes required at that point.
+- **Guarded by**:
+  - `agent/tool_capability_map.py` — module docstring "Capability
+    namespace" section explicitly calls out the deferred-cap state
+    and links the fail-CLOSED behavior to
+    `feedback_fail_closed_by_default_security_infra`.
+  - `agent/constitution_pre_screen.py` — `KeyError` branch in
+    `constitution_pre_screen` returns `INCONCLUSIVE` with an
+    operator-readable message naming both the cap and the tool.
+  - `tests/test_constitution_pre_screen.py::test_cap_not_in_mirror_returns_inconclusive`
+    asserts the fail-CLOSED branch is reachable + the verdict shape
+    is stable across the workaround window.
+
 ## Closed
 
 ### D-kr3-st2-no-relationlink-write-mcp-tool — closed by KR-9 (2026-05-21)
