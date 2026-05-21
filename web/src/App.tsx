@@ -40,6 +40,7 @@ import {
   RotateCw,
   Settings,
   Shield,
+  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Star,
@@ -76,6 +77,7 @@ import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
 import HealthRollupPage from "@/pages/HealthRollupPage";
 import BootStatusPage from "@/pages/BootStatusPage";
+import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import KoraControlPage from "@/pages/KoraControlPage";
@@ -128,6 +130,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/operational-state": OperationalStatePage,
   "/health-rollup": HealthRollupPage,
   "/boot-status": BootStatusPage,
+  "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
   "/capabilities": CapabilitiesPage,
   "/kora-control": KoraControlPage,
@@ -178,6 +181,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "bootStatus",
     label: "Boot Status",
     icon: PowerSquare,
+  },
+  {
+    path: "/dr-state",
+    labelKey: "drState",
+    label: "DR",
+    icon: ShieldAlert,
   },
   {
     path: "/cost-state",

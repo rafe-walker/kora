@@ -3792,6 +3792,85 @@ async def get_health_rollup():
 
 
 # ---------------------------------------------------------------------------
+# Disaster recovery / substrate epoch (KR-P2-DR-PANEL)
+# ---------------------------------------------------------------------------
+#
+# R4.1 §9.8: when a PITR happens, the substrate_epoch bumps; gate 3b
+# detects the mismatch with kora_known_epoch and Kora transitions to
+# PAUSED{substrate} until the operator runs the post-PITR runbook to
+# clear. This endpoint surfaces:
+#
+#   * current epoch state (substrate_epoch vs kora_known_epoch + match)
+#   * epoch_history (every boot/dr/operator-bump that advanced kora's
+#     known epoch — auditable timeline)
+#   * recent_dr_events (kora.dr.observed payloads with discard counts
+#     and operator-cleared timestamps)
+#   * runbook_pending — derived flag the FE uses to render the red
+#     top-of-page DR alert
+#
+# v1 stub: hardcoded clean state (epoch 12, match, not paused) so the
+# default render is quiet — the DR alert is suppressed when nothing is
+# wrong, matching the operational reality that this panel lives
+# silently until DR fires. Flips to real read via KR-P2-M's
+# ``DREpochState.current()`` + ``.recent_dr_events()`` accessors.
+#
+# Read-only: the post-PITR substrate_epoch bump is an OS-level
+# operator action (Fly secret + flyctl restart). This panel SURFACES
+# the need; it does not execute the runbook.
+
+
+@app.get("/api/dr-state")
+async def get_dr_state():
+    """Return Kora's DR / substrate-epoch state.
+
+    v1 stub. Replace body with ``DREpochState.current()`` projection +
+    ``.recent_dr_events()`` query once KR-P2-M lands.
+
+    Enum reference:
+      match_status   ∈ {clean, mismatch_detected, pending_runbook, unknown}
+      epoch source   ∈ {boot-success, dr-recovery, operator-bump}
+      event_type     == "kora.dr.observed"
+    """
+    return {
+        "current": {
+            "substrate_epoch": 12,
+            "kora_known_epoch": 12,
+            "match_status": "clean",
+            "last_check_at": "2026-05-21T23:00:00Z",
+            "kora_paused_substrate": False,
+        },
+        "epoch_history": [
+            {
+                "epoch": 12,
+                "observed_at": "2026-05-15T14:00:00Z",
+                "kora_known_at": "2026-05-15T14:00:08Z",
+                "source": "boot-success",
+            },
+            {
+                "epoch": 11,
+                "observed_at": "2026-04-30T08:30:00Z",
+                "kora_known_at": "2026-04-30T08:30:05Z",
+                "source": "boot-success",
+            },
+        ],
+        "recent_dr_events": [
+            {
+                "event_type": "kora.dr.observed",
+                "occurred_at": "2026-04-30T08:25:00Z",
+                "from_epoch": 10,
+                "to_epoch": 11,
+                "discarded_operation_ids": 3,
+                "discarded_ledger_rows": 7,
+                "cleared_at": "2026-04-30T08:29:00Z",
+                "cleared_by": "operator@stormhaven",
+            },
+        ],
+        "runbook_pending": False,
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
