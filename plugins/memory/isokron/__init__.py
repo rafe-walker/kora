@@ -87,14 +87,42 @@ def _load_plugin_config() -> Optional[Dict[str, Any]]:
     return _expand_env_vars(raw)
 
 
+_last_active_provider: Optional["IsoKronMemoryProvider"] = None
+"""Process-level reference to the most recently registered IsoKron provider.
+
+Mirrors the openviking plugin's same-named singleton (see
+``plugins/memory/openviking/__init__.py:56``). Set in :func:`register`.
+Read by out-of-band surfaces that want to inspect the live provider
+without owning a reference — e.g. the KR-P2-CHARTER-PANEL
+``/api/charter`` endpoint reaches in here to read
+``IsoKronMemoryProvider.get_active_constitution_summary`` against the
+already-primed cache.
+"""
+
+
+def get_last_active_provider() -> Optional["IsoKronMemoryProvider"]:
+    """Return the most recently registered IsoKron provider, or ``None``.
+
+    Returns ``None`` in environments where the plugin hasn't been
+    registered (CI without substrate config, dev runs with a different
+    memory provider selected, etc.). Callers MUST handle the None case
+    gracefully — typically by surfacing "no Constitution state available"
+    rather than failing the request.
+    """
+    return _last_active_provider
+
+
 def register(ctx) -> None:
     """Register the IsoKron memory provider with the plugin system."""
+    global _last_active_provider
     config = _load_plugin_config()
     provider = IsoKronMemoryProvider(config=config)
     ctx.register_memory_provider(provider)
+    _last_active_provider = provider
 
 
 __all__ = [
     "IsoKronMemoryProvider",
+    "get_last_active_provider",
     "register",
 ]

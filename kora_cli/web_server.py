@@ -3871,6 +3871,85 @@ async def get_dr_state():
 
 
 # ---------------------------------------------------------------------------
+# Charter / Constitution viewer (KR-P2-CHARTER-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Live read — no stub flag. Reads:
+#   * Active (revision_id, rules_hash, loaded_at) from
+#     ``IsoKronMemoryProvider._constitution_cache`` via the new
+#     ``get_active_constitution_summary`` helper (cache-only; never
+#     triggers a substrate fetch).
+#   * Capability matrix (cap_name → [tools]) projected from KR-P2-A's
+#     ``TOOL_CAPABILITY_MAP`` — same source CAP-PANEL uses, surfaced
+#     as a simpler group shape (no per-cap verdict, that's CAP-PANEL's
+#     job).
+#   * Substrate-tier (always-PASS) ``kora__*`` tools.
+#
+# v1 fallback mode (KR-P2-CHARTER-PANEL §1, PM-approved):
+# substrate doesn't expose rule CONTENT via a Kora-tier read; so the
+# response always carries ``rules_available=False`` + empty
+# ``rules=[]``. Frontend renders the subdued amber banner pointing at
+# the cockpit. When substrate-team adds the rule-content read SECDEF,
+# the helper grows; this endpoint body and the FE both stay unchanged.
+#
+# When no provider is registered (CI / dev runs without substrate
+# config / a different memory provider selected), ``active`` is
+# ``null`` — the capability matrix still renders so the panel remains
+# operationally useful.
+
+
+def _cap_panel_simple_groups() -> List[Dict[str, Any]]:
+    """Project ``TOOL_CAPABILITY_MAP`` into ``[{cap_name, tools[]}]``.
+
+    Shared with :func:`get_capabilities`'s ``groups`` shape minus the
+    per-cap verdict: CHARTER-PANEL wants the policy *map* (which cap_*
+    covers which tools), not the per-cap allow/deny resolution. The
+    KR-P2-CHARTER-PANEL §5 regression guard pins that both endpoints
+    surface identical (cap_name, sorted-tools) pairs.
+    """
+    from agent.tool_capability_map import TOOL_CAPABILITY_MAP
+
+    grouped: Dict[str, List[str]] = {}
+    for tool_name, cap_name in TOOL_CAPABILITY_MAP.items():
+        grouped.setdefault(cap_name, []).append(tool_name)
+    return [
+        {"cap_name": cap, "tools": sorted(tools)}
+        for cap, tools in sorted(grouped.items(), key=lambda kv: kv[0])
+    ]
+
+
+@app.get("/api/charter")
+async def get_charter():
+    """Return active Constitution summary + capability matrix.
+
+    v1 fallback mode: rule content not exposed via Kora-tier read;
+    only revision_id + rules_hash are surfaced. See module docstring.
+    """
+    active: Optional[Dict[str, Any]] = None
+    try:
+        from plugins.memory.isokron import get_last_active_provider
+
+        provider = get_last_active_provider()
+        if provider is not None:
+            active = provider.get_active_constitution_summary()
+    except Exception:
+        # IsoKron plugin not importable in this environment — leave
+        # active=None; the capability matrix still renders so the panel
+        # is operationally useful.
+        _log.exception(
+            "Charter endpoint: failed to read constitution summary"
+        )
+        active = None
+
+    return {
+        "active": active,
+        "capability_groups": _cap_panel_simple_groups(),
+        "substrate_tier_tools": list(_CAP_PANEL_SUBSTRATE_TIER_TOOLS),
+        "stub": False,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

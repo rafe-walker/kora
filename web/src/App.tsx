@@ -39,6 +39,7 @@ import {
   PowerSquare,
   Puzzle,
   RotateCw,
+  Scroll,
   Settings,
   Shield,
   ShieldAlert,
@@ -81,6 +82,7 @@ import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
+import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
@@ -131,6 +133,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
   "/capabilities": CapabilitiesPage,
+  "/charter": CharterPage,
   "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
@@ -203,6 +206,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "capabilities",
     label: "Capabilities",
     icon: ShieldCheck,
+  },
+  {
+    path: "/charter",
+    labelKey: "charter",
+    label: "Charter",
+    icon: Scroll,
   },
   {
     path: "/kora-control",

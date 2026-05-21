@@ -80,6 +80,7 @@ export const api = {
   getHealthRollup: () =>
     fetchJSON<HealthRollupResponse>("/api/health-rollup"),
   getDRState: () => fetchJSON<DRStateResponse>("/api/dr-state"),
+  getCharter: () => fetchJSON<CharterResponse>("/api/charter"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1269,5 +1270,40 @@ export interface DRStateResponse {
   epoch_history: EpochHistoryEntry[];
   recent_dr_events: DRObservedEvent[];
   runbook_pending: boolean;
+  stub: boolean;
+}
+
+// Charter / Constitution viewer (KR-P2-CHARTER-PANEL).
+// v1 fallback mode: rules[] is always empty + rules_available is always
+// false (substrate doesn't expose rule content via Kora-tier read).
+// When the substrate-team rule-content SECDEF lands, the same shape
+// starts carrying rules — page conditionally renders the rules block.
+export interface ConstitutionRule {
+  rule_id: string;
+  scope: string;
+  description: string;
+  severity: string;
+}
+
+export interface ActiveConstitution {
+  revision_id: string | null;
+  rules_hash: string | null;
+  loaded_at: string;
+  workspace_id: string;
+  rules: ConstitutionRule[];
+  rules_available: boolean;
+}
+
+// CharterResponse reuses CharterGroup shape but only carries the
+// (cap_name, tools) projection — no per-cap verdict (CAP-PANEL's job).
+export interface CharterCapabilityGroup {
+  cap_name: string;
+  tools: string[];
+}
+
+export interface CharterResponse {
+  active: ActiveConstitution | null;
+  capability_groups: CharterCapabilityGroup[];
+  substrate_tier_tools: string[];
   stub: boolean;
 }
