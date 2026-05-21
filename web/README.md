@@ -41,7 +41,10 @@ src/
 ├── pages/
 │   ├── StatusPage   # Agent status, active/recent sessions
 │   ├── ConfigPage   # Dynamic config editor (reads schema from backend)
-│   └── EnvPage      # API key management with save/clear
+│   ├── EnvPage      # API key management with save/clear
+│   └── MCPPage      # MCP server admin: list, enable/disable, per-tool gating
+│                    # via `Connect & list tools` → checkboxes → Save (writes
+│                    # `mcp_servers.<name>.tools.include` in config.yaml)
 ├── App.tsx          # Main layout and navigation
 ├── main.tsx         # React entry point
 └── index.css        # Tailwind imports and theme variables

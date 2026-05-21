@@ -155,6 +155,35 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // MCP servers
+  getMCPServers: () => fetchJSON<MCPServer[]>("/api/mcp/servers"),
+  getMCPServer: (name: string) =>
+    fetchJSON<MCPServer>(`/api/mcp/servers/${encodeURIComponent(name)}`),
+  probeMCPServer: (name: string) =>
+    fetchJSON<MCPProbeResponse>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/probe`,
+      { method: "POST" },
+    ),
+  setMCPServerTools: (
+    name: string,
+    body: { enabled_tools: string[]; all_tools: string[] },
+  ) =>
+    fetchJSON<MCPServer>(`/api/mcp/servers/${encodeURIComponent(name)}/tools`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  enableMCPServer: (name: string) =>
+    fetchJSON<MCPServer>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/enable`,
+      { method: "POST" },
+    ),
+  disableMCPServer: (name: string) =>
+    fetchJSON<MCPServer>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/disable`,
+      { method: "POST" },
+    ),
+
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -817,4 +846,33 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+export interface MCPServerToolsConfig {
+  include: string[] | null;
+  exclude: string[] | null;
+  summary: string;
+}
+
+export interface MCPServer {
+  name: string;
+  transport_type: "http" | "stdio" | "unknown";
+  transport: string;
+  url: string | null;
+  command: string | null;
+  args: string[];
+  enabled: boolean;
+  auth_type: string;
+  tools: MCPServerToolsConfig;
+}
+
+export interface MCPProbeTool {
+  name: string;
+  description: string;
+}
+
+export interface MCPProbeResponse {
+  name: string;
+  elapsed_ms: number;
+  tools: MCPProbeTool[];
 }
