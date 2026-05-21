@@ -76,6 +76,17 @@ from plugins.memory.isokron.kora_operation_ledger import (
     KoraOperationLedgerError,
 )
 
+# KR-P2-CLEANUP ST1: operational-state transitions on claim acquire +
+# release. Imported here (rather than per-call) so the import surface
+# is greppable. The holder is initialized by
+# ``agent.operational_state_wire.wire_operational_state`` — typically
+# at the first agent session's boot. If the gateway poller runs before
+# any agent session has wired the holder, ``get_holder()`` returns
+# None and ``_signal_operational_state`` logs at DEBUG and proceeds
+# (fail-soft per spec §2 ST1).
+from agent.operational_state import PrimaryState
+from agent.operational_state_holder import get_holder
+
 logger = logging.getLogger(__name__)
 
 
@@ -415,13 +426,51 @@ class SeaTicketPoller:
     # Internal: claim → work → release
     # ------------------------------------------------------------------
 
+    async def _signal_operational_state(
+        self, target: PrimaryState, *, trigger: str
+    ) -> None:
+        """KR-P2-CLEANUP ST1 (KR-P2-I-integration ST4 wire-in):
+        transition the operational-state holder.
+
+        Fail-soft per spec — log + swallow any holder access issue;
+        observability shouldn't block the consumer loop. Cases:
+
+          * ``get_holder()`` returns None (holder not initialized
+            yet because no agent session has run
+            ``wire_operational_state``) → DEBUG-log + skip.
+          * ``transition_to`` raises (e.g. an invalid transition was
+            requested, or the emit listener failed loudly) → WARN-log
+            with the offending target + trigger; the poller continues.
+        """
+        try:
+            holder = get_holder()
+            if holder is None:
+                logger.debug(
+                    "[sea_ticket_poller] operational-state holder not "
+                    "initialized; skipping target=%s trigger=%r",
+                    target.value,
+                    trigger,
+                )
+                return
+            await holder.transition_to(target, trigger=trigger)
+        except Exception:
+            logger.warning(
+                "[sea_ticket_poller] operational-state transition to "
+                "%s (trigger=%r) raised; consumer loop continues",
+                target.value,
+                trigger,
+                exc_info=True,
+            )
+
     async def _claim_and_work(self, ticket: SeaTicket) -> None:
         """Claim, invoke the agent loop, release.
 
-        ST1: no ledger writes (ST2), no heartbeat (ST3), placeholder
-        agent loop (ST4). The full per-tool failure-classification
-        table also lands in ST4 — ST1's resolution is whatever the
-        invoker returns (the placeholder returns COMPLETED).
+        Includes the KR-P2-CLEANUP ST1 operational-state wire-in:
+        READY → ACTIVE fires once we've allocated the claim's ledger
+        row (i.e. work is fully committed); ACTIVE → READY fires on
+        both the normal release path and the lease-lost-mid-work
+        early-exit (lease is gone substrate-side; runtime returns to
+        READY since no claim is held).
         """
         actor_id = await self._resolve_kora_actor_id(ticket.workspace_id)
         if actor_id is None:
@@ -514,6 +563,14 @@ class SeaTicketPoller:
             )
             return
 
+        # KR-P2-CLEANUP ST1: claim is fully committed (lease held +
+        # ledger row allocated) — transition the operational-state
+        # holder READY → ACTIVE. The matching ACTIVE → READY fires on
+        # the release path below + the lease-lost-mid-work early exit.
+        await self._signal_operational_state(
+            PrimaryState.ACTIVE, trigger="claim acquired"
+        )
+
         # ST3: spawn the claim-refresh heartbeat. The handle's
         # ``signal_token_progress`` / ``signal_tool_boundary`` methods
         # satisfy P2 compliance — refresh fires only when the agent
@@ -556,6 +613,14 @@ class SeaTicketPoller:
                 "expired substrate-side)",
                 ticket.ticket_id,
             )
+            # KR-P2-CLEANUP ST1: lease is gone substrate-side; the
+            # runtime is no longer ACTIVE. Transition back to READY
+            # with the same "claim released" trigger the normal path
+            # uses (TRANSITION_TABLE has one ACTIVE → READY arrow;
+            # trigger string is free-form for the chain-event payload).
+            await self._signal_operational_state(
+                PrimaryState.READY, trigger="claim released"
+            )
             return
 
         # ST4: emit kora.sea_ticket.resolved with the resolution. The
@@ -581,6 +646,15 @@ class SeaTicketPoller:
             kora_operation_id=kora_operation_id,
             sea_ticket_id=ticket.ticket_id,
             claim_fence_token=claim_state.claim_fence_token,
+        )
+
+        # KR-P2-CLEANUP ST1: release succeeded; runtime is back to
+        # READY. Fires AFTER release so a failed release doesn't move
+        # the state machine ahead of the substrate (the substrate's
+        # ``sea_ticket.claim_released`` event is the durable record;
+        # the operational-state transition is the runtime mirror).
+        await self._signal_operational_state(
+            PrimaryState.READY, trigger="claim released"
         )
 
     async def _claim(
