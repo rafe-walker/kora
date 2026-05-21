@@ -42,6 +42,7 @@ from agent.constitution_pre_screen import (
     PreScreenVerdict,
     constitution_pre_screen,
 )
+from agent.constitution_audit import emit_constitution_audit_event
 from tools.terminal_tool import (
     _get_approval_callback,
     _get_sudo_password_callback,
@@ -220,6 +221,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     PreScreenOutcome.FAIL,
                     PreScreenOutcome.INCONCLUSIVE,
                 ):
+                    # ST3: emit the audit chain event BEFORE assembling
+                    # the model-facing block_result. Fail-LOUD on emit
+                    # failure — a denied call that can't be audited
+                    # must NOT be silently dropped. The
+                    # ConstitutionAuditEmitError propagates through
+                    # this loop and aborts the whole batch.
+                    emit_constitution_audit_event(
+                        agent, function_name, function_args, _pre_verdict
+                    )
                     block_result = _build_constitution_block_result(_pre_verdict)
 
             if block_result is None:
@@ -612,6 +622,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 PreScreenOutcome.FAIL,
                 PreScreenOutcome.INCONCLUSIVE,
             ):
+                # ST3: emit the audit chain event BEFORE handing the
+                # verdict to the block-result synthesis. Fail-LOUD on
+                # emit failure — see concurrent path for the rationale.
+                emit_constitution_audit_event(
+                    agent, function_name, function_args, _pre_verdict
+                )
                 _constitution_block_verdict = _pre_verdict
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
