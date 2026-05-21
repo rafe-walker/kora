@@ -30,6 +30,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  OctagonAlert,
   Package,
   Plug,
   Puzzle,
@@ -69,6 +70,7 @@ import CronPage from "@/pages/CronPage";
 import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
+import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
@@ -116,6 +118,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
+  "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -151,6 +154,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "operationalState",
     label: "Operational",
     icon: Activity,
+  },
+  {
+    path: "/kora-control",
+    labelKey: "koraControl",
+    label: "Kora Control",
+    icon: OctagonAlert,
   },
   {
     path: "/sea-tickets",

@@ -3303,6 +3303,119 @@ async def get_kora_assigned_sea_tickets():
 
 
 # ---------------------------------------------------------------------------
+# kora_control — runtime-observed-state read endpoint (KR-P2-CONTROL-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded sample-data stub grouping observed STOP-KORA
+# commands by lifecycle position (active / recently_enforced / history)
+# so the admin panel can ship before KR-P2-J wires the runtime to
+# observe + act on the kora_control command log. The ``stub: True``
+# flag drives the panel's STUB banner; flip it off when the body is
+# replaced with a real KoraControlReader.get_all_observed_commands()
+# projection (post-KR-P2-J).
+#
+# Command ISSUANCE happens cockpit-side (IsoKron-team's lane). This
+# Kora-runtime panel is observation-only — operators check here to
+# confirm the runtime saw + acked + enforced the commands they issued
+# from the cockpit. No write surface lives here.
+
+
+@app.get("/api/kora-control/observed-state")
+async def get_kora_control_observed_state():
+    """Return kora_control commands as observed by the runtime.
+
+    Grouped by lifecycle position:
+      active             — open commands (in-flight: created/visible/
+                           observed/acknowledged/enforcing)
+      recently_enforced  — last N enforced commands
+      history            — older terminal-state commands (enforced,
+                           superseded, expired, failed, escalated)
+
+    v1 stub. Replace body with a projection of
+    ``KoraControlReader.get_all_observed_commands()`` when KR-P2-J lands.
+    """
+    return {
+        "active": [
+            {
+                "command_id": "kc_stub_001",
+                "level": 1,
+                "kind": "stop",
+                "reason": (
+                    "Sample STOP-KORA L1 (intake-stop) — runtime "
+                    "acknowledged but not yet enforcing"
+                ),
+                "issuer": "operator@stormhaven (cockpit session stub-cs-001)",
+                "sequence": 42,
+                "created_at": "2026-05-21T18:00:00Z",
+                "visible_to_runtime_at": "2026-05-21T18:00:02Z",
+                "observed_at": "2026-05-21T18:00:05Z",
+                "acknowledged_at": "2026-05-21T18:00:07Z",
+                "enforced_at": None,
+                "lifecycle_state": "acknowledged",
+                "expires_at": "2026-05-21T19:00:00Z",
+                "target_session": None,
+            },
+        ],
+        "recently_enforced": [
+            {
+                "command_id": "kc_stub_002",
+                "level": 0,
+                "kind": "reset",
+                "reason": "Sample L0 reset — clears lower commands; operator-cleared",
+                "issuer": "operator@stormhaven (cockpit session stub-cs-002)",
+                "sequence": 41,
+                "created_at": "2026-05-21T17:30:00Z",
+                "visible_to_runtime_at": "2026-05-21T17:30:01Z",
+                "observed_at": "2026-05-21T17:30:03Z",
+                "acknowledged_at": "2026-05-21T17:30:04Z",
+                "enforced_at": "2026-05-21T17:30:05Z",
+                "lifecycle_state": "enforced",
+                "expires_at": None,
+                "target_session": None,
+            },
+        ],
+        "history": [
+            {
+                "command_id": "kc_stub_003",
+                "level": 2,
+                "kind": "stop",
+                "reason": "Sample historical L2 drain — completed",
+                "issuer": "operator@stormhaven (cockpit session stub-cs-003)",
+                "sequence": 35,
+                "created_at": "2026-05-21T15:00:00Z",
+                "visible_to_runtime_at": "2026-05-21T15:00:01Z",
+                "observed_at": "2026-05-21T15:00:03Z",
+                "acknowledged_at": "2026-05-21T15:00:04Z",
+                "enforced_at": "2026-05-21T15:00:08Z",
+                "lifecycle_state": "enforced",
+                "expires_at": None,
+                "target_session": None,
+            },
+            {
+                "command_id": "kc_stub_004",
+                "level": 1,
+                "kind": "stop",
+                "reason": (
+                    "Sample expired L1 — runtime ack'd but operator "
+                    "never enforced + ran out window"
+                ),
+                "issuer": "operator@stormhaven (cockpit session stub-cs-004)",
+                "sequence": 28,
+                "created_at": "2026-05-21T12:00:00Z",
+                "visible_to_runtime_at": "2026-05-21T12:00:01Z",
+                "observed_at": "2026-05-21T12:00:03Z",
+                "acknowledged_at": "2026-05-21T12:00:04Z",
+                "enforced_at": None,
+                "lifecycle_state": "expired",
+                "expires_at": "2026-05-21T13:00:00Z",
+                "target_session": None,
+            },
+        ],
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

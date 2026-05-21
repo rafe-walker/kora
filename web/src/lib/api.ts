@@ -69,6 +69,10 @@ export const api = {
     fetchJSON<KoraAssignedSeaTicketsResponse>(
       "/api/sea-tickets/kora-assigned",
     ),
+  getKoraControlObservedState: () =>
+    fetchJSON<KoraControlObservedStateResponse>(
+      "/api/kora-control/observed-state",
+    ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1006,5 +1010,45 @@ export interface KoraAssignedSeaTicketsResponse {
   queued: QueuedTicket[];
   recently_resolved: ResolvedTicket[];
   failed_or_blocked: FailedOrBlockedTicket[];
+  stub: boolean;
+}
+
+// kora_control runtime-observed-state (KR-P2-CONTROL-PANEL).
+// Enum values match the Python KoraControl schema; future drift surfaces
+// as a TS compile error.
+export type KoraControlKind = "stop" | "reset";
+
+export type KoraControlLifecycleState =
+  | "created"
+  | "visible_to_runtime"
+  | "acknowledged"
+  | "enforcing"
+  | "enforced"
+  | "superseded"
+  | "expired"
+  | "failed"
+  | "escalated";
+
+export interface KoraControlCommand {
+  command_id: string;
+  level: number; // 0-5 (STOP-KORA tiers; 0 = reset)
+  kind: KoraControlKind;
+  reason: string;
+  issuer: string;
+  sequence: number;
+  created_at: string;
+  visible_to_runtime_at: string | null;
+  observed_at: string | null;
+  acknowledged_at: string | null;
+  enforced_at: string | null;
+  lifecycle_state: KoraControlLifecycleState;
+  expires_at: string | null;
+  target_session: string | null;
+}
+
+export interface KoraControlObservedStateResponse {
+  active: KoraControlCommand[];
+  recently_enforced: KoraControlCommand[];
+  history: KoraControlCommand[];
   stub: boolean;
 }
