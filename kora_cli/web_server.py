@@ -2920,6 +2920,230 @@ async def disable_mcp_server(name: str):
 
 
 # ---------------------------------------------------------------------------
+# Gateway platform identity endpoints (KR-P2-G)
+# ---------------------------------------------------------------------------
+
+
+_DISPLAY_NAME_MAX_LEN = 64
+
+
+def _display_name_default() -> str:
+    """Canonical default display_name — sourced from PlatformConfig so the
+    UI never drifts from gateway/config.py's fallback. KR-P2-G §9 pre-push
+    check enforces this (no new hardcoded ``"Kora"`` literals)."""
+    from gateway.config import PlatformConfig
+    return PlatformConfig.from_dict({}).display_name
+
+
+class GatewayPlatformIdentityUpdate(BaseModel):
+    display_name: Any  # validated explicitly so we can return field-tagged 400s
+
+
+def _gateway_discover_supported_platforms() -> set[str]:
+    """Return the set of platform_ids that have an installed adapter.
+
+    Source: ``gateway/platforms/`` directory entries that match a member of
+    the ``Platform`` enum (which already absorbs bundled-plugin and runtime
+    plugin discovery via its ``_missing_()`` hook). Files like ``base.py``,
+    ``helpers.py``, and ``signal_rate_limit.py`` exist in the dir but are
+    not adapters; checking against ``Platform()`` filters them out.
+    """
+    from gateway.config import Platform
+
+    platforms_root = Path(__file__).resolve().parent.parent / "gateway" / "platforms"
+    found: set[str] = set()
+    if not platforms_root.is_dir():
+        return found
+
+    for child in platforms_root.iterdir():
+        if child.name.startswith((".", "_")):
+            continue
+        if child.is_file() and child.suffix == ".py":
+            candidate = child.stem
+        elif child.is_dir() and (child / "__init__.py").exists():
+            candidate = child.name
+        else:
+            continue
+        if candidate in {"base", "helpers"}:
+            continue
+        try:
+            Platform(candidate)
+        except ValueError:
+            continue
+        found.add(candidate)
+    return found
+
+
+def _gateway_platform_to_dict(
+    platform_id: str,
+    raw_entry: Dict[str, Any],
+    supported: bool,
+) -> Dict[str, Any]:
+    """Project a platforms.<id> YAML block into the API identity shape.
+
+    Only inspects the raw YAML dict (not a constructed ``PlatformConfig``)
+    so we can preserve the distinction between "set in top-level" vs "set
+    in extra:" vs "missing entirely" — the resolution logic itself lives
+    in ``PlatformConfig.from_dict`` and we mirror its precedence here.
+    """
+    top_level = raw_entry.get("display_name")
+    extra_block = raw_entry.get("extra") if isinstance(raw_entry.get("extra"), dict) else {}
+    extra_value = extra_block.get("display_name") if isinstance(extra_block, dict) else None
+
+    if isinstance(top_level, str) and top_level.strip():
+        effective = top_level
+        source = "config"
+    elif isinstance(extra_value, str) and extra_value.strip():
+        effective = extra_value
+        source = "extra"
+    else:
+        effective = _display_name_default()
+        source = "default"
+
+    enabled_raw = raw_entry.get("enabled", False)
+    if isinstance(enabled_raw, str):
+        enabled = enabled_raw.lower() in {"true", "1", "yes"}
+    else:
+        enabled = bool(enabled_raw)
+
+    token_raw = raw_entry.get("token")
+    if isinstance(token_raw, str) and token_raw.strip():
+        token_status = "env_referenced" if token_raw.strip().startswith("${") else "configured"
+    else:
+        token_status = "missing"
+
+    extra_keys = sorted(extra_block.keys()) if isinstance(extra_block, dict) else []
+
+    return {
+        "platform_id": platform_id,
+        "enabled": enabled,
+        "display_name": effective,
+        "display_name_source": source,
+        "supported": supported,
+        "token_status": token_status,
+        "extra_keys": extra_keys,
+    }
+
+
+def _gateway_load_platforms_block() -> Dict[str, Any]:
+    """Read the top-level ``platforms:`` block from config.yaml.
+
+    Note: this is the load-bearing path that ``load_gateway_config()`` in
+    gateway/config.py reads from (see ``yaml_cfg.get("platforms")``). The
+    KR-P2-G bucket §3 pseudocode said ``config["gateway"]["platforms"]``,
+    but the gateway config loader does not look under that path — writing
+    there would be a silent no-op.
+    """
+    config = load_config()
+    block = config.get("platforms")
+    if not isinstance(block, dict):
+        return {}
+    return block
+
+
+def _gateway_build_platform_listing() -> List[Dict[str, Any]]:
+    supported = _gateway_discover_supported_platforms()
+    configured = _gateway_load_platforms_block()
+    all_ids = sorted(set(supported) | set(configured.keys()))
+    return [
+        _gateway_platform_to_dict(
+            pid,
+            configured.get(pid, {}) if isinstance(configured.get(pid), dict) else {},
+            pid in supported,
+        )
+        for pid in all_ids
+    ]
+
+
+def _validate_display_name(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Validate + normalise a display_name update.
+
+    Returns ``(trimmed_value, error_message)``. A blank/whitespace value
+    normalises to ``None`` (= "clear my override"); a violation returns
+    ``error_message`` set to a human-readable reason.
+    """
+    if not isinstance(value, str):
+        return None, "must be a string"
+    trimmed = value.strip()
+    if not trimmed:
+        return None, None
+    if len(trimmed.encode("utf-8")) > _DISPLAY_NAME_MAX_LEN:
+        return None, f"must be {_DISPLAY_NAME_MAX_LEN} bytes or fewer (UTF-8)"
+    if "\n" in trimmed or "\r" in trimmed or "\x00" in trimmed:
+        return None, "must not contain newlines or null bytes"
+    return trimmed, None
+
+
+@app.get("/api/gateway/platforms")
+async def list_gateway_platforms():
+    return _gateway_build_platform_listing()
+
+
+@app.get("/api/gateway/platforms/{platform_id}")
+async def get_gateway_platform(platform_id: str):
+    supported = _gateway_discover_supported_platforms()
+    configured = _gateway_load_platforms_block()
+    if platform_id not in supported and platform_id not in configured:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Gateway platform '{platform_id}' not found",
+        )
+    raw = configured.get(platform_id, {})
+    if not isinstance(raw, dict):
+        raw = {}
+    return _gateway_platform_to_dict(platform_id, raw, platform_id in supported)
+
+
+@app.put("/api/gateway/platforms/{platform_id}/identity")
+async def set_gateway_platform_identity(
+    platform_id: str, body: GatewayPlatformIdentityUpdate
+):
+    supported = _gateway_discover_supported_platforms()
+    configured = _gateway_load_platforms_block()
+
+    if platform_id not in supported and platform_id not in configured:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Gateway platform '{platform_id}' not found",
+        )
+    if platform_id not in supported:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "platform_id": platform_id,
+                "error": (
+                    "orphan config — no adapter installed for this platform. "
+                    "Remove the entry from config.yaml or install the adapter."
+                ),
+            },
+        )
+
+    trimmed, error = _validate_display_name(body.display_name)
+    if error is not None:
+        raise HTTPException(
+            status_code=400,
+            detail={"field": "display_name", "error": error},
+        )
+
+    config = load_config()
+    platforms_block = config.setdefault("platforms", {})
+    if not isinstance(platforms_block, dict):
+        platforms_block = {}
+        config["platforms"] = platforms_block
+    entry = platforms_block.setdefault(platform_id, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        platforms_block[platform_id] = entry
+
+    # trimmed=None means "clear the override" — write null so the
+    # PlatformConfig.from_dict fallback kicks in on next load.
+    entry["display_name"] = trimmed
+    save_config(config)
+
+    return _gateway_platform_to_dict(platform_id, entry, True)
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
