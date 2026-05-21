@@ -70,6 +70,27 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_display_name_defaults_to_kora(self):
+        assert PlatformConfig().display_name == "Kora"
+        assert PlatformConfig.from_dict({}).display_name == "Kora"
+
+    def test_display_name_roundtrip(self):
+        pc = PlatformConfig(enabled=True, display_name="Kora-Alpha")
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.display_name == "Kora-Alpha"
+
+    def test_display_name_reads_from_extra_when_top_level_missing(self):
+        restored = PlatformConfig.from_dict({"extra": {"display_name": "Kora-Beta"}})
+        assert restored.display_name == "Kora-Beta"
+
+    def test_display_name_blank_falls_back_to_kora(self):
+        restored = PlatformConfig.from_dict({"display_name": "   "})
+        assert restored.display_name == "Kora"
+
+    def test_display_name_non_string_falls_back_to_kora(self):
+        restored = PlatformConfig.from_dict({"display_name": 42})
+        assert restored.display_name == "Kora"
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
