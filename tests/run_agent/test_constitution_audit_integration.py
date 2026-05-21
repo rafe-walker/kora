@@ -251,6 +251,17 @@ def test_pre_screen_pass_does_not_emit_audit_and_lets_tool_run(
         patch(
             "agent.tool_executor.emit_constitution_audit_event"
         ) as mock_emit,
+        # KR-P2-J ST3 added a STOP-KORA pre-flight downstream of the
+        # Constitution pre-screen. The agent_with_isokron_stub fixture
+        # has a blanket ``submit_and_wait → "evt-001"`` mock that
+        # confuses the STOP-KORA reader (which would interpret the
+        # string as a command). Patch the helper to a no-op so this
+        # test stays focused on the Constitution PASS → tool-runs
+        # contract.
+        patch(
+            "agent.tool_executor.run_stop_kora_pre_flight",
+            return_value=None,
+        ),
         patch("run_agent.handle_function_call", return_value="file contents"),
     ):
         agent_with_isokron_stub._execute_tool_calls_sequential(
