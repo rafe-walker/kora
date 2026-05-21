@@ -37,6 +37,11 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     make_tool_result_message,
 )
+from agent.constitution_pre_screen import (
+    PreScreenOutcome,
+    PreScreenVerdict,
+    constitution_pre_screen,
+)
 from tools.terminal_tool import (
     _get_approval_callback,
     _get_sudo_password_callback,
@@ -60,6 +65,63 @@ def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _run_constitution_pre_screen(
+    agent, function_name: str, function_args: dict
+) -> PreScreenVerdict:
+    """Compute the KR-P2-A Constitution pre-screen verdict for one tool call.
+
+    Pulls the IsoKron provider + workspace_id from ``agent`` (None-safe).
+    The pre-screen helper itself encodes every error path as a verdict
+    outcome, so this wrapper never raises.
+
+    Defense-in-depth: the underlying pre-screen returns INCONCLUSIVE
+    when the IsoKron memory provider isn't loaded — operator approval
+    is required out-of-band before the tool can run (fail-CLOSED).
+    """
+    isokron_provider = None
+    memory_manager = getattr(agent, "_memory_manager", None)
+    if memory_manager is not None:
+        isokron_provider = memory_manager.get_provider("isokron")
+    workspace_id = None
+    if isokron_provider is not None:
+        # ``_resolve_workspace_id`` is a name-prefixed-private helper, but
+        # it's the only seam to read the config-default workspace_id
+        # without restating the resolution logic at the call site. The
+        # IsoKronMemoryProvider docstring documents this as the canonical
+        # lookup path (provider.py:_resolve_workspace_id).
+        try:
+            workspace_id = isokron_provider._resolve_workspace_id()
+        except Exception:  # pragma: no cover — defensive
+            workspace_id = None
+    return constitution_pre_screen(
+        tool_name=function_name,
+        tool_args=function_args,
+        actor_id="kora",
+        memory_provider=isokron_provider,
+        workspace_id=workspace_id,
+    )
+
+
+def _build_constitution_block_result(verdict: PreScreenVerdict) -> str:
+    """JSON-encode the Constitution block reason for the model.
+
+    ``block_kind`` distinguishes a hard reject (FAIL) from an
+    operator-escalation (INCONCLUSIVE) so downstream consumers (ST3
+    chain-event emit, cockpit alerts) can branch without re-deriving
+    the outcome from the message text.
+    """
+    if verdict.outcome is PreScreenOutcome.FAIL:
+        kind = "constitution_reject"
+    elif verdict.outcome is PreScreenOutcome.INCONCLUSIVE:
+        kind = "constitution_escalate"
+    else:  # pragma: no cover — defensive; never called on PASS
+        kind = "constitution_unknown"
+    return json.dumps(
+        {"error": verdict.reason, "block_kind": kind},
+        ensure_ascii=False,
+    )
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -135,10 +197,36 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if block_message is not None:
             block_result = json.dumps({"error": block_message}, ensure_ascii=False)
         else:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
-            if not guardrail_decision.allows_execution:
-                block_result = agent._guardrail_block_result(guardrail_decision)
-                blocked_by_guardrail = True
+            # Constitution pre-screen (KR-P2-A ST2). Constitution is the
+            # policy layer; the guardrail layer below is the sandbox
+            # layer. A constitution-reject (FAIL) or -escalate
+            # (INCONCLUSIVE) short-circuits BOTH the guardrail check and
+            # tool execution itself. ST3 emits the disagreement /
+            # escalation chain events from the verdict context.
+            #
+            # Pre-screen is gated on the memory layer being loaded:
+            # `_memory_manager is None` means the agent runs in a CLI/test
+            # mode that explicitly opted out of memory plugins
+            # (``skip_memory=True``); the Constitution feature is "not
+            # configured" there and we proceed straight to guardrails.
+            # `_memory_manager` loaded but isokron provider missing IS a
+            # config error and is handled by the pre-screen returning
+            # INCONCLUSIVE (fail-CLOSED).
+            if getattr(agent, "_memory_manager", None) is not None:
+                _pre_verdict = _run_constitution_pre_screen(
+                    agent, function_name, function_args
+                )
+                if _pre_verdict.outcome in (
+                    PreScreenOutcome.FAIL,
+                    PreScreenOutcome.INCONCLUSIVE,
+                ):
+                    block_result = _build_constitution_block_result(_pre_verdict)
+
+            if block_result is None:
+                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                if not guardrail_decision.allows_execution:
+                    block_result = agent._guardrail_block_result(guardrail_decision)
+                    blocked_by_guardrail = True
 
         parsed_calls.append((tool_call, function_name, function_args, block_result, blocked_by_guardrail))
 
@@ -506,13 +594,37 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        # Constitution pre-screen (KR-P2-A ST2). Constitution is the
+        # policy layer; the guardrail layer below is the sandbox layer.
+        # A constitution-reject (FAIL) or -escalate (INCONCLUSIVE) short-
+        # circuits BOTH the guardrail check and tool execution itself.
+        # ST3 will emit the disagreement / escalation chain events from
+        # the verdict captured here.
+        #
+        # Gated on the memory layer being loaded — see the concurrent
+        # path for the rationale (skip_memory=True bypasses pre-screen).
+        _constitution_block_verdict: Optional[PreScreenVerdict] = None
+        if _block_msg is None and getattr(agent, "_memory_manager", None) is not None:
+            _pre_verdict = _run_constitution_pre_screen(
+                agent, function_name, function_args
+            )
+            if _pre_verdict.outcome in (
+                PreScreenOutcome.FAIL,
+                PreScreenOutcome.INCONCLUSIVE,
+            ):
+                _constitution_block_verdict = _pre_verdict
+
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _block_msg is None and _constitution_block_verdict is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = (
+            _block_msg is not None
+            or _constitution_block_verdict is not None
+            or _guardrail_block_decision is not None
+        )
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -589,6 +701,13 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            tool_duration = 0.0
+        elif _constitution_block_verdict is not None:
+            # Tool blocked by KR-P2-A ST2 Constitution pre-screen — synthesize
+            # a tool result encoding the block_kind (constitution_reject vs
+            # constitution_escalate) so downstream consumers (ST3 chain-event
+            # emit, cockpit alerts) can branch on the outcome.
+            function_result = _build_constitution_block_result(_constitution_block_verdict)
             tool_duration = 0.0
         elif _guardrail_block_decision is not None:
             # Tool blocked by tool-loop guardrail — synthesize exactly one
