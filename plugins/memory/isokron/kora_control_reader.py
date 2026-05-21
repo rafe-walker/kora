@@ -263,6 +263,32 @@ class KoraControlReader:
             return None
         return _row_to_command(row)
 
+    async def get_all_observed_commands(
+        self,
+    ) -> Optional[dict[str, list[dict[str, Any]]]]:
+        """Return ALL kora_control rows for the workspace, grouped by
+        lifecycle position (active / recently_enforced / history).
+
+        Thin wrapper around
+        :func:`plugins.memory.isokron.observed_kora_control.get_observed_state_via_provider`
+        — kept on the class for symmetry with KR-P2-CLEANUP ST3 spec
+        wording, but the module-level helper is what the admin-panel
+        endpoint calls directly so it can construct a reader without
+        a real ``kora_actor_id`` (the read is workspace-scoped only,
+        and the actor_id is only required for
+        ``transition_kora_control`` calls).
+
+        Returns ``None`` on any failure path; caller falls back to the
+        stub shape + ``error`` field.
+        """
+        from plugins.memory.isokron.observed_kora_control import (
+            get_observed_state_via_provider,
+        )
+
+        return await get_observed_state_via_provider(
+            provider=self._memory_provider
+        )
+
     async def mark_observed(self, command_id: str) -> None:
         """Advance to ``visible_to_runtime``.
 

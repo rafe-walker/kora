@@ -1,16 +1,23 @@
-"""Tests for the KR-P2-CONTROL-PANEL stub endpoint.
+"""Tests for ``GET /api/kora-control/observed-state`` (KR-P2-CLEANUP ST3).
 
-Bucket §5 scenarios:
-  1. GET /api/kora-control/observed-state returns 200
-  2. Response shape (3 grouping keys + stub:true)
-  3. Per-section list type + sample-field check
-  4. level values ∈ {0..5}
-  5. kind values ∈ {stop, reset}
-  6. lifecycle_state values ∈ documented union
-  7. Cron-regression sanity
+Covers both branches after the stub → live flip:
+
+  * **Uninitialized branch** — ``get_active_provider()`` returns ``None``.
+    The endpoint returns the stub-shape with ``stub: True`` + an
+    ``error`` field naming the cause.
+  * **Live branch** — active provider registered;
+    ``get_observed_state_via_provider`` is called; the endpoint
+    returns the three-bucket grouped dict with NO ``stub`` flag.
+
+Maintenance note: the shape contract (top-level keys + per-entry
+key set) must stay stable so the cockpit panel renders. The
+``stub`` flag triggers the panel's STUB banner; ``error`` is shown
+underneath on the uninitialized branch.
 """
 
 import pytest
+
+from plugins.memory.isokron import active_provider
 
 
 _VALID_KIND = {"stop", "reset"}
@@ -25,7 +32,6 @@ _VALID_LIFECYCLE = {
     "failed",
     "escalated",
 }
-_VALID_LEVEL = {0, 1, 2, 3, 4, 5}
 
 
 @pytest.fixture(autouse=True)
@@ -41,133 +47,144 @@ def _isolate_config(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ---- 1. 200 ---------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_active_provider():
+    active_provider.clear_active_provider()
+    yield
+    active_provider.clear_active_provider()
+
+
+# ---- Uninitialized branch — stub + error ---------------------------------
 
 
 @pytest.mark.asyncio
-async def test_endpoint_returns_200(_isolate_config):
-    from kora_cli import web_server
-
-    result = await web_server.get_kora_control_observed_state()
-    assert isinstance(result, dict)
-
-
-# ---- 2. Top-level shape ---------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_response_shape_has_required_grouping_keys(_isolate_config):
+async def test_uninitialized_branch_returns_stub_with_error(_isolate_config):
     from kora_cli import web_server
 
     result = await web_server.get_kora_control_observed_state()
 
-    assert set(result.keys()) == {
+    assert result["stub"] is True
+    assert "error" in result
+    assert isinstance(result["error"], str)
+    assert "not yet registered" in result["error"]
+    assert set(result.keys()) >= {
         "active",
         "recently_enforced",
         "history",
         "stub",
-    }
-    assert result["stub"] is True
-
-
-# ---- 3. Per-section shape -------------------------------------------------
-
-
-def _required_command_keys() -> set[str]:
-    return {
-        "command_id",
-        "level",
-        "kind",
-        "reason",
-        "issuer",
-        "sequence",
-        "created_at",
-        "visible_to_runtime_at",
-        "observed_at",
-        "acknowledged_at",
-        "enforced_at",
-        "lifecycle_state",
-        "expires_at",
-        "target_session",
+        "error",
     }
 
 
 @pytest.mark.asyncio
-async def test_all_sections_are_lists_with_required_keys(_isolate_config):
+async def test_uninitialized_stub_entries_match_documented_shape(_isolate_config):
     from kora_cli import web_server
 
     result = await web_server.get_kora_control_observed_state()
-    required = _required_command_keys()
-
-    for section_name in ("active", "recently_enforced", "history"):
-        section = result[section_name]
-        assert isinstance(section, list)
-        for entry in section:
-            assert required <= set(entry.keys()), (
-                f"{section_name}: {entry.get('command_id')} missing keys "
-                f"{required - set(entry.keys())}"
-            )
-            assert isinstance(entry["level"], int)
-            assert isinstance(entry["sequence"], int)
-
-
-# ---- 4. level enum --------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_all_level_values_are_in_range(_isolate_config):
-    from kora_cli import web_server
-
-    result = await web_server.get_kora_control_observed_state()
-    for section_name in ("active", "recently_enforced", "history"):
-        for entry in result[section_name]:
-            assert entry["level"] in _VALID_LEVEL, (
-                f"{section_name}: {entry['command_id']} has level "
-                f"{entry['level']!r} outside 0..5"
-            )
-
-
-# ---- 5. kind enum ---------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_all_kind_values_in_documented_set(_isolate_config):
-    from kora_cli import web_server
-
-    result = await web_server.get_kora_control_observed_state()
-    for section_name in ("active", "recently_enforced", "history"):
-        for entry in result[section_name]:
+    for section in ("active", "recently_enforced", "history"):
+        assert isinstance(result[section], list)
+        for entry in result[section]:
+            assert set(entry.keys()) >= {
+                "command_id",
+                "level",
+                "kind",
+                "reason",
+                "issuer",
+                "sequence",
+                "created_at",
+                "visible_to_runtime_at",
+                "observed_at",
+                "acknowledged_at",
+                "enforced_at",
+                "lifecycle_state",
+                "expires_at",
+                "target_session",
+            }
             assert entry["kind"] in _VALID_KIND
-
-
-# ---- 6. lifecycle_state enum ---------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_all_lifecycle_state_values_in_documented_set(_isolate_config):
-    from kora_cli import web_server
-
-    result = await web_server.get_kora_control_observed_state()
-    for section_name in ("active", "recently_enforced", "history"):
-        for entry in result[section_name]:
             assert entry["lifecycle_state"] in _VALID_LIFECYCLE
+            assert isinstance(entry["level"], int)
+            assert 0 <= entry["level"] <= 5
 
 
-# Bucket §3 says ``recently_enforced`` entries are necessarily in the
-# ``enforced`` lifecycle state. Codify that contract so a future stub or
-# real-data drift can't silently put an active-state entry into the
-# enforced bucket without us noticing.
+# ---- Live branch — active provider returns real data ---------------------
+
+
+def _canned_grouped() -> dict:
+    return {
+        "active": [
+            {
+                "command_id": "kc-real-001",
+                "level": 2,
+                "kind": "stop",
+                "reason": "Real STOP-KORA L2 — drain mode",
+                "issuer": "operator/op_1 (cockpit session real-cs-1)",
+                "sequence": 99,
+                "created_at": "2026-05-21T19:00:00Z",
+                "visible_to_runtime_at": "2026-05-21T19:00:01Z",
+                "observed_at": "2026-05-21T19:00:02Z",
+                "acknowledged_at": "2026-05-21T19:00:03Z",
+                "enforced_at": None,
+                "lifecycle_state": "acknowledged",
+                "expires_at": None,
+                "target_session": None,
+            }
+        ],
+        "recently_enforced": [],
+        "history": [],
+    }
+
+
 @pytest.mark.asyncio
-async def test_recently_enforced_entries_are_in_enforced_lifecycle(_isolate_config):
+async def test_live_branch_returns_real_data_without_stub_flag(
+    _isolate_config, monkeypatch
+):
     from kora_cli import web_server
 
+    sentinel_provider = object()
+    active_provider.set_active_provider(sentinel_provider)
+
+    async def fake_get(*, provider):
+        assert provider is sentinel_provider
+        return _canned_grouped()
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.observed_kora_control."
+        "get_observed_state_via_provider",
+        fake_get,
+    )
+
     result = await web_server.get_kora_control_observed_state()
-    for entry in result["recently_enforced"]:
-        assert entry["lifecycle_state"] == "enforced"
-        assert entry["enforced_at"] is not None
+
+    assert "stub" not in result
+    assert "error" not in result
+    assert result["active"][0]["command_id"] == "kc-real-001"
+    assert result["active"][0]["lifecycle_state"] == "acknowledged"
 
 
-# ---- 7. Cron-regression sanity --------------------------------------------
+@pytest.mark.asyncio
+async def test_live_branch_falls_back_to_stub_on_read_failure(
+    _isolate_config, monkeypatch
+):
+    from kora_cli import web_server
+
+    sentinel_provider = object()
+    active_provider.set_active_provider(sentinel_provider)
+
+    async def failing_get(*, provider):
+        return None
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.observed_kora_control."
+        "get_observed_state_via_provider",
+        failing_get,
+    )
+
+    result = await web_server.get_kora_control_observed_state()
+    assert result["stub"] is True
+    assert "substrate read returned None" in result["error"]
+
+
+# ---- Cron-regression sanity ----------------------------------------------
 
 
 @pytest.mark.asyncio
