@@ -95,11 +95,18 @@ def _make_gate_result(
     outcome: GateOutcome = GateOutcome.PASS,
     elapsed_ms: int = 412,
     detail: str = "claude auth status: ok",
+    started_at: datetime = datetime(2026, 5, 21, 19, 30, 0, tzinfo=timezone.utc),
+    completed_at: datetime = datetime(
+        2026, 5, 21, 19, 30, 0, 412_000, tzinfo=timezone.utc
+    ),
 ) -> GateResult:
     """Build a GateResult with the fields the panel projection cares
     about. ``title`` is intentionally NOT on GateResult (it's a
     ClassVar on the Gate class itself); the panel projection falls
     back to ``gate_id`` when no title can be resolved.
+
+    ``started_at`` / ``completed_at`` are required by GateResult — the
+    panel projection doesn't use them but the dataclass demands them.
     """
     return GateResult(
         gate_id=gate_id,
@@ -107,6 +114,8 @@ def _make_gate_result(
         outcome=outcome,
         elapsed_ms=elapsed_ms,
         detail=detail,
+        started_at=started_at,
+        completed_at=completed_at,
     )
 
 
