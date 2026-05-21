@@ -79,6 +79,7 @@ export const api = {
     fetchJSON<CapabilitiesResponse>("/api/capabilities"),
   getHealthRollup: () =>
     fetchJSON<HealthRollupResponse>("/api/health-rollup"),
+  getDRState: () => fetchJSON<DRStateResponse>("/api/dr-state"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1222,5 +1223,51 @@ export interface HealthRollupResponse {
   worker: HealthStatus;
   stopped_reason: string | null;
   subsignals: Record<string, Subsignal>;
+  stub: boolean;
+}
+
+// Disaster recovery / substrate-epoch (KR-P2-DR-PANEL).
+// R4.1 §9.8: detect post-PITR substrate_epoch mismatch and surface the
+// runbook need. ``runbook_pending`` drives the FE's top-of-page red
+// alert; it's derived from match_status + kora_paused_substrate.
+export type DRMatchStatus =
+  | "clean"
+  | "mismatch_detected"
+  | "pending_runbook"
+  | "unknown";
+
+export type EpochSource = "boot-success" | "dr-recovery" | "operator-bump";
+
+export interface DRCurrent {
+  substrate_epoch: number;
+  kora_known_epoch: number | null;
+  match_status: DRMatchStatus;
+  last_check_at: string;
+  kora_paused_substrate: boolean;
+}
+
+export interface EpochHistoryEntry {
+  epoch: number;
+  observed_at: string;
+  kora_known_at: string | null;
+  source: EpochSource;
+}
+
+export interface DRObservedEvent {
+  event_type: "kora.dr.observed";
+  occurred_at: string;
+  from_epoch: number;
+  to_epoch: number;
+  discarded_operation_ids: number;
+  discarded_ledger_rows: number;
+  cleared_at: string | null;
+  cleared_by: string | null;
+}
+
+export interface DRStateResponse {
+  current: DRCurrent;
+  epoch_history: EpochHistoryEntry[];
+  recent_dr_events: DRObservedEvent[];
+  runbook_pending: boolean;
   stub: boolean;
 }
