@@ -74,6 +74,7 @@ export const api = {
       "/api/kora-control/observed-state",
     ),
   getBootStatus: () => fetchJSON<BootStatusResponse>("/api/boot-status"),
+  getCostState: () => fetchJSON<CostStateResponse>("/api/cost-state"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1093,5 +1094,69 @@ export interface BootHistoryEntry {
 export interface BootStatusResponse {
   current: CurrentBoot;
   history: BootHistoryEntry[];
+  stub: boolean;
+}
+
+// Cost ladder (KR-P2-COST-PANEL). Reuses ModelTier + Criticality from
+// earlier panels. Enum values match the Python CostStateHolder schema
+// landed by KR-P2-K (a TS drift surfaces at compile time).
+export type CostRung =
+  | "normal"
+  | "warn_75"
+  | "downshift_90"
+  | "hard_stop_100";
+
+export interface CostCurrent {
+  billing_period_start: string;
+  billing_period_end: string;
+  days_remaining: number;
+  credit_pool_usd: number;
+  spent_to_date_usd: number;
+  burn_rate_usd_per_day: number;
+  projected_end_of_period_usd: number;
+  active_rung: CostRung;
+  active_rung_threshold_pct: number;
+  current_pct_used: number;
+  effective_model_tier: ModelTier;
+  downshift_active: boolean;
+  downshift_reason: string | null;
+  extra_usage_off: boolean;
+}
+
+export interface RateLimitWindow {
+  limit: number;
+  remaining: number;
+  reset_at: string;
+}
+
+export interface RateLimitPulse {
+  captured_at: string;
+  requests: RateLimitWindow;
+  tokens: RateLimitWindow;
+}
+
+export interface DeferredTicket {
+  id: string;
+  title: string;
+  criticality: Criticality;
+  state: "deferred_cost_limit";
+  deferred_at: string;
+  reason: string;
+}
+
+export interface ReconciliationEntry {
+  reconciled_at: string;
+  local_estimator_usd: number;
+  anthropic_reported_usd: number;
+  delta_usd: number;
+  delta_pct: number;
+  within_tolerance: boolean;
+}
+
+export interface CostStateResponse {
+  current: CostCurrent;
+  rate_limit_pulse: RateLimitPulse;
+  deferred_tickets: DeferredTicket[];
+  reconciliation_history: ReconciliationEntry[];
   stub: boolean;
 }
