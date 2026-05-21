@@ -3144,6 +3144,55 @@ async def set_gateway_platform_identity(
 
 
 # ---------------------------------------------------------------------------
+# Operational state read endpoint (KR-P2-OPS-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded READY/normal/no-degradation stub so the admin panel
+# can ship before the OperationalState singleton from KR-P2-I-skeleton is
+# wired into the agent loop (that's the follow-on KR-P2-I-integration
+# bucket, post-substrate-round Bucket C). The ``stub: True`` flag is the
+# explicit "this is not real runtime state" signal — the frontend renders
+# a banner when it sees True so operators are never misled during a real
+# outage. When wire-in lands, replace the return body with a projection
+# of the real OperationalState and drop the ``stub`` flag.
+
+
+@app.get("/api/operational-state")
+async def get_operational_state():
+    """Return Kora's current operational state.
+
+    v1 stub: hardcoded READY/normal/no-degradation. Replace with a real
+    ``OperationalState`` read once KR-P2-I-integration lands.
+
+    Enum values pinned to R4.1 §9.1:
+      primary_state     ∈ {booting, ready, active, paused, stopped}
+      claim_permission  ∈ {none, critical_only, normal}
+      degradation_reason∈ {cost, auth, dispatch, substrate, migration,
+                           operator, token_expiring, retry_ceiling}
+    """
+    return {
+        "primary_state": "ready",
+        "claim_permission": "normal",
+        "degradation_reasons": [],
+        "is_degraded": False,
+        "transition_history": [
+            {
+                "timestamp": "2026-05-21T17:00:00Z",
+                "from_state": "booting",
+                "to_state": "ready",
+                "trigger": "all §9.2 gates pass",
+            },
+        ],
+        "valid_next_states": [
+            {"to_state": "active", "trigger": "claim acquired"},
+            {"to_state": "paused", "trigger": "STOP-KORA L1–3, cost 100%, operator"},
+            {"to_state": "stopped", "trigger": "STOP-KORA L4/L5"},
+        ],
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

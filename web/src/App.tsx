@@ -67,6 +67,7 @@ import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
 import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
+import OperationalStatePage from "@/pages/OperationalStatePage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
@@ -112,6 +113,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/operational-state": OperationalStatePage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -140,6 +142,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
+  },
+  {
+    path: "/operational-state",
+    labelKey: "operationalState",
+    label: "Operational",
+    icon: Activity,
   },
   {
     path: "/analytics",
