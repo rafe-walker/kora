@@ -482,11 +482,12 @@ def test_gate10_is_invariant():
 
 
 def test_default_gate_sequence_has_gates_in_r41_order():
-    """KR-P2-M ST1 inserted gate 3 between gate 1 and gate 4."""
+    """KR-P2-M ST1 inserted gate 3; ST3 inserted gate 3b."""
     seq = build_default_gate_sequence()
     assert [g.gate_id for g in seq] == [
         "1_claude_auth",
-        "3_substrate_contract_version",  # KR-P2-M ST1
+        "3_substrate_contract_version",   # KR-P2-M ST1
+        "3b_epoch_dr_check",               # KR-P2-M ST3
         "4_kora_runtime_role_perms",
         "5_kronicle_mcp_reachable",
         "6_wsk_token_valid",

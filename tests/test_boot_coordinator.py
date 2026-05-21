@@ -457,5 +457,74 @@ def test_boot_summary_is_frozen():
         summary.result = BootResult.STOPPED  # type: ignore[misc]
 
 
-def test_boot_result_enum_has_2_members():
-    assert {m.value for m in BootResult} == {"ready", "stopped"}
+def test_boot_result_enum_has_3_members():
+    """READY + STOPPED + PAUSED. The third was added by KR-P2-M ST3 —
+    PAUSED is the BootSummary result when gate 3b's INVARIANT_PAUSE
+    class triggers the R4.1 §9.2 special-case (DR epoch mismatch
+    routes to PAUSED, not STOPPED)."""
+    assert {m.value for m in BootResult} == {"ready", "stopped", "paused"}
+
+
+# ===========================================================================
+# INVARIANT_PAUSE → BootResult.PAUSED (KR-P2-M ST3)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_invariant_pause_returns_paused_without_holder_transition_or_emit():
+    """When the failing gate has class INVARIANT_PAUSE, the coordinator
+    must NOT transition holder to STOPPED + must NOT emit
+    kora.boot.failed. The gate itself already did the right work
+    (transitioned to PAUSED + emitted dr-specific event)."""
+    holder = _holder()
+    provider = _make_emit_provider()
+
+    pause_gate = _ProgrammableGate(
+        "3b_epoch_dr_check",
+        GateClass.INVARIANT_PAUSE,
+        [GateOutcome.FAIL],
+    )
+
+    summary = await run_boot_sequence(
+        memory_provider=provider,
+        holder=holder,
+        gates=[pause_gate],
+    )
+
+    assert summary.result is BootResult.PAUSED
+    assert summary.failed_gate is not None
+    assert summary.failed_gate.gate_class is GateClass.INVARIANT_PAUSE
+    # Holder UNTOUCHED by coordinator (still BOOTING — the gate would
+    # have transitioned to PAUSED in real code, but in this unit test
+    # we're only asserting that the coordinator doesn't re-transition).
+    assert holder.current.primary_state is PrimaryState.BOOTING
+    # NO kora.boot.failed emit
+    assert provider._connection.submit_and_wait.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_invariant_pause_short_circuits_sequence():
+    """An INVARIANT_PAUSE FAIL stops the sequence just like INVARIANT."""
+    holder = _holder()
+    provider = _make_emit_provider()
+
+    pre_gate = _ProgrammableGate("pre", GateClass.TRANSIENT, [GateOutcome.PASS])
+    pause_gate = _ProgrammableGate(
+        "3b_epoch_dr_check", GateClass.INVARIANT_PAUSE, [GateOutcome.FAIL]
+    )
+    post_gate = _ProgrammableGate(
+        "post", GateClass.TRANSIENT, [GateOutcome.PASS]
+    )
+
+    summary = await run_boot_sequence(
+        memory_provider=provider,
+        holder=holder,
+        gates=[pre_gate, pause_gate, post_gate],
+    )
+
+    # Sequence stopped at the INVARIANT_PAUSE failure
+    assert len(summary.gate_results) == 2
+    assert summary.result is BootResult.PAUSED
+    assert summary.failed_gate.gate_id == "3b_epoch_dr_check"
+    # post_gate never ran
+    assert post_gate.call_count == 0

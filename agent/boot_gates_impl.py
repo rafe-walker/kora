@@ -614,25 +614,27 @@ class KR7BootSmokeGate(Gate):
 
 
 def build_default_gate_sequence() -> list[Gate]:
-    """Return the canonical R4.1 §9.2 gate sequence (the 8 gates the
-    KR-P2-H + KR-P2-M ST1 buckets ship, in order).
+    """Return the canonical R4.1 §9.2 gate sequence (the 9 gates the
+    KR-P2-H + KR-P2-M buckets ship, in order).
 
     Order matters per R4.1 §9.2:
-      Gate 1 → 3 → 4 → 5 → 6 → 7 → 8 → 10
+      Gate 1 → 3 → 3b → 4 → 5 → 6 → 7 → 8 → 10
 
-    Gates 2 / 3b / 9 are intentionally absent:
+    Gates 2 / 9 are intentionally absent:
       - 2 — KR-P2-F-pre entrypoint env-var validation
-      - 3b — KR-P2-M ST3 (epoch DR check; inserted between 3 and 4
-        when ST3 lands)
       - 9 — KR-P2-K (cost state read; deferred)
     """
     # Lazy import — keeps the DR module off the load path for any
     # caller that builds a custom sequence without it.
-    from agent.boot_gates_dr import SubstrateContractVersionGate
+    from agent.boot_gates_dr import (
+        Gate3bEpochCheck,
+        SubstrateContractVersionGate,
+    )
 
     return [
         ClaudeAuthGate(),
         SubstrateContractVersionGate(),  # gate 3 (KR-P2-M ST1)
+        Gate3bEpochCheck(),               # gate 3b (KR-P2-M ST3)
         KronicleRolePermsGate(),
         KronicleMCPReachableGate(),
         WskTokenValidGate(),

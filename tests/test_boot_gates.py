@@ -97,9 +97,13 @@ class _RaisingGate(Gate):
 # ---------------------------------------------------------------------------
 
 
-def test_gate_class_has_2_members():
-    assert {m.value for m in GateClass} == {"transient", "invariant"}
-    assert len(list(GateClass)) == 2
+def test_gate_class_has_3_members():
+    """TRANSIENT + INVARIANT + INVARIANT_PAUSE. The third was added by
+    KR-P2-M ST3 (gate 3b epoch mismatch routes to PAUSED, not STOPPED)."""
+    assert {m.value for m in GateClass} == {
+        "transient", "invariant", "invariant_pause"
+    }
+    assert len(list(GateClass)) == 3
 
 
 def test_gate_outcome_has_2_members():

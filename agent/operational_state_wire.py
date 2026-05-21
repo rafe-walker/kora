@@ -144,6 +144,28 @@ def wire_operational_state(provider: Any) -> None:
             )
             return
 
+        if summary.result is BootResult.PAUSED:
+            # KR-P2-M ST3 — Gate 3b epoch mismatch routed to PAUSED
+            # (R4.1 §9.2 / §9.8 special-case). Gate 3b already emitted
+            # kora.dr.observed + transitioned the holder to
+            # PAUSED{substrate}. Process stays running; operator must
+            # clear via cockpit kora_control reset (KR-P2-J reader
+            # observes the clearance + KR-P2-M ST4 writes the new
+            # kora_known_epoch).
+            failed = summary.failed_gate
+            logger.warning(
+                "[kora.operational_state.wire_in] boot gate routed to "
+                "PAUSED: gate_id=%s class=%s detail=%s. Holder is in "
+                "PAUSED{substrate}; process stays running for operator "
+                "clearance via cockpit kora_control reset. See "
+                "kora.dr.observed chain event for the (observed, known) "
+                "epoch pair.",
+                failed.gate_id if failed else "<unknown>",
+                failed.gate_class.value if failed else "<unknown>",
+                failed.detail if failed else "<no failed_gate>",
+            )
+            return
+
         # BootResult.STOPPED — coordinator already transitioned
         # holder to STOPPED and emitted kora.boot.failed. Per bucket
         # spec § ST3, exit non-zero.

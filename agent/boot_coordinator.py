@@ -57,6 +57,7 @@ from agent.boot_gates import (
     BootContext,
     BootGateRunner,
     Gate,
+    GateClass,
     GateOutcome,
     GateResult,
 )
@@ -107,10 +108,26 @@ _TRIGGER_BOOT_RETRY: Final[str] = (
 
 
 class BootResult(Enum):
-    """Overall boot outcome."""
+    """Overall boot outcome.
+
+    Three values:
+
+      - ``READY`` — all gates passed; holder transitioned to READY;
+        ``kora.boot.ready`` chain event emitted.
+      - ``STOPPED`` — INVARIANT fail or TRANSIENT budget exhausted;
+        holder transitioned to STOPPED; ``kora.boot.failed`` emitted.
+        Wire-in calls ``sys.exit(1)``.
+      - ``PAUSED`` — INVARIANT_PAUSE gate failed (gate 3b epoch
+        mismatch, R4.1 §9.2 / §9.8 special-case). The gate itself
+        transitioned the holder to PAUSED{substrate} and emitted
+        ``kora.dr.observed``; the coordinator does NOT re-transition
+        or re-emit. Process stays running; operator must clear via
+        cockpit ``kora_control`` reset.
+    """
 
     READY = "ready"
     STOPPED = "stopped"
+    PAUSED = "paused"
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +213,10 @@ async def run_boot_sequence(
     failed = _first_failed(results)
 
     if diagnostic_mode:
+        # Diagnostic-mode result rolls all FAIL classes into STOPPED
+        # for the summary — diagnostic doesn't need to distinguish
+        # the PAUSED route (the gate's side-effects didn't fire
+        # because diagnostic mode bypasses them at the gate level).
         return BootSummary(
             result=BootResult.STOPPED if failed else BootResult.READY,
             gate_results=results,
@@ -224,6 +245,18 @@ async def run_boot_sequence(
             result=BootResult.READY,
             gate_results=results,
             failed_gate=None,
+        )
+
+    # INVARIANT_PAUSE special-case: the gate itself transitioned the
+    # holder to PAUSED + emitted the dr-specific chain event. The
+    # coordinator MUST NOT transition to STOPPED or emit
+    # kora.boot.failed (would clobber the gate's audit + wrongly
+    # signal a STOPPED-class failure). Just return PAUSED.
+    if failed.gate_class is GateClass.INVARIANT_PAUSE:
+        return BootSummary(
+            result=BootResult.PAUSED,
+            gate_results=results,
+            failed_gate=failed,
         )
 
     # Failed path — INVARIANT FAIL or TRANSIENT budget exhausted.
