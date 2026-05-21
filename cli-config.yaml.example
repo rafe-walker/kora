@@ -488,6 +488,51 @@ memory:
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
+  # External memory provider plugin (KR-P2-F-pre).  Selects which entry
+  # under ``plugins.entries`` agent_init.py loads as the memory provider.
+  # Leave unset to keep only the built-in MEMORY.md/USER.md store above.
+  provider: isokron
+
+# =============================================================================
+# External Plugins
+# =============================================================================
+# Entries here are looked up by name when a feature points at one via its
+# ``provider:`` key (e.g. ``memory.provider: isokron`` loads
+# ``plugins.entries.isokron``).  Values use ${VAR} env-var expansion at
+# load time; in production each VAR is sourced from one of the three
+# Doppler projects (see docs/deploy-fly-io.md).
+#
+plugins:
+  entries:
+    # IsoKron substrate memory provider (Doppler: kora-runtime-substrate).
+    # Schema lives in plugins/memory/isokron/config.py — unknown keys are
+    # rejected at boot (``extra="forbid"``), so any new field has to land
+    # in the schema before showing up here.
+    isokron:
+      isokron_dsn: ${KORA_ISOKRON_DSN}
+      mcp_endpoint: ${KORA_SEA_MCP_ENDPOINT}
+      default_workspace_id: ${KORA_DEFAULT_WORKSPACE_ID}
+      mcp_service_token: ${KORA_SERVICE_TOKEN}
+      cache_ttl_seconds: 60
+
+# =============================================================================
+# Gateway (messaging platforms)
+# =============================================================================
+# Per-platform credentials and behavior. Tokens come from the
+# ``kora-runtime-gateways`` Doppler project (see docs/deploy-fly-io.md).
+# ``display_name`` controls operator-facing identity strings emitted by
+# each adapter (handoff thread seeds, notification titles, etc.) — see
+# KR-P2-B / K-DG taxonomy.
+#
+gateway:
+  platforms:
+    slack:
+      enabled: true
+      bot_token: ${SLACK_BOT_TOKEN}
+      app_token: ${SLACK_APP_TOKEN}
+      signing_secret: ${SLACK_SIGNING_SECRET}
+      display_name: Kora
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
