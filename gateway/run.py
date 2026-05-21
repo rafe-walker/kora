@@ -4100,9 +4100,41 @@ class GatewayRunner:
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # KR-P2-E ST5: start the SeaTicketPoller as a background task.
+        # The lifecycle helper is fail-open — when the IsoKron memory
+        # provider isn't configured or substrate is unreachable, it
+        # logs a WARNING and returns None; the gateway continues to
+        # serve platform adapters without the consumer loop.
+        asyncio.create_task(self._start_sea_ticket_poller())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
+
+    async def _start_sea_ticket_poller(self) -> None:
+        """KR-P2-E ST5: bring up the SeaTicketPoller as a background
+        task. Fail-open — IsoKron provider unavailable or substrate
+        unreachable logs a WARNING and skips; the gateway continues
+        without the consumer loop.
+
+        Production deploys with the agent-loop bridge wired in (a
+        follow-on bucket) pass a real ``agent_loop_invoker``; this MVP
+        wire-up uses the poller's built-in ``_placeholder_agent_loop``
+        which returns ``COMPLETED`` unconditionally — so the
+        claim/heartbeat/release cycle exercises end-to-end against the
+        substrate without yet wiring Kora's agent into the ticket
+        work itself.
+        """
+        try:
+            from plugins.memory.isokron.sea_ticket_poller_lifecycle import (
+                build_and_start_sea_ticket_poller,
+            )
+            await build_and_start_sea_ticket_poller()
+        except Exception:
+            logger.exception(
+                "[gateway] SeaTicketPoller bootstrap raised; gateway "
+                "continues without the consumer loop."
+            )
 
     async def _handoff_watcher(self, interval: float = 2.0) -> None:
         """Background task that processes pending CLI→gateway session handoffs.
