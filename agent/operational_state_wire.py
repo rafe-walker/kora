@@ -92,6 +92,15 @@ def wire_operational_state(provider: Any) -> None:
         holder = init_holder(initial)
         holder.add_listener(make_emit_listener(provider))
 
+        # KR-P2-M ST4 — register the PAUSED-clearance dr-writer
+        # listener. Fires when an operator-issued kora_control reset
+        # transitions the holder PAUSED → READY with the SUBSTRATE
+        # reason cleared, at which point the listener writes a fresh
+        # kora_known_epoch so the next boot's gate 3b passes.
+        from agent.dr_writer import make_paused_substrate_cleared_listener
+
+        holder.add_listener(make_paused_substrate_cleared_listener(provider))
+
         connection = getattr(provider, "_connection", None)
         if connection is None:
             logger.warning(

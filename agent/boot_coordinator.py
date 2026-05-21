@@ -241,6 +241,17 @@ async def run_boot_sequence(
         await _emit_boot_event(
             memory_provider, BOOT_READY_EVENT, results, None
         )
+        # KR-P2-M ST4 — record the substrate_epoch Kora just observed.
+        # Best-effort; failures are WARN-logged but do not affect the
+        # BootResult or holder state. ``context.kora_actor_uuid`` was
+        # populated by gate 7 (which definitely ran on the all-pass
+        # path).
+        from agent.dr_writer import write_known_epoch_at_boot_end
+
+        await write_known_epoch_at_boot_end(
+            memory_provider=memory_provider,
+            kora_actor_uuid=context.kora_actor_uuid,
+        )
         return BootSummary(
             result=BootResult.READY,
             gate_results=results,
