@@ -63,9 +63,17 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 
+from plugins.memory.isokron.claim_heartbeat import (
+    HeartbeatHandle,
+    start_heartbeat,
+)
 from plugins.memory.isokron.kora_control_reader import (
     KoraControlCommand,
     KoraControlReader,
+)
+from plugins.memory.isokron.kora_operation_ledger import (
+    KoraOperationLedger,
+    KoraOperationLedgerError,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,13 +150,14 @@ class ClaimState:
     work_attempt_id: Optional[str]
 
 
-# Agent-loop invoker signature. ST1 ships a placeholder that returns
-# COMPLETED unconditionally; ST4 wires the real loop + failure
-# classification. The invoker receives (ticket, claim_state) so the
-# eventual real implementation can correlate emits with the active
-# work_attempt_id.
+# Agent-loop invoker signature. The invoker receives
+# (ticket, claim_state, heartbeat) so it can correlate emits with the
+# active ``work_attempt_id`` (ST2 ledger writes) and signal P2-compliant
+# progress (ST3 heartbeat). ST4 wires the real loop + failure
+# classification; ST1 ships a placeholder that returns COMPLETED
+# unconditionally.
 AgentLoopInvoker = Callable[
-    [SeaTicket, ClaimState], Awaitable[SeaTicketResolution]
+    [SeaTicket, ClaimState, HeartbeatHandle], Awaitable[SeaTicketResolution]
 ]
 
 
@@ -184,9 +193,11 @@ SELECT actor_id
 
 
 async def _placeholder_agent_loop(
-    _ticket: SeaTicket, _claim: ClaimState
+    _ticket: SeaTicket,
+    _claim: ClaimState,
+    _heartbeat: HeartbeatHandle,
 ) -> SeaTicketResolution:
-    """ST1 stub for ``agent_loop_invoker``.
+    """ST1 / ST3 stub for ``agent_loop_invoker``.
 
     Returns ``COMPLETED`` unconditionally — the real loop lands in
     ST4. Production callers (ST5) MUST pass a real invoker; the
@@ -213,6 +224,7 @@ class SeaTicketPoller:
         agent_loop_invoker: AgentLoopInvoker = _placeholder_agent_loop,
         *,
         kora_control_reader: Optional[KoraControlReader] = None,
+        ledger: Optional[KoraOperationLedger] = None,
         poll_interval_seconds: int = 60,
         claim_ttl_seconds: int = 600,
         heartbeat_interval_seconds: int = 60,
@@ -229,6 +241,20 @@ class SeaTicketPoller:
         # one with the resolved actor_id on the first claim attempt.
         self._kora_control_reader: Optional[KoraControlReader] = (
             kora_control_reader
+        )
+        # The ledger writer is REQUIRED for refresh + release to work
+        # — both SECDEFs check for an allocated row at the claim's
+        # kora_operation_id (migration 0103 lines 143-148 + 282-284).
+        # The poller allocates the claim row in _claim_and_work and
+        # never marks it dispatched/committed — it stays 'allocated'
+        # as a presence marker until the kora_operation_ledger archive
+        # sweeper (migration 0094) reaps it. Tool-dispatch rows
+        # (allocated by the agent loop in ST4) move through the
+        # dispatched/committed/abandoned states independently.
+        self._ledger = (
+            ledger
+            if ledger is not None
+            else KoraOperationLedger(memory_provider._connection)
         )
         self._poll_interval_seconds = poll_interval_seconds
         self._claim_ttl_seconds = claim_ttl_seconds
@@ -462,20 +488,81 @@ class SeaTicketPoller:
             )
             return
 
+        # Allocate the claim's ledger row. REQUIRED — both
+        # kora_refresh_claim and kora_release_claim check for an
+        # 'allocated' row at this kora_operation_id and raise if it's
+        # missing. The row stays 'allocated' for the full work attempt
+        # (presence marker for the claim cycle); tool-dispatch rows
+        # allocated by the agent loop in ST4 cycle through dispatched/
+        # committed independently. On failure to allocate (substrate
+        # raise, e.g. 0093 trigger rejection), best-effort the release
+        # would-have-been a no-op anyway — release will fail too, lease
+        # will expire naturally.
         try:
-            resolution = await self._agent_loop_invoker(ticket, claim_state)
-        except Exception:
+            await self._ledger.allocate_operation(
+                work_attempt_id=claim_state.work_attempt_id,
+                workspace_id=ticket.workspace_id,
+                ticket_id=ticket.ticket_id,
+                tool_name="kora__claim_sea_ticket",
+            )
+        except KoraOperationLedgerError:
             logger.exception(
-                "[sea_ticket_poller] agent_loop_invoker raised for "
-                "ticket_id=%s — releasing with RELEASED resolution",
+                "[sea_ticket_poller] could not allocate claim ledger "
+                "row for ticket_id=%s — refusing to proceed; lease "
+                "will expire naturally",
                 ticket.ticket_id,
             )
-            resolution = SeaTicketResolution.RELEASED
+            return
+
+        # ST3: spawn the claim-refresh heartbeat. The handle's
+        # ``signal_token_progress`` / ``signal_tool_boundary`` methods
+        # satisfy P2 compliance — refresh fires only when the agent
+        # loop has made real progress.
+        heartbeat = start_heartbeat(
+            mcp_client=self._mcp_client,
+            workspace_id=ticket.workspace_id,
+            kora_operation_id=kora_operation_id,
+            sea_ticket_id=ticket.ticket_id,
+            claim_fence_token=claim_state.claim_fence_token,
+            heartbeat_interval_seconds=self._heartbeat_interval_seconds,
+            extend_by_seconds=self._claim_ttl_seconds,
+        )
+
+        try:
+            try:
+                resolution = await self._agent_loop_invoker(
+                    ticket, claim_state, heartbeat
+                )
+            except Exception:
+                logger.exception(
+                    "[sea_ticket_poller] agent_loop_invoker raised "
+                    "for ticket_id=%s — releasing with RELEASED "
+                    "resolution",
+                    ticket.ticket_id,
+                )
+                resolution = SeaTicketResolution.RELEASED
+        finally:
+            await heartbeat.cancel()
+
+        # If the heartbeat detected substrate-side lease loss while
+        # work was in progress, the lease is already gone — calling
+        # release with the (now invalid) fence_token would just raise.
+        # Skip the release; substrate's ``sea_ticket.claim_expired``
+        # is the durable record.
+        if heartbeat.lease_lost:
+            logger.warning(
+                "[sea_ticket_poller] heartbeat lost lease mid-work "
+                "for ticket_id=%s — skipping release (lease already "
+                "expired substrate-side)",
+                ticket.ticket_id,
+            )
+            return
 
         # ST4 will emit ``kora.sea_ticket.resolved`` here with the
-        # resolution string + ``model_tier_used`` payload field. ST1
-        # skips the emit; the chain-event log just shows the substrate-
-        # side ``sea_ticket.claim_released`` event from release.
+        # resolution string + ``model_tier_used`` payload field. ST3
+        # still skips the emit; the chain-event log just shows the
+        # substrate-side ``sea_ticket.claim_released`` event from
+        # release.
         _ = resolution  # claimed for ST4 wire-in
         await self._release(
             workspace_id=ticket.workspace_id,
