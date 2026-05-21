@@ -2740,6 +2740,186 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
+# MCP server management endpoints
+# ---------------------------------------------------------------------------
+
+
+class MCPToolsUpdate(BaseModel):
+    enabled_tools: List[str]
+    all_tools: List[str]
+
+
+def _mcp_summarize_tools_cfg(tools_cfg: Any) -> Dict[str, Any]:
+    """Normalise the tools.include/exclude block for the API response."""
+    include: Optional[List[str]] = None
+    exclude: Optional[List[str]] = None
+    if isinstance(tools_cfg, dict):
+        raw_include = tools_cfg.get("include")
+        raw_exclude = tools_cfg.get("exclude")
+        if isinstance(raw_include, list):
+            include = [str(x) for x in raw_include]
+        if isinstance(raw_exclude, list):
+            exclude = [str(x) for x in raw_exclude]
+    if include is not None:
+        summary = f"{len(include)} selected"
+    elif exclude is not None:
+        summary = f"-{len(exclude)} excluded"
+    else:
+        summary = "all"
+    return {"include": include, "exclude": exclude, "summary": summary}
+
+
+def _mcp_server_to_dict(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a config.yaml ``mcp_servers`` entry into the API shape."""
+    url = cfg.get("url")
+    command = cfg.get("command")
+    cmd_args = cfg.get("args") if isinstance(cfg.get("args"), list) else []
+
+    if url:
+        transport_type = "http"
+        transport_display = str(url)
+    elif command:
+        transport_type = "stdio"
+        joined_args = " ".join(str(a) for a in cmd_args[:3])
+        transport_display = f"{command} {joined_args}".strip()
+    else:
+        transport_type = "unknown"
+        transport_display = ""
+
+    enabled_raw = cfg.get("enabled", True)
+    if isinstance(enabled_raw, str):
+        enabled = enabled_raw.lower() in {"true", "1", "yes"}
+    else:
+        enabled = bool(enabled_raw)
+
+    auth_type = cfg.get("auth") or ("headers" if cfg.get("headers") else "none")
+
+    return {
+        "name": name,
+        "transport_type": transport_type,
+        "transport": transport_display,
+        "url": url,
+        "command": command,
+        "args": list(cmd_args),
+        "enabled": enabled,
+        "auth_type": auth_type,
+        "tools": _mcp_summarize_tools_cfg(cfg.get("tools")),
+    }
+
+
+def _mcp_get_server_or_404(name: str) -> Dict[str, Any]:
+    from kora_cli import mcp_config as _mcp_config_mod
+
+    servers = _mcp_config_mod._get_mcp_servers()
+    if name not in servers:
+        raise HTTPException(status_code=404, detail=f"MCP server '{name}' not found")
+    return servers[name]
+
+
+@app.get("/api/mcp/servers")
+async def list_mcp_servers():
+    from kora_cli import mcp_config as _mcp_config_mod
+
+    servers = _mcp_config_mod._get_mcp_servers()
+    return [_mcp_server_to_dict(name, cfg) for name, cfg in servers.items()]
+
+
+@app.get("/api/mcp/servers/{name}")
+async def get_mcp_server(name: str):
+    cfg = _mcp_get_server_or_404(name)
+    return _mcp_server_to_dict(name, cfg)
+
+
+@app.post("/api/mcp/servers/{name}/probe")
+async def probe_mcp_server(name: str):
+    """Connect to the server, list its tools, disconnect.
+
+    This is an interactive operation: it may block for several seconds and
+    will trigger an OAuth flow for unauthenticated OAuth servers.
+    """
+    from kora_cli import mcp_config as _mcp_config_mod
+
+    cfg = _mcp_get_server_or_404(name)
+    start = time.monotonic()
+    try:
+        tools = await asyncio.get_event_loop().run_in_executor(
+            None, _mcp_config_mod._probe_single_server, name, cfg
+        )
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        raise HTTPException(
+            status_code=502,
+            detail={"error": str(exc), "elapsed_ms": elapsed_ms},
+        )
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return {
+        "name": name,
+        "elapsed_ms": elapsed_ms,
+        "tools": [
+            {"name": tool_name, "description": desc}
+            for tool_name, desc in tools
+        ],
+    }
+
+
+@app.put("/api/mcp/servers/{name}/tools")
+async def set_mcp_server_tools(name: str, body: MCPToolsUpdate):
+    """Update per-tool gating for an MCP server.
+
+    Mirrors :func:`kora_cli.mcp_config.cmd_mcp_configure` behaviour:
+    - if ``enabled_tools`` covers every tool in ``all_tools``, drop the
+      ``tools`` block entirely (= "all enabled")
+    - otherwise, write ``tools.include = enabled_tools`` and drop any
+      stale ``tools.exclude``
+    """
+    _mcp_get_server_or_404(name)
+
+    enabled = list(dict.fromkeys(body.enabled_tools))
+    all_tools = list(dict.fromkeys(body.all_tools))
+    unknown = [t for t in enabled if t not in all_tools]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown tool(s) for server '{name}': {', '.join(unknown)}",
+        )
+
+    config = load_config()
+    server_entry = config.setdefault("mcp_servers", {}).setdefault(name, {})
+
+    if len(enabled) == len(all_tools):
+        server_entry.pop("tools", None)
+    else:
+        server_entry.setdefault("tools", {})
+        server_entry["tools"]["include"] = enabled
+        server_entry["tools"].pop("exclude", None)
+
+    save_config(config)
+
+    refreshed = config["mcp_servers"][name]
+    return _mcp_server_to_dict(name, refreshed)
+
+
+@app.post("/api/mcp/servers/{name}/enable")
+async def enable_mcp_server(name: str):
+    _mcp_get_server_or_404(name)
+    config = load_config()
+    server_entry = config.setdefault("mcp_servers", {}).setdefault(name, {})
+    server_entry["enabled"] = True
+    save_config(config)
+    return _mcp_server_to_dict(name, server_entry)
+
+
+@app.post("/api/mcp/servers/{name}/disable")
+async def disable_mcp_server(name: str):
+    _mcp_get_server_or_404(name)
+    config = load_config()
+    server_entry = config.setdefault("mcp_servers", {}).setdefault(name, {})
+    server_entry["enabled"] = False
+    save_config(config)
+    return _mcp_server_to_dict(name, server_entry)
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
