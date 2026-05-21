@@ -3235,19 +3235,60 @@ async def get_operational_state():
 async def get_kora_assigned_sea_tickets():
     """Return Sea_Tickets currently assigned to the Kora actor.
 
-    Grouped by status:
-      in_progress       — claimed and being worked
-      queued            — assigned, waiting for claim (deferred if
-                          ``next_eligible_at`` is in the future)
-      recently_resolved — last N resolved (completed / released /
-                          failed_* / blocked_needs_operator /
-                          deferred_cost_limit)
-      failed_or_blocked — currently in ``failed_terminal`` or
-                          ``blocked_needs_operator`` (operator
-                          intervention happens cockpit-side)
+    Live source (KR-P2-CLEANUP ST2): reads via
+    ``plugins.memory.isokron.assigned_sea_tickets.get_assigned_sea_tickets_via_provider``
+    against the gateway-level active ``IsoKronMemoryProvider``
+    (registered at gateway boot by ``sea_ticket_poller_lifecycle``).
 
-    v1 stub. Internal idempotency tokens (e.g. ``claim_fence_token``)
-    are intentionally not included in the API shape.
+    Grouped by status:
+      in_progress       — claim_fence_token is set (Kora's working it)
+      queued            — assigned, waiting for claim
+      recently_resolved — recently completed / released / failed_retryable
+      failed_or_blocked — failed_terminal / blocked_needs_operator
+
+    When the active provider isn't registered (early boot or
+    isolated-test contexts), returns the stub-shape with
+    ``stub: True`` + an ``error`` field — the cockpit panel renders
+    a distinct banner so operators can tell "no wire-in yet" apart
+    from "real runtime is up".
+
+    Internal idempotency tokens (e.g. ``claim_fence_token``) are
+    intentionally never included in the API shape.
+    """
+    from plugins.memory.isokron.active_provider import get_active_provider
+    from plugins.memory.isokron.assigned_sea_tickets import (
+        get_assigned_sea_tickets_via_provider,
+    )
+
+    provider = get_active_provider()
+    if provider is None:
+        return _kora_assigned_sea_tickets_stub(
+            error=(
+                "IsoKronMemoryProvider not yet registered as active "
+                "(gateway boot in progress, or provider failed to "
+                "initialize)"
+            )
+        )
+
+    grouped = await get_assigned_sea_tickets_via_provider(provider=provider)
+    if grouped is None:
+        return _kora_assigned_sea_tickets_stub(
+            error=(
+                "substrate read returned None — see "
+                "``[assigned_sea_tickets]`` log lines for the cause"
+            )
+        )
+
+    return grouped
+
+
+def _kora_assigned_sea_tickets_stub(*, error: str) -> dict:
+    """Stub-shape returned on the uninitialized / read-failure branch.
+
+    Same four buckets the live read returns + ``stub: True`` + an
+    ``error`` field naming the cause. The panel's stub banner
+    activates on ``stub`` truthiness; an ``error`` line is rendered
+    underneath to distinguish "no provider yet" from cold-stub.
     """
     return {
         "in_progress": [
@@ -3299,6 +3340,7 @@ async def get_kora_assigned_sea_tickets():
             },
         ],
         "stub": True,
+        "error": error,
     }
 
 
