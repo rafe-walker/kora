@@ -298,6 +298,11 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Operator-facing display identity (KR-P2-B). Used by adapters in
+    # thread seeds, email subjects, and similar identity strings.
+    # Defaults to "Kora"; override per-platform for multi-persona setups.
+    display_name: str = "Kora"
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -307,6 +312,7 @@ class PlatformConfig:
             "extra": self.extra,
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
+            "display_name": self.display_name,
         }
         if self.token:
             result["token"] = self.token
@@ -330,6 +336,15 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # display_name (KR-P2-B): accept top-level or extra: form so YAML
+        # ``slack: display_name: Kora-Alpha`` works without a separate
+        # platforms: block (mirrors gateway_restart_notification handling).
+        _display_name = data.get("display_name")
+        if _display_name is None:
+            _display_name = data.get("extra", {}).get("display_name")
+        if not isinstance(_display_name, str) or not _display_name.strip():
+            _display_name = "Kora"
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -337,6 +352,7 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            display_name=_display_name,
             extra=data.get("extra", {}),
         )
 
