@@ -1035,6 +1035,27 @@ def init_agent(
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
                     _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+
+                    # KR-P2-I-integration ST3: wire the operational-state
+                    # holder + emit listener once the IsoKron provider is
+                    # live. The helper is fail-soft — any failure here logs
+                    # a [kora.operational_state.wire_in] warning but does
+                    # not abort boot.
+                    _isokron_provider = agent._memory_manager.get_provider(
+                        "isokron"
+                    )
+                    if _isokron_provider is not None:
+                        try:
+                            from agent.operational_state_wire import (
+                                wire_operational_state,
+                            )
+
+                            wire_operational_state(_isokron_provider)
+                        except Exception as _ose:  # pragma: no cover — defensive
+                            _ra().logger.warning(
+                                "operational-state wire-in import failed: %s",
+                                _ose,
+                            )
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None
