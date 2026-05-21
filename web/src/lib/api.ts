@@ -63,6 +63,8 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getOperationalState: () =>
+    fetchJSON<OperationalStateResponse>("/api/operational-state"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -902,4 +904,48 @@ export interface GatewayPlatformIdentity {
   supported: boolean;
   token_status: "configured" | "missing" | "env_referenced";
   extra_keys: string[];
+}
+
+// Operational state (KR-P2-OPS-PANEL). Enum values pinned to R4.1 §9.1
+// and must match the Python OperationalState enum landed by CC#1's
+// KR-P2-I-skeleton bucket.
+export type PrimaryState =
+  | "booting"
+  | "ready"
+  | "active"
+  | "paused"
+  | "stopped";
+
+export type DegradationReason =
+  | "cost"
+  | "auth"
+  | "dispatch"
+  | "substrate"
+  | "migration"
+  | "operator"
+  | "token_expiring"
+  | "retry_ceiling";
+
+export type ClaimPermission = "none" | "critical_only" | "normal";
+
+export interface OperationalStateTransition {
+  timestamp: string;
+  from_state: PrimaryState;
+  to_state: PrimaryState;
+  trigger: string;
+}
+
+export interface ValidNextState {
+  to_state: PrimaryState;
+  trigger: string;
+}
+
+export interface OperationalStateResponse {
+  primary_state: PrimaryState;
+  claim_permission: ClaimPermission;
+  degradation_reasons: DegradationReason[];
+  is_degraded: boolean;
+  transition_history: OperationalStateTransition[];
+  valid_next_states: ValidNextState[];
+  stub: boolean;
 }
