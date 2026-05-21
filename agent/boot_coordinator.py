@@ -208,6 +208,14 @@ async def run_boot_sequence(
         on_retry_attempt=None if diagnostic_mode else _on_retry_attempt,
     )
 
+    # KR-P2-CLEANUP ST4: record start time so the panel's
+    # "current boot" + "history" entries can render elapsed_ms.
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    _boot_id = f"boot_{_uuid.uuid4().hex[:8]}"
+    _started_at = _dt.now(_tz.utc)
+
     results = await runner.run_all()
 
     failed = _first_failed(results)
@@ -217,11 +225,15 @@ async def run_boot_sequence(
         # for the summary — diagnostic doesn't need to distinguish
         # the PAUSED route (the gate's side-effects didn't fire
         # because diagnostic mode bypasses them at the gate level).
-        return BootSummary(
+        diag_summary = BootSummary(
             result=BootResult.STOPPED if failed else BootResult.READY,
             gate_results=results,
             failed_gate=failed,
         )
+        # KR-P2-CLEANUP ST4: record even diagnostic runs so the panel
+        # surfaces `kora boot --check-only` invocations as history.
+        _record_boot_history(_boot_id, _started_at, diag_summary)
+        return diag_summary
 
     # Production mode: transition holder + emit chain event.
     assert holder is not None  # guarded above
@@ -252,11 +264,13 @@ async def run_boot_sequence(
             memory_provider=memory_provider,
             kora_actor_uuid=context.kora_actor_uuid,
         )
-        return BootSummary(
+        ready_summary = BootSummary(
             result=BootResult.READY,
             gate_results=results,
             failed_gate=None,
         )
+        _record_boot_history(_boot_id, _started_at, ready_summary)
+        return ready_summary
 
     # INVARIANT_PAUSE special-case: the gate itself transitioned the
     # holder to PAUSED + emitted the dr-specific chain event. The
@@ -281,11 +295,45 @@ async def run_boot_sequence(
     await _emit_boot_event(
         memory_provider, BOOT_FAILED_EVENT, results, failed
     )
-    return BootSummary(
+    failed_summary = BootSummary(
         result=BootResult.STOPPED,
         gate_results=results,
         failed_gate=failed,
     )
+    _record_boot_history(_boot_id, _started_at, failed_summary)
+    return failed_summary
+
+
+def _record_boot_history(
+    boot_id: str, started_at: "datetime", summary: BootSummary
+) -> None:
+    """KR-P2-CLEANUP ST4: append the completed boot to BootGateRunner's
+    in-memory history ring.
+
+    Fail-soft — a recording error must not break the boot path. If the
+    history module isn't importable (test contexts using partial
+    imports), the boot continues and only the panel observability
+    degrades.
+    """
+    try:
+        from agent.boot_gates import BootHistoryEntry, BootGateRunner
+        from datetime import datetime as _dt, timezone as _tz
+
+        BootGateRunner.record(
+            BootHistoryEntry(
+                boot_id=boot_id,
+                started_at=started_at,
+                completed_at=_dt.now(_tz.utc),
+                summary=summary,
+            )
+        )
+    except Exception:  # pragma: no cover — defensive against import order
+        logger.warning(
+            "[boot_coordinator] could not record boot history entry "
+            "for boot_id=%s; panel /api/boot-status may show stale data",
+            boot_id,
+            exc_info=True,
+        )
 
 
 def _first_failed(results: list[GateResult]) -> Optional[GateResult]:
