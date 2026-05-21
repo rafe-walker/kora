@@ -77,6 +77,8 @@ export const api = {
   getCostState: () => fetchJSON<CostStateResponse>("/api/cost-state"),
   getCapabilities: () =>
     fetchJSON<CapabilitiesResponse>("/api/capabilities"),
+  getHealthRollup: () =>
+    fetchJSON<HealthRollupResponse>("/api/health-rollup"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1186,4 +1188,39 @@ export interface CapabilitiesResponse {
   total_tools: number;
   total_caps: number;
   unmapped_count: number;
+}
+
+// Health rollup (KR-P2-HEALTH-PANEL). R4.1 §9.7 — distinguish overall /
+// control-plane / worker so operators can tell "intentionally stopped"
+// from "outage" at a glance. Subsignal status pins per-axis freshness
+// against R4.1's thresholds.
+export type HealthStatus = "healthy" | "degraded" | "stopped" | "outage";
+export type SubsignalStatus = "fresh" | "stale" | "missing" | "degraded";
+
+// Subsignal is a union shape — different subsignals carry different
+// fields (e.g. last_successful_write has elapsed_seconds; auth_validity
+// has days_remaining). Keeping it as an open interface with optional
+// fields lets the FE switch on subsignal key without coercing types.
+export interface Subsignal {
+  status: SubsignalStatus;
+  value_at?: string;
+  value?: string | number;
+  value_pct?: number;
+  threshold_seconds?: number;
+  elapsed_seconds?: number;
+  threshold_pct?: number;
+  threshold_days?: number;
+  days_remaining?: number;
+  expires_at?: string;
+  claim_id?: string;
+  rung?: string;
+}
+
+export interface HealthRollupResponse {
+  overall: HealthStatus;
+  control_plane: HealthStatus;
+  worker: HealthStatus;
+  stopped_reason: string | null;
+  subsignals: Record<string, Subsignal>;
+  stub: boolean;
 }

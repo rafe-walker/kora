@@ -3702,6 +3702,96 @@ async def get_capabilities():
 
 
 # ---------------------------------------------------------------------------
+# Health rollup — R4.1 §9.7 (KR-P2-HEALTH-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 returns a hardcoded all-fresh stub so the admin panel can ship
+# before KR-P2-L wires the runtime ``kora.health.probe`` emitter +
+# subsignal collectors. Flips to real data via the future
+# HealthRollupHolder.current() accessor — page is unchanged.
+#
+# Read-only by design. Alerting integration lives cockpit-side (the
+# IsoKron-team's lane); this is observation-only.
+#
+# Top-level enum per R4.1 §9.7:
+#   healthy | degraded | stopped | outage
+# Per-subsignal status:
+#   fresh | stale | missing | degraded
+# stopped_reason: non-null only when overall ∈ {stopped, outage} — the
+# distinction lets operators tell "intentionally stopped" apart from
+# "outage" without guessing.
+#
+# P6 surface (R4.1 §9.7): the frontend renders a red top-of-page banner
+# whenever ``escalation_watcher_liveness.status == "stale"`` so the
+# operator knows control-plane escalation is unavailable and they must
+# use manual L4. The endpoint just surfaces the subsignal honestly; the
+# banner is FE-rendered.
+
+
+@app.get("/api/health-rollup")
+async def get_health_rollup():
+    """Return Kora's health rollup with 8 R4.1 §9.7 subsignals.
+
+    v1 stub. Replace body with ``HealthRollupHolder.current()`` projection
+    once KR-P2-L lands.
+    """
+    return {
+        "overall": "healthy",
+        "control_plane": "healthy",
+        "worker": "healthy",
+        "stopped_reason": None,
+        "subsignals": {
+            "last_successful_write": {
+                "status": "fresh",
+                "value_at": "2026-05-21T22:30:00Z",
+                "threshold_seconds": 300,
+                "elapsed_seconds": 45,
+            },
+            "claim_state": {
+                "status": "fresh",
+                "value": "active",
+                "claim_id": "stub_claim_001",
+            },
+            "credit_burn": {
+                "status": "fresh",
+                "value_pct": 43.7,
+                "threshold_pct": 90,
+                "rung": "warn_75",
+            },
+            "breaker_state": {
+                "status": "fresh",
+                "value": "closed",
+            },
+            "auth_validity_window": {
+                "status": "fresh",
+                "expires_at": "2027-04-18T00:00:00Z",
+                "threshold_days": 30,
+                "days_remaining": 332,
+            },
+            "dispatch_reachable": {
+                "status": "fresh",
+                "value_at": "2026-05-21T22:30:00Z",
+                "threshold_seconds": 60,
+                "elapsed_seconds": 5,
+            },
+            "last_heartbeat": {
+                "status": "fresh",
+                "value_at": "2026-05-21T22:29:58Z",
+                "threshold_seconds": 90,
+                "elapsed_seconds": 7,
+            },
+            "escalation_watcher_liveness": {
+                "status": "fresh",
+                "value_at": "2026-05-21T22:29:55Z",
+                "threshold_seconds": 15,
+                "elapsed_seconds": 10,
+            },
+        },
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
