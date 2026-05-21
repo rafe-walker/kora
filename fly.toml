@@ -1,0 +1,37 @@
+app = "kora-runtime"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  KORA_DEPLOY_ENV = "prd"
+  # SLACK_GATEWAY_ENABLED defaults to "true" inside docker/entrypoint.sh;
+  # override per-app via `flyctl secrets set SLACK_GATEWAY_ENABLED=false`
+  # if Slack is not provisioned for this environment.
+
+[mounts]
+  source = "kora_state"
+  destination = "/home/hermes/.kora"
+  initial_size = "5gb"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 9119
+  # No public ports per R2 §5 — the admin web UI is operator-only via
+  # `flyctl proxy 9119:9119 -a kora-runtime`. Control-plane traffic is
+  # substrate-mediated; this service block exists only to declare the
+  # internal port so the TCP healthcheck can reach the dashboard.
+
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+
+[deploy]
+  release_command = "hermes doctor"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory_mb = 4096
