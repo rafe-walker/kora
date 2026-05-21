@@ -12,6 +12,7 @@ Covers:
   skipped; the literal is inline at the mautrix.Client.login call site
   with no instance attribute to inspect — adapter restructuring is
   out-of-scope per spec §6).
+- DingTalk markdown notification title (send() webhook payload path)
 """
 
 import os
@@ -465,3 +466,65 @@ class TestMatrixDeviceNameIdentity:
     )
     def test_matrix_device_name_uses_display_name(self):
         pass
+
+
+# ---------------------------------------------------------------------------
+# DingTalk (markdown webhook payload title)
+# ---------------------------------------------------------------------------
+
+def _build_dingtalk_adapter(display_name: str):
+    from gateway.platforms.dingtalk import DingTalkAdapter
+
+    adapter = DingTalkAdapter(
+        PlatformConfig(enabled=True, display_name=display_name)
+    )
+    # Skip the AI-Card path so send() falls through to the webhook branch
+    # that builds the markdown payload (line 886-889 pre-edit).
+    adapter._card_template_id = None
+    adapter._card_sdk = None
+    # Capture posts via a mocked httpx.AsyncClient.
+    captured: list = []
+
+    class _Resp:
+        status_code = 200
+
+    async def _post(url, *, json=None, timeout=None):
+        captured.append({"url": url, "json": json, "timeout": timeout})
+        return _Resp()
+
+    adapter._http_client = SimpleNamespace(post=_post)
+    return adapter, captured
+
+
+class TestDingTalkMarkdownTitleIdentity:
+    """The DingTalk markdown notification title is structurally identical
+    to the Home Assistant persistent_notification title — same fix shape,
+    same risk profile."""
+
+    @pytest.mark.asyncio
+    async def test_default_display_name_renders_kora_title(self):
+        import asyncio  # noqa: F401 — keep parallel structure with other tests
+
+        adapter, captured = _build_dingtalk_adapter("Kora")
+
+        result = await adapter.send(
+            "chat-1", "hello", metadata={"session_webhook": "http://dingtalk.test/hook"}
+        )
+
+        assert result.success, f"expected success; got {result.error!r}"
+        assert captured, "expected webhook POST to fire"
+        payload = captured[0]["json"]
+        assert payload["markdown"]["title"] == "Kora"
+        assert "Hermes" not in payload["markdown"]["title"]
+
+    @pytest.mark.asyncio
+    async def test_overridden_display_name_propagates_into_title(self):
+        adapter, captured = _build_dingtalk_adapter("testkoraalpha")
+
+        await adapter.send(
+            "chat-1", "hello", metadata={"session_webhook": "http://dingtalk.test/hook"}
+        )
+
+        payload = captured[0]["json"]
+        assert payload["markdown"]["title"] == "testkoraalpha"
+        assert "Hermes" not in payload["markdown"]["title"]

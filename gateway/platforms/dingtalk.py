@@ -885,7 +885,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
+            "markdown": {"title": f"{self.config.display_name}", "text": normalized},
         }
 
         try:
