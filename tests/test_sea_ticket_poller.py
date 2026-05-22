@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import threading
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -78,8 +79,22 @@ class _FakeConn:
 
 
 class _FakeConnection:
-    """IsoKronConnection stub. _submit_async runs the coro on the
-    current loop and wraps the result in a concurrent.futures.Future."""
+    """IsoKronConnection stub. ``_submit_async`` mirrors production
+    semantics: runs ``coro`` on a fresh worker thread + loop, returns
+    a ``concurrent.futures.Future`` the caller bridges via
+    ``asyncio.wrap_future``.
+
+    The prior implementation tried
+    ``asyncio.get_event_loop().run_until_complete(coro)`` which
+    raised ``RuntimeError: This event loop is already running`` when
+    invoked from inside an ``@pytest.mark.asyncio`` test (the test's
+    own loop is already running). Production
+    ``IsoKronConnection._submit_async`` uses
+    ``asyncio.run_coroutine_threadsafe`` against a separate worker
+    loop and never hits the nested-loop case; the fix here aligns
+    the fake's lifecycle with production's threading model so the
+    test's caller-loop and the coro's runner-loop are independent.
+    """
 
     def __init__(self, pool: _FakePool) -> None:
         self._pool = pool
@@ -88,9 +103,18 @@ class _FakeConnection:
         return self._pool
 
     def _submit_async(self, coro):
-        result = asyncio.get_event_loop().run_until_complete(coro)
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        fut.set_result(result)
+
+        def _runner():
+            new_loop = asyncio.new_event_loop()
+            try:
+                fut.set_result(new_loop.run_until_complete(coro))
+            except BaseException as exc:
+                fut.set_exception(exc)
+            finally:
+                new_loop.close()
+
+        threading.Thread(target=_runner, daemon=True).start()
         return fut
 
 
