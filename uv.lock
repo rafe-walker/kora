@@ -179,6 +179,15 @@ wheels = [
 ]
 
 [[package]]
+name = "aiosmtplib"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/d1/0ee117510ae0513f945ff3ee42edee20a3f236b2020c954f12ccd0931f95/aiosmtplib-4.0.1.tar.gz", hash = "sha256:10d426afe923edeb28ce0f007da0ee4060e9e12dd3890c162b22e1958da35761", size = 60797, upload-time = "2025-04-26T14:32:06.933Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/f9/44fb8e33f2624fbcd40adee97143f6324123d80818f939f90a80ef5bade2/aiosmtplib-4.0.1-py3-none-any.whl", hash = "sha256:5f56ad99fa0653f32e80636f917dc0251489917d6a363a9b58a586e575d21f28", size = 27031, upload-time = "2025-04-26T14:32:05.505Z" },
+]
+
+[[package]]
 name = "aiosqlite"
 version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2039,6 +2048,7 @@ name = "kora"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosmtplib" },
     { name = "croniter" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
@@ -2053,6 +2063,7 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "ruamel-yaml" },
+    { name = "slowapi" },
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
@@ -2064,6 +2075,7 @@ acp = [
 all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
+    { name = "anthropic" },
     { name = "debugpy" },
     { name = "fastapi" },
     { name = "google-api-python-client" },
@@ -2201,6 +2213,7 @@ termux = [
 termux-all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
+    { name = "anthropic" },
     { name = "fastapi" },
     { name = "google-api-python-client" },
     { name = "google-auth-httplib2" },
@@ -2225,6 +2238,7 @@ voice = [
     { name = "sounddevice" },
 ]
 web = [
+    { name = "anthropic" },
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -2240,9 +2254,11 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'sms'", specifier = "==3.13.3" },
     { name = "aiohttp-socks", marker = "extra == 'matrix'", specifier = "==0.11.0" },
+    { name = "aiosmtplib", specifier = "==4.0.1" },
     { name = "aiosqlite", marker = "extra == 'matrix'", specifier = "==0.22.1" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.86.0" },
+    { name = "anthropic", marker = "extra == 'web'", specifier = "==0.86.0" },
     { name = "asyncpg", marker = "extra == 'isokron'", specifier = "==0.31.0" },
     { name = "asyncpg", marker = "extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
@@ -2329,6 +2345,7 @@ requires-dist = [
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.27.0" },
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.40.1" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = "==3.40.1" },
+    { name = "slowapi", specifier = "==0.1.9" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "tenacity", specifier = "==9.1.4" },
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
@@ -2352,6 +2369,20 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bf/ff/2ece5d735ebfa2af600a53176f2636ae47af2bf934e08effab64f0d1e047/lark_oapi-1.5.3-py3-none-any.whl", hash = "sha256:fda6b32bb38d21b6bdaae94979c600b94c7c521e985adade63a54e4b3e20cc36", size = 6993016, upload-time = "2026-01-27T08:21:49.307Z" },
+]
+
+[[package]]
+name = "limits"
+version = "5.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "deprecated" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/71/69/826a5d1f45426c68d8f6539f8d275c0e4fcaa57f0c017ec3100986558a41/limits-5.8.0.tar.gz", hash = "sha256:c9e0d74aed837e8f6f50d1fcebcf5fd8130957287206bc3799adaee5092655da", size = 226104, upload-time = "2026-02-05T07:17:35.859Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/98/cb5ca20618d205a09d5bec7591fbc4130369c7e6308d9a676a28ff3ab22c/limits-5.8.0-py3-none-any.whl", hash = "sha256:ae1b008a43eb43073c3c579398bd4eb4c795de60952532dc24720ab45e1ac6b8", size = 60954, upload-time = "2026-02-05T07:17:34.425Z" },
 ]
 
 [[package]]
@@ -4115,6 +4146,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3a/18/784859b33a3f9c8cdaa1eda4115eb9fe72a0a37304718887d12991eeb2fd/slack_sdk-3.40.1.tar.gz", hash = "sha256:a215333bc251bc90abf5f5110899497bf61a3b5184b6d9ee35d73ebf09ec3fd0", size = 250379, upload-time = "2026-02-18T22:11:01.819Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6e/e1/bb81f93c9f403e3b573c429dd4838ec9b44e4ef35f3b0759eb49557ab6e3/slack_sdk-3.40.1-py2.py3-none-any.whl", hash = "sha256:cd8902252979aa248092b0d77f3a9ea3cc605bc5d53663ad728e892e26e14a65", size = 313687, upload-time = "2026-02-18T22:11:00.027Z" },
+]
+
+[[package]]
+name = "slowapi"
+version = "0.1.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "limits" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a0/99/adfc7f94ca024736f061257d39118e1542bade7a52e86415a4c4ae92d8ff/slowapi-0.1.9.tar.gz", hash = "sha256:639192d0f1ca01b1c6d95bf6c71d794c3a9ee189855337b4821f7f457dddad77", size = 14028, upload-time = "2024-02-05T12:11:52.13Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2b/bb/f71c4b7d7e7eb3fc1e8c0458a8979b912f40b58002b9fbf37729b8cb464b/slowapi-0.1.9-py3-none-any.whl", hash = "sha256:cfad116cfb84ad9d763ee155c1e5c5cbf00b0d47399a769b227865f5df576e36", size = 14670, upload-time = "2024-02-05T12:11:50.898Z" },
 ]
 
 [[package]]
