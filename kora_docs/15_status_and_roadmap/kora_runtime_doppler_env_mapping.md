@@ -1,0 +1,163 @@
+# Kora runtime — Doppler env mapping
+
+**Purpose**: single source of truth for which Doppler project owns
+which secret in the kora-runtime deploy. Operator reads this BEFORE
+the first `flyctl deploy` (see companion `kora_runtime_first_deploy_runbook.md`)
+and at every secret rotation.
+
+**Last updated**: 2026-05-22 (KR-D-DEPLOY ST2).
+
+The 3-project Doppler split is mandated by R2 §5 + R4.1 §3: credential
+blast-radius isolation. One project compromise must NOT yield substrate
+access AND Anthropic auth AND messaging-platform tokens at once.
+
+---
+
+## The three Doppler projects
+
+| Project | Role | Rotation cadence | Owner-of-record |
+|---|---|---|---|
+| `kora-runtime-substrate` | Substrate auth + DB connectivity | wsk_* quarterly (current expires 2026-08-18) | substrate-team / IsoKron PM |
+| `kora-runtime-anthropic` | Anthropic inference credentials | OAuth ~yearly | Joshua (operator) |
+| `kora-runtime-gateways` | Inbound/outbound messaging tokens | Per-platform (typically yearly) | Joshua (operator) |
+
+Each project has three configs: `dev` / `stg` / `prd`. The Doppler config
+name matches the `KORA_DEPLOY_ENV` value Kora is booted with — so
+`kora-runtime-staging` Fly app uses `-c stg` across all three projects;
+production `kora-runtime` Fly app uses `-c prd`.
+
+---
+
+## Secret-by-project table
+
+### `kora-runtime-substrate`
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `KORA_SERVICE_TOKEN` | Boot gate 6 (wsk_* validity) + every substrate write | wsk_* token minted by substrate-team. Current expires 2026-08-18 per `kora_docs/15_status_and_roadmap/token_rotation_runbook.md`. | `wsk_<64-hex>` |
+| `KORA_ISOKRON_DSN` | Substrate Postgres connection | Standard PG DSN; password embedded. Reachable only over flycast. | `postgresql://kora_runtime:<pw>@<host>:5432/isokron?sslmode=require` |
+| `KORA_DEFAULT_WORKSPACE_ID` | Workspace pin for all SQL `SET LOCAL` calls | Set once per deploy environment; never rotated. | `<UUID>` |
+| `KORA_SEA_MCP_ENDPOINT` | Substrate-side MCP endpoint (kronicle-mcp via flycast) | Internal-only Fly DNS name; `http://kronicle-mcp.internal:8080`. | `http://kronicle-mcp.internal:8080` |
+
+### `kora-runtime-anthropic`
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | Boot gate 1 (Claude auth) + every inference call | Issued via `claude setup-token` on operator workstation. **Distinct from** `ANTHROPIC_API_KEY` — gate 2 fail-CLOSED rejects boot if `ANTHROPIC_API_KEY` is present (R4.1 §9.2). | `sk-ant-oat-...` |
+
+**Anti-secret** (Kora REFUSES to boot if these are set anywhere):
+
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_AUTH_TOKEN`
+
+If a `kora-runtime-anthropic` Doppler config contains either, Kora's
+boot gate 2 fires + the deploy aborts. Operator MUST keep these out of
+the project — never even as a stale fallback.
+
+### `kora-runtime-gateways`
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `KORA_MCP_BEARER_TOKEN` | Daemon MCP listener (KR-D-DAEMON ST2) | Bearer token for `/mcp` HTTP transport. Listener fails-CLOSED if unset. Mint as long random hex (`openssl rand -hex 32`). Rotate quarterly alongside `wsk_*`. | 64-hex |
+| `KORA_SLACK_SIGNING_SECRET` | Daemon webhook listener — Slack route (KR-D-DAEMON ST3) | From Slack app Settings → Basic Information → Signing Secret. **NEW for Phase 2** — consumed by the webhook plane on public port 9118; HMAC is the auth boundary. | 32-hex |
+| `KORA_PUREMAIL_HMAC_SECRET` | Daemon webhook listener — email route (KR-D-DAEMON ST3) | **Deferred until inbound-email wiring** (Feature 3 / KR-FEAT-EMAIL). Mark as TBD in Doppler until Purelymail integration; the daemon will fail Slack-only smoke without it (the email route always rejects 401 if the secret is unset). | (TBD per Purelymail) |
+| `SLACK_APP_TOKEN` | Legacy Slack Bolt gateway (`hermes gateway slack`) | Optional. Only required if `SLACK_GATEWAY_ENABLED=true` (the default). When `false`, leave unset. | `xapp-<token>` |
+| `SLACK_BOT_TOKEN` | Legacy Slack Bolt gateway | Same gating as SLACK_APP_TOKEN. | `xoxb-<token>` |
+| `SLACK_SIGNING_SECRET` | Legacy Slack Bolt gateway | Same gating as SLACK_APP_TOKEN. **Same value as `KORA_SLACK_SIGNING_SECRET`** — both come from the same Slack app's Basic Information page; the env-var split exists because the legacy gateway and the new webhook listener consume the secret via different code paths. Operator sets both to the same value until a follow-on refactor consolidates them. | Same as `KORA_SLACK_SIGNING_SECRET` |
+| `SLACK_GATEWAY_ENABLED` | Toggle for the legacy Bolt gateway | Defaults to `true` in `docker/entrypoint.sh`. Set to `false` if the legacy gateway should stay dormant (e.g. running webhook-only on the daemon). | `true` / `false` |
+
+---
+
+## fly.toml `[env]` values (NOT in Doppler)
+
+These are committed in `fly.toml` and applied at every deploy. Doppler
+does not own them.
+
+| Var | Value | Why |
+|---|---|---|
+| `KORA_DEPLOY_ENV` | `prd` (prod), `stg` (staging) | Drives the Doppler `-c <config>` argument in `docker/dispatch.sh`. |
+| `HERMES_HOME` | `/home/hermes/.kora` | Reconciles to the Fly volume mount destination (KR-D-DEPLOY ST1 Option A). |
+| `KORA_WEB_HOST` | `0.0.0.0` | Daemon's web listener binds the container interface so Fly's internal proxy can reach 9119. Public exposure is governed by `[[services]]` blocks. |
+| `KORA_WEB_PORT` | `9119` | Internal admin UI + MCP transport. |
+
+---
+
+## fly.toml `[[services]]` exposure
+
+| Port | Exposure | Owner-listener | Notes |
+|---|---|---|---|
+| 9119 | INTERNAL ONLY (no `[[services.ports]]`) | `web` + `mcp` listeners on shared admin FastAPI app | Reached via `flyctl proxy 9119:9119 -a kora-runtime`. Per R2 §5 control-plane policy. |
+| 9118 | PUBLIC — 443 (TLS) + 80 (force_https) | `webhooks` listener on separate FastAPI app | Per R2 §5 amendment (`kora_docs/00_canonical_current_state/r2_amendments.md`). Only `/api/webhooks/slack/events`, `/api/webhooks/email/inbound`, `/healthz` routes. HMAC is the auth boundary. |
+
+---
+
+## Optional / deploy-tunable env vars
+
+| Var | Default | When to set |
+|---|---|---|
+| `KORA_WEBHOOK_RATE_LIMIT` | `60/minute` | Tighten via Doppler-gateways if dead-letter rate spikes suggest a flood. slowapi syntax. |
+| `KORA_HEALTH_PROBE_CADENCE_SECONDS` | `300` | Lower if dashboard freshness suffers under default 5min cadence. |
+| `KORA_LOG_LEVEL` | `INFO` | `DEBUG` for first-deploy investigation; revert to `INFO` afterwards. |
+| `KORA_DEV` | unset | Set to `1` ONLY for local-dev `kora daemon` invocation (bypasses Doppler wrap + lets `KORA_DEPLOY_ENV` default to `dev`). Never set in Fly. |
+
+---
+
+## Validation — operator pre-deploy checklist
+
+Run this before every first-deploy or rotation to confirm all required
+secrets are present in each Doppler project. Substitute the config
+name (`prd` / `stg`) for the deploy in question:
+
+```sh
+CONFIG=stg   # or prd
+
+for SECRET in KORA_SERVICE_TOKEN KORA_ISOKRON_DSN KORA_DEFAULT_WORKSPACE_ID KORA_SEA_MCP_ENDPOINT; do
+  doppler secrets get "$SECRET" -p kora-runtime-substrate -c "$CONFIG" --plain >/dev/null \
+    && echo "OK   substrate:$SECRET" \
+    || echo "MISS substrate:$SECRET"
+done
+
+doppler secrets get CLAUDE_CODE_OAUTH_TOKEN -p kora-runtime-anthropic -c "$CONFIG" --plain >/dev/null \
+  && echo "OK   anthropic:CLAUDE_CODE_OAUTH_TOKEN" \
+  || echo "MISS anthropic:CLAUDE_CODE_OAUTH_TOKEN"
+
+for SECRET in KORA_MCP_BEARER_TOKEN KORA_SLACK_SIGNING_SECRET SLACK_APP_TOKEN SLACK_BOT_TOKEN SLACK_SIGNING_SECRET; do
+  doppler secrets get "$SECRET" -p kora-runtime-gateways -c "$CONFIG" --plain >/dev/null \
+    && echo "OK   gateways:$SECRET" \
+    || echo "MISS gateways:$SECRET"
+done
+
+# Anti-secret check — these MUST be absent.
+for ANTI in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+  doppler secrets get "$ANTI" -p kora-runtime-anthropic -c "$CONFIG" --plain 2>/dev/null \
+    && echo "FAIL anti-secret PRESENT: anthropic:$ANTI — remove before deploy" \
+    || echo "OK   anti-secret absent: anthropic:$ANTI"
+done
+```
+
+Expected output: every line begins with `OK`. Any `MISS` (except
+`KORA_PUREMAIL_HMAC_SECRET` if email is deferred) or any `FAIL` blocks
+the deploy.
+
+---
+
+## Rotation procedure cross-reference
+
+Per-secret rotation procedures (operator-driven):
+
+- `KORA_SERVICE_TOKEN` (wsk_*) + `CLAUDE_CODE_OAUTH_TOKEN` — full procedure in `kora_docs/15_status_and_roadmap/token_rotation_runbook.md` (PR #86). When that runbook is extended to cover the Phase 2 secrets below, this row links to the new sections.
+- `KORA_MCP_BEARER_TOKEN` — quarterly. Mint via `openssl rand -hex 32`; `doppler secrets set` in `kora-runtime-gateways`; redeploy; old token invalidated by Doppler push.
+- `KORA_SLACK_SIGNING_SECRET` + `SLACK_SIGNING_SECRET` — when Slack rotates the signing secret (rare; operator-triggered via Slack app config). Update both env vars to the new value simultaneously.
+- `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` — when re-installing the Slack app or scoping changes. Mint via Slack app config.
+- `KORA_PUREMAIL_HMAC_SECRET` — TBD; per Purelymail integration. Operator's call when wiring inbound email (Feature 3).
+
+---
+
+## Cross-references
+
+- `docs/deploy-fly-io.md` — R2-era deploy doc; this table SUPERSEDES the env-mapping section in that doc for Phase 2 + later. The R2 doc remains canonical for the Fly volume + apps-create steps.
+- `kora_docs/15_status_and_roadmap/token_rotation_runbook.md` — wsk_* + OAuth rotation procedures.
+- `kora_docs/15_status_and_roadmap/kora_runtime_first_deploy_runbook.md` — first-deploy operator checklist (this doc's companion).
+- `kora_docs/00_canonical_current_state/r2_amendments.md` — Amendment 1 (public webhook port).
+- `fly.toml` — `[env]` declarations + `[[services]]` blocks.
+- `docker/dispatch.sh` — consumes `KORA_DEPLOY_ENV` to select the Doppler `-c` config.
