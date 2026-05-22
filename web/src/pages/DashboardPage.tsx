@@ -12,6 +12,7 @@ import {
   Cable,
   Heart,
   HeartPulse,
+  Inbox,
   Hourglass,
   Info,
   OctagonAlert,
@@ -49,6 +50,8 @@ import type {
   MCPClientsListResponse,
   OperationalStateResponse,
   RunbooksManifest,
+  WebhookEventsResponse,
+  WebhookEventStatus,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -74,6 +77,8 @@ interface DashboardData {
   heartbeat: LoadStatus<HeartbeatServicesResponse>;
   // KR-MCP-3 — installed external MCP clients (stub)
   mcpClients: LoadStatus<MCPClientsListResponse>;
+  // KR-WEBHOOK-EVENTS-PANEL — public-port traffic lens (stub)
+  webhookEvents: LoadStatus<WebhookEventsResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -90,6 +95,7 @@ const INITIAL_DATA: DashboardData = {
   runbooks: { state: "loading" },
   heartbeat: { state: "loading" },
   mcpClients: { state: "loading" },
+  webhookEvents: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -588,6 +594,55 @@ function MCPClientsCardBody({ data }: { data: MCPClientsListResponse }) {
   );
 }
 
+function WebhookEventsCardBody({ data }: { data: WebhookEventsResponse }) {
+  // Counts mirror the panel's stats strip; dashboard surface is more
+  // compressed but the headline + signal pills match what the
+  // operator sees in the full panel.
+  const counts: Record<WebhookEventStatus, number> = {
+    verified: 0,
+    dead_letter: 0,
+    rate_limited: 0,
+    handler_error: 0,
+  };
+  for (const e of data.events) counts[e.status]++;
+  // Bucket §3(c) operator-attention contract: dashboard card border
+  // goes destructive when dead_letter > 5 in 24h. Headline tone
+  // tracks the same trigger so the card visually screams from the
+  // dashboard glance.
+  const deadLetterAlert = counts.dead_letter > 5;
+  const headlineClass = deadLetterAlert
+    ? "text-destructive"
+    : "text-foreground";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {data.total_recent_24h}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          event{data.total_recent_24h === 1 ? "" : "s"} / 24h
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        {counts.verified > 0 && (
+          <Badge tone="success">{counts.verified} verified</Badge>
+        )}
+        {counts.dead_letter > 0 && (
+          <Badge tone="destructive">
+            {counts.dead_letter} dead-letter
+          </Badge>
+        )}
+        {counts.rate_limited > 0 && (
+          <Badge tone="warning">{counts.rate_limited} rate-limited</Badge>
+        )}
+        {counts.handler_error > 0 && (
+          <Badge tone="destructive">
+            {counts.handler_error} handler-error
+          </Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -730,6 +785,8 @@ export default function DashboardPage() {
         loadOne("heartbeat", () => api.getHeartbeatServices()),
         // KR-MCP-3
         loadOne("mcpClients", () => api.getMCPClients()),
+        // KR-WEBHOOK-EVENTS-PANEL
+        loadOne("webhookEvents", () => api.getRecentWebhookEvents()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -761,6 +818,7 @@ export default function DashboardPage() {
     data.runbooks,
     data.heartbeat,
     data.mcpClients,
+    data.webhookEvents,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -982,6 +1040,23 @@ export default function DashboardPage() {
         >
           {data.mcpClients.state === "ready" && (
             <MCPClientsCardBody data={data.mcpClients.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Webhook Events"
+          icon={Inbox}
+          to="/webhook-events"
+          status={data.webhookEvents}
+          stubbed={isStubbed(data.webhookEvents)}
+          onRetry={() =>
+            void loadOne("webhookEvents", () =>
+              api.getRecentWebhookEvents(),
+            )
+          }
+        >
+          {data.webhookEvents.state === "ready" && (
+            <WebhookEventsCardBody data={data.webhookEvents.data} />
           )}
         </DashboardCard>
       </div>

@@ -122,6 +122,8 @@ export const api = {
     fetchJSON<HeartbeatServicesResponse>("/api/heartbeat/services"),
   getMCPClients: () =>
     fetchJSON<MCPClientsListResponse>("/api/mcp/clients/list"),
+  getRecentWebhookEvents: () =>
+    fetchJSON<WebhookEventsResponse>("/api/webhooks/events/recent"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1458,4 +1460,33 @@ export interface MCPClientsListResponse {
   clients: MCPClient[];
   stub: boolean;
   generated_at: string;
+}
+
+// Webhook events lens (KR-WEBHOOK-EVENTS-PANEL).
+// SECURITY CONTRACT: source_ip is OCTET-MASKED on the wire
+// (e.g. "54.203.x.x", never "54.203.99.142"). The TS type is just
+// `string` — the backend enforces the mask shape and a backend
+// regex test asserts it. FE renders source_ip verbatim from the
+// wire; never reconstructs or de-masks.
+export type WebhookEventStatus =
+  | "verified"
+  | "dead_letter"
+  | "rate_limited"
+  | "handler_error";
+
+export interface WebhookEvent {
+  id: string;
+  endpoint: string;
+  received_at: string;
+  status: WebhookEventStatus;
+  source_ip: string; // octet-masked per backend contract
+  event_type: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface WebhookEventsResponse {
+  events: WebhookEvent[];
+  stub: boolean;
+  generated_at: string;
+  total_recent_24h: number;
 }
