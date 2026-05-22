@@ -38,6 +38,7 @@ import {
   Plug,
   PowerSquare,
   Puzzle,
+  Radio,
   RotateCw,
   Scroll,
   Settings,
@@ -85,6 +86,7 @@ import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
 import SeaTicketsPage from "@/pages/SeaTicketsPage";
+import ChainEventsPage from "@/pages/ChainEventsPage";
 import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
@@ -136,6 +138,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/charter": CharterPage,
   "/kora-control": KoraControlPage,
   "/sea-tickets": SeaTicketsPage,
+  "/chain-events": ChainEventsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -224,6 +227,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "seaTickets",
     label: "Sea Tickets",
     icon: Waves,
+  },
+  {
+    path: "/chain-events",
+    labelKey: "chainEvents",
+    label: "Chain Events",
+    icon: Radio,
   },
   {
     path: "/analytics",
