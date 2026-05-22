@@ -50,6 +50,7 @@ import logging
 from typing import Any, Final, Optional
 
 from agent.stop_kora_handler import (
+    STOPKoraAction,
     STOPKoraVerdict,
     evaluate_stop_kora,
 )
@@ -91,7 +92,17 @@ def run_stop_kora_pre_flight(agent: Any) -> Optional[STOPKoraVerdict]:
     timeout regardless.
 
     The function never raises. Reader / provider exceptions are caught
-    locally and surfaced as WARN logs + a no-action verdict.
+    locally and surfaced as WARN logs.
+
+    Fail-CLOSED on substrate read error (KR-P2-FAIL-SAFETIES ST2 fix):
+    if ``get_active_command`` raises, the verdict is
+    ``action=DRAIN_CURRENT_FINISH`` (blocks new tool calls at
+    pre_tool_call context) with ``reason="substrate read failed: ..."``.
+    A no-action verdict on read failure was the pre-fix behavior;
+    per the locked rule
+    ``feedback_fail_closed_by_default_security_infra``, security
+    infrastructure must not silently allow when verification is
+    impossible.
     """
     memory_manager = getattr(agent, "_memory_manager", None)
     if memory_manager is None:
@@ -117,15 +128,26 @@ def run_stop_kora_pre_flight(agent: Any) -> Optional[STOPKoraVerdict]:
             timeout=5.0,
         )
     except Exception as exc:
+        # KR-P2-FAIL-SAFETIES ST2 — fix LEAK identified in §1 audit
+        # (`feedback_fail_closed_by_default_security_infra` locked
+        # rule). Substrate read failure must NOT silently allow tool
+        # execution. Returns a BLOCKING verdict at pre_tool_call
+        # context (DRAIN_CURRENT_FINISH — finish in-flight work,
+        # block new tool calls until substrate is reachable again).
+        #
+        # The previous behavior returned action=None ("treating as
+        # no STOP-KORA active. Tool call proceeds.") which was
+        # silent-allow on a security-infrastructure read failure.
         logger.warning(
             "[kora.control.pre_flight] get_active_command raised: %r — "
-            "treating as no STOP-KORA active. Tool call proceeds.",
+            "cannot verify STOP-KORA state. Blocking tool call "
+            "(DRAIN_CURRENT_FINISH) until substrate read recovers.",
             exc,
         )
         return STOPKoraVerdict(
-            action=None,
+            action=STOPKoraAction.DRAIN_CURRENT_FINISH,
             command_id=None,
-            reason=None,
+            reason=f"substrate read failed: {type(exc).__name__}",
             context="pre_tool_call",
         )
 
