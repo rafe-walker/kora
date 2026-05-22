@@ -211,6 +211,34 @@ class MCPClientPool:
             ) from exc
         return _project_call_result(result)
 
+    async def list_tools(self, prefix: str) -> list[ToolDescriptor]:
+        """Per-endpoint ``list_tools`` with full error surfacing.
+
+        Mirrors :meth:`call_tool`'s lazy-open + per-call timeout +
+        cache-drop-on-error pattern. Returns the projected tool
+        descriptors on success; raises :exc:`MCPCallFailed` on any
+        transport / protocol error.
+
+        Used by callers that need per-endpoint health detail (e.g.
+        KR-MCP-CONSUMPTION ST2's health-check task populating
+        ``last_error`` per prefix). Distinct from
+        :meth:`list_tools_all` which is best-effort across the
+        whole catalog + maps failed endpoints to empty lists.
+        """
+        client = await self._ensure_open(prefix)
+        try:
+            timeout = self._by_name[prefix].timeout_seconds
+            result = await asyncio.wait_for(
+                client.session.list_tools(), timeout=timeout
+            )
+        except Exception as exc:
+            await self._close_one(prefix)
+            raise MCPCallFailed(
+                f"list_tools({prefix}) failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        return _project_tools_result(result)
+
     async def list_tools_all(self) -> dict[str, list[ToolDescriptor]]:
         """Open EVERY configured endpoint + return its tool catalog.
 

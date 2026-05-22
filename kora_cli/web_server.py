@@ -4772,40 +4772,88 @@ async def list_mcp_clients():
     security test in ``test_web_server_mcp_clients.py`` pins this
     invariant.
 
-    Status mapping (current — pre-KR-MCP-CONSUMPTION):
+    Status mapping (post-KR-MCP-CONSUMPTION ST2):
 
-      auth env unset / empty → ``unhealthy``
-      auth env set           → ``configured_but_unconnected``
+      auth env unset / empty                              → ``unhealthy``
+      auth env set, no snapshot OR stale OR not connected → ``configured_but_unconnected``
+      auth env set + fresh snapshot + connected           → ``connected``
 
-    The ``connected`` status surfaces once the daemon's MCP-client-
-    pool listener is wired (deferred per spec §3).
-    ``tools_count`` likewise remains ``null`` until that lands.
+    A snapshot is "stale" when ``last_check_at`` is older than the
+    health-check cadence (``KORA_MCP_HEALTH_CHECK_INTERVAL_SEC``,
+    default 300s). A missed heartbeat cycle surfaces as
+    ``configured_but_unconnected`` instead of falsely reporting
+    ``connected``.
+
+    ST2 additive payload fields:
+      last_check_at  — ISO string when snapshot was taken (or null)
+      last_error     — operator-readable failure string (or null)
+      tools_count    — real value from snapshot (null when not connected)
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
+    from kora_cli.listeners.mcp_consumption import (
+        DEFAULT_HEALTH_CHECK_INTERVAL_SEC,
+        _read_health_check_interval,
+        current_health_snapshots,
+    )
     from kora_mcp.catalog import check_endpoint_health, load_effective_catalog
 
     registry = load_effective_catalog()
+    snapshots = current_health_snapshots()
+    now = datetime.now(timezone.utc)
+    try:
+        cadence_seconds = _read_health_check_interval()
+    except Exception:
+        cadence_seconds = DEFAULT_HEALTH_CHECK_INTERVAL_SEC
+    staleness_threshold = timedelta(seconds=cadence_seconds)
+
     clients: list[dict[str, Any]] = []
     for endpoint in registry.endpoints:
         health = check_endpoint_health(endpoint)
+        snapshot = snapshots.get(endpoint.name)
+
+        # Status derivation per KR-MCP-CONSUMPTION ST2.
+        if not health.healthy:
+            status = "unhealthy"
+            tools_count = None
+            last_check_at = None
+            last_error = None
+        elif snapshot is None:
+            status = "configured_but_unconnected"
+            tools_count = None
+            last_check_at = None
+            last_error = None
+        else:
+            is_stale = (now - snapshot.last_check_at) > staleness_threshold
+            if snapshot.connected and not is_stale:
+                status = "connected"
+            else:
+                status = "configured_but_unconnected"
+            tools_count = (
+                snapshot.tools_count if snapshot.connected else None
+            )
+            last_check_at = snapshot.last_check_at.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            last_error = snapshot.last_error
+
         clients.append({
             "name": endpoint.name,
             "transport": endpoint.transport,
             "endpoint": endpoint.endpoint,
-            "status": (
-                "configured_but_unconnected" if health.healthy else "unhealthy"
-            ),
+            "status": status,
             "auth_token_env": endpoint.auth_token_env or "",
             "auth_token_present": health.auth_env_set
             and endpoint.auth_token_env is not None,
             "allowed_tools_regex": endpoint.allowed_tools_regex,
-            "tools_count": None,
+            "tools_count": tools_count,
+            "last_check_at": last_check_at,
+            "last_error": last_error,
         })
     return {
         "clients": clients,
         "stub": False,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 
