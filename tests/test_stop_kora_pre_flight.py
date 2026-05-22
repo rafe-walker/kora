@@ -10,7 +10,9 @@ Covers:
   - Actor UUID resolution: cached, lookup, failure modes
   - ``build_stop_kora_block_result`` JSON shape (block_kind="stop_kora",
     stop_kora_action discriminator, command_id traceability)
-  - Reader ``get_active_command`` raises → degraded no-action verdict
+  - Reader ``get_active_command`` raises → fail-CLOSED blocking
+    verdict (KR-P2-FAIL-SAFETIES ST2; locked rule:
+    ``feedback_fail_closed_by_default_security_infra``)
 """
 
 from __future__ import annotations
@@ -152,9 +154,20 @@ def test_no_active_command_returns_no_action_verdict():
     assert verdict.context == "pre_tool_call"
 
 
-def test_reader_get_active_command_raising_returns_degraded_no_action():
-    """Defensive: reader exceptions become WARN-logged no-action verdicts;
-    tool call proceeds (substrate hiccup shouldn't block all tools)."""
+def test_reader_get_active_command_raising_returns_fail_closed_blocking_verdict():
+    """KR-P2-FAIL-SAFETIES ST2 — substrate read failure during STOP-KORA
+    pre-flight must return a BLOCKING verdict, not silent-allow.
+
+    Per the locked rule
+    ``feedback_fail_closed_by_default_security_infra``: STOP-KORA is
+    security infrastructure; when we can't verify the operator's
+    STOP state, the runtime must NOT proceed with new tool calls.
+
+    Pre-fix behavior (the LEAK): ``action=None`` + ``is_blocking()
+    is False`` — tool call proceeds.
+    Post-fix behavior: ``action=DRAIN_CURRENT_FINISH`` +
+    ``is_blocking() is True`` — tool call blocked.
+    """
     submit_calls: list = []
 
     def _submit(coro, *, timeout):
@@ -175,8 +188,17 @@ def test_reader_get_active_command_raising_returns_degraded_no_action():
 
     verdict = run_stop_kora_pre_flight(agent)
     assert verdict is not None
-    assert verdict.action is None
-    assert verdict.is_blocking() is False
+    # Fail-CLOSED: blocking verdict on substrate read failure
+    from agent.stop_kora_handler import STOPKoraAction
+
+    assert verdict.action is STOPKoraAction.DRAIN_CURRENT_FINISH
+    assert verdict.is_blocking() is True
+    assert verdict.reason is not None
+    assert "substrate read failed" in verdict.reason
+    # No command_id because no command was successfully read
+    assert verdict.command_id is None
+    # Context is pre_tool_call (the only context this helper handles today)
+    assert verdict.context == "pre_tool_call"
 
 
 # ---------------------------------------------------------------------------
