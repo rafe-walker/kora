@@ -51,6 +51,26 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   return res.json();
 }
 
+/**
+ * Fetch a text response (no JSON parse). Used for endpoints that
+ * return raw text/markdown (e.g. /api/runbooks/{id}/content) where
+ * the FE renders the body directly. Mirrors fetchJSON's session-token
+ * injection + non-2xx-throws behaviour.
+ */
+export async function fetchText(url: string, init?: RequestInit): Promise<string> {
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token) {
+    setSessionHeader(headers, token);
+  }
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status}: ${text}`);
+  }
+  return res.text();
+}
+
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
   const injected = window.__HERMES_SESSION_TOKEN__;
@@ -95,6 +115,9 @@ export const api = {
       `/api/chain-events${q ? "?" + q : ""}`,
     );
   },
+  getRunbooks: () => fetchJSON<RunbooksManifest>("/api/runbooks"),
+  getRunbookContent: (id: string) =>
+    fetchText(`/api/runbooks/${encodeURIComponent(id)}/content`),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1348,4 +1371,22 @@ export interface ChainEventsResponse {
   // Present only on the stub-fallback branch (uninit/failure path),
   // mirroring the DR/COST flips. FE renders a small error banner.
   error?: string;
+}
+
+// Operator runbooks (KR-P2-RUNBOOKS-PANEL).
+// available=false entries surface as "[runbook pending]" placeholders
+// (file documented in the manifest but not yet authored / not vendored
+// into this deploy). The FE conditionally renders the placeholder
+// card vs the live markdown content.
+export interface RunbookEntry {
+  id: string;
+  title: string;
+  path: string;
+  available: boolean;
+  size_bytes: number | null;
+  last_modified: string | null;
+}
+
+export interface RunbooksManifest {
+  runbooks: RunbookEntry[];
 }
