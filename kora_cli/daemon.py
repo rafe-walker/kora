@@ -42,6 +42,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, List, Optional
 
@@ -144,6 +145,10 @@ class DaemonCoordinator:
         # Reason text passed by the first thing to request shutdown.
         # Logged + surfaced to listeners on shutdown.
         self._shutdown_reason: Optional[str] = None
+        # Monotonic timestamp when all listeners finished startup.
+        # ``None`` until startup completes; read by ``get_status()`` for
+        # uptime computation. KR-D-DAEMON ST2 (kora__daemon_status).
+        self._startup_completed_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Registration
@@ -231,6 +236,7 @@ class DaemonCoordinator:
         # in which case shutdown is already requested + we proceed
         # straight to teardown.
         if not startup_failed:
+            self._startup_completed_at = time.monotonic()
             logger.info(
                 "[kora.daemon] all %d listener(s) started; awaiting shutdown",
                 len(self._listeners),
@@ -264,6 +270,50 @@ class DaemonCoordinator:
 
         self._remove_signal_handlers()
         return 1 if startup_failed else 0
+
+    # ------------------------------------------------------------------
+    # Introspection (KR-D-DAEMON ST2 — read by kora__daemon_status MCP tool)
+    # ------------------------------------------------------------------
+
+    def get_status(self) -> dict:
+        """Return a snapshot of coordinator state for the MCP status tool.
+
+        Returns a JSON-serializable dict:
+          - ``state``: ``"booting" | "running" | "shutting_down"``
+          - ``uptime_seconds``: float (monotonic since startup completed),
+            or ``None`` if not yet running
+          - ``shutdown_reason``: str if shutdown requested, else None
+          - ``listeners``: list of per-listener dicts with name +
+            started bool + shutdown_timeout
+        """
+        if self._startup_completed_at is None:
+            state = "booting"
+            uptime = None
+        elif (
+            self._shutdown_event is not None and self._shutdown_event.is_set()
+        ):
+            state = "shutting_down"
+            uptime = time.monotonic() - self._startup_completed_at
+        else:
+            state = "running"
+            uptime = time.monotonic() - self._startup_completed_at
+
+        started_set = set(self._started_idx)
+        listeners = [
+            {
+                "name": l.name,
+                "started": idx in started_set,
+                "shutdown_timeout_seconds": l.shutdown_timeout,
+            }
+            for idx, l in enumerate(self._listeners)
+        ]
+
+        return {
+            "state": state,
+            "uptime_seconds": uptime,
+            "shutdown_reason": self._shutdown_reason,
+            "listeners": listeners,
+        }
 
     # ------------------------------------------------------------------
     # Signal handling
@@ -313,6 +363,27 @@ class DaemonCoordinator:
                 # ValueError: handler wasn't installed (already removed).
                 # RuntimeError: loop closed during shutdown.
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Current-coordinator accessor (KR-D-DAEMON ST2)
+# ---------------------------------------------------------------------------
+
+# Set by ``cmd_daemon`` while the daemon is live; ``None`` otherwise.
+# Listeners (notably the MCP status tool) read this to introspect the
+# coordinator without taking a reference at construction time.
+_CURRENT_COORDINATOR: Optional["DaemonCoordinator"] = None
+
+
+def current_coordinator() -> Optional["DaemonCoordinator"]:
+    """Return the running daemon's coordinator, or ``None``.
+
+    Listeners use this to read coordinator state at request time.
+    Outside of ``cmd_daemon``'s active run, returns ``None`` (so a
+    test that instantiates a coordinator directly does not pollute
+    the module state).
+    """
+    return _CURRENT_COORDINATOR
 
 
 # ---------------------------------------------------------------------------
@@ -394,9 +465,18 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     deploy_env = resolve_deploy_env()
     logger.info("[kora.daemon] starting in deploy_env=%s", deploy_env)
 
+    # Import the listeners package — its sub-modules register their
+    # factories at import time via ``register_daemon_listener``. KR-D-DAEMON
+    # ST2 wires web + MCP + heartbeat. Lazy import to keep ``kora daemon
+    # --help`` fast + to avoid unconditional uvicorn / FastAPI startup in
+    # contexts that only call ``resolve_deploy_env``.
+    import kora_cli.listeners  # noqa: F401 — import side-effect registers listeners
+
     coordinator = DaemonCoordinator()
     _populate_listeners_from_registry(coordinator, args)
 
+    global _CURRENT_COORDINATOR
+    _CURRENT_COORDINATOR = coordinator
     try:
         return asyncio.run(coordinator.run())
     except KeyboardInterrupt:
@@ -404,6 +484,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         # KeyboardInterrupt; treat as graceful shutdown request.
         logger.info("[kora.daemon] KeyboardInterrupt — exiting")
         return 130
+    finally:
+        _CURRENT_COORDINATOR = None
 
 
 def _populate_listeners_from_registry(
