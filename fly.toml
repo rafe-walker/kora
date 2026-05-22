@@ -6,6 +6,16 @@ primary_region = "iad"
 
 [env]
   KORA_DEPLOY_ENV = "prd"
+  # HERMES_HOME reconciliation (KR-D-DEPLOY ST1, Option A): the Dockerfile
+  # bakes HERMES_HOME=/opt/data, but the Fly volume mounts at /home/hermes/.kora
+  # (see [mounts] below). Setting HERMES_HOME here overrides the Docker-layer
+  # default at runtime so the daemon writes state onto the persistent volume.
+  HERMES_HOME = "/home/hermes/.kora"
+  # Daemon listeners bind these inside the container so Fly's internal proxy
+  # can reach them. Public exposure is governed entirely by [[services]]
+  # blocks (port 9119 internal-only, port 9118 public with TLS).
+  KORA_WEB_HOST = "0.0.0.0"
+  KORA_WEB_PORT = "9119"
   # SLACK_GATEWAY_ENABLED defaults to "true" inside docker/entrypoint.sh;
   # override per-app via `flyctl secrets set SLACK_GATEWAY_ENABLED=false`
   # if Slack is not provisioned for this environment.
