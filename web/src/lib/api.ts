@@ -126,6 +126,8 @@ export const api = {
     fetchJSON<WebhookEventsResponse>("/api/webhooks/events/recent"),
   getRecentAgentActivity: () =>
     fetchJSON<AgentActivityResponse>("/api/agent-activity/recent"),
+  getRecentSlackDM: () =>
+    fetchJSON<SlackDMResponse>("/api/slack-dm/recent"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1539,4 +1541,50 @@ export interface AgentActivityResponse {
   generated_at: string;
   total_recent_24h: number;
   by_caller_24h: Record<string, number>;
+}
+
+// Slack DM conversation lens (KR-SLACK-DM-PANEL).
+// SECURITY CONTRACT (4-layer, builds on the established panel pattern):
+//   1. user_id_label is a LABEL (joshua / kora_bot / unknown_user)
+//      — never a raw Slack user ID (U[A-Z0-9]{8,} shape). Backend
+//      tests enforce; FE renders verbatim.
+//   2. channel_id is a STUB label in v1 (D_STUB1, D_STUB2). Real
+//      channel IDs must be hashed/truncated when CC#3 flips real
+//      data (PII-adjacent). Backend tests pin the stub-shape.
+//   3. text content is rendered as PLAIN TEXT — React's default
+//      child escaping defangs any HTML/markdown/script. FE must
+//      never use dangerouslySetInnerHTML for message bodies.
+//   4. Walk-the-whole-payload guard against xoxb-/xoxp-/Slack
+//      signing-secret token shapes — backend test sweeps the
+//      serialized response.
+export type SlackDMDirection = "inbound" | "outbound";
+
+export type SlackDMHandledStatus =
+  | "received"
+  | "sent_ok"
+  | "sent_failed"
+  | "filtered_non_joshua"
+  | "filtered_bot"
+  | "filtered_subtype"
+  | "handler_error"
+  | "dropped_paused";
+
+export interface SlackDMMessage {
+  id: string;
+  direction: SlackDMDirection;
+  timestamp: string;
+  channel_id: string; // STUB label in v1; hashed/truncated in real
+  thread_ts: string | null;
+  user_id_label: string; // label only — never a raw U... Slack ID
+  text: string; // rendered as plain text by the FE
+  handled_status: SlackDMHandledStatus;
+}
+
+export interface SlackDMResponse {
+  messages: SlackDMMessage[];
+  stub: boolean;
+  generated_at: string;
+  total_recent_24h: number;
+  by_direction_24h: Record<SlackDMDirection, number>;
+  by_status_24h: Record<string, number>;
 }

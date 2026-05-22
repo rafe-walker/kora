@@ -34,6 +34,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Menu,
+  MessageCircle,
   MessageSquare,
   OctagonAlert,
   Package,
@@ -87,6 +88,7 @@ import HeartbeatPanel from "@/pages/HeartbeatPanel";
 import MCPClientsPanel from "@/pages/MCPClientsPanel";
 import WebhookEventsPanel from "@/pages/WebhookEventsPanel";
 import AgentActivityPanel from "@/pages/AgentActivityPanel";
+import SlackDMPanel from "@/pages/SlackDMPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -144,6 +146,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/mcp-clients": MCPClientsPanel,
   "/webhook-events": WebhookEventsPanel,
   "/agent-activity": AgentActivityPanel,
+  "/slack-dm": SlackDMPanel,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -217,6 +220,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "agentActivity",
     label: "Agent Activity",
     icon: Workflow,
+  },
+  {
+    path: "/slack-dm",
+    labelKey: "slackDM",
+    label: "Slack DM",
+    icon: MessageCircle,
   },
   {
     path: "/mcp-clients",

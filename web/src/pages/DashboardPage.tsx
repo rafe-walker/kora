@@ -20,6 +20,7 @@ import {
   PowerSquare,
   Radio,
   RefreshCw,
+  MessageCircle,
   Scroll,
   ShieldAlert,
   ShieldCheck,
@@ -55,6 +56,8 @@ import type {
   WebhookEventStatus,
   AgentActivityResponse,
   AgentCallStatus,
+  SlackDMResponse,
+  SlackDMHandledStatus,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -84,6 +87,8 @@ interface DashboardData {
   webhookEvents: LoadStatus<WebhookEventsResponse>;
   // KR-AGENT-ACTIVITY-PANEL — recent agent-driven /mcp calls (stub)
   agentActivity: LoadStatus<AgentActivityResponse>;
+  // KR-SLACK-DM-PANEL — Kora ↔ Joshua DM conversation (stub)
+  slackDM: LoadStatus<SlackDMResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -102,6 +107,7 @@ const INITIAL_DATA: DashboardData = {
   mcpClients: { state: "loading" },
   webhookEvents: { state: "loading" },
   agentActivity: { state: "loading" },
+  slackDM: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -693,6 +699,59 @@ function AgentActivityCardBody({ data }: { data: AgentActivityResponse }) {
   );
 }
 
+function SlackDMCardBody({ data }: { data: SlackDMResponse }) {
+  // Operator-attention contract: headline goes destructive when
+  // filtered_non_joshua > 0 in 24h — someone other than Joshua is
+  // trying to DM the bot, which warrants investigation per spec
+  // §2(c). Other filter states (bot / subtype) are normal Slack
+  // noise and stay muted.
+  const filteredNonJoshua = data.by_status_24h["filtered_non_joshua"] ?? 0;
+  const sentFailed = data.by_status_24h["sent_failed"] ?? 0;
+  const handlerError = data.by_status_24h["handler_error"] ?? 0;
+  const alert = filteredNonJoshua > 0 || sentFailed > 0 || handlerError > 0;
+  const headlineClass = alert ? "text-destructive" : "text-foreground";
+  // Sum of all filtered + error status counts for the "drops" line.
+  const FILTER_OR_ERROR: SlackDMHandledStatus[] = [
+    "filtered_non_joshua",
+    "filtered_bot",
+    "filtered_subtype",
+    "sent_failed",
+    "handler_error",
+    "dropped_paused",
+  ];
+  const dropsTotal = FILTER_OR_ERROR.reduce(
+    (sum, s) => sum + (data.by_status_24h[s] ?? 0),
+    0,
+  );
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {data.total_recent_24h}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          msg{data.total_recent_24h === 1 ? "" : "s"} / 24h
+          {dropsTotal > 0 ? ` · ${dropsTotal} drop${dropsTotal === 1 ? "" : "s"}` : ""}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        <Badge tone="outline">
+          ←{data.by_direction_24h.inbound} →{data.by_direction_24h.outbound}
+        </Badge>
+        {filteredNonJoshua > 0 && (
+          <Badge tone="destructive">
+            {filteredNonJoshua} non-Joshua
+          </Badge>
+        )}
+        {sentFailed > 0 && (
+          <Badge tone="destructive">{sentFailed} send-failed</Badge>
+        )}
+        {handlerError > 0 && (
+          <Badge tone="destructive">{handlerError} handler-error</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -839,6 +898,8 @@ export default function DashboardPage() {
         loadOne("webhookEvents", () => api.getRecentWebhookEvents()),
         // KR-AGENT-ACTIVITY-PANEL
         loadOne("agentActivity", () => api.getRecentAgentActivity()),
+        // KR-SLACK-DM-PANEL
+        loadOne("slackDM", () => api.getRecentSlackDM()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -872,6 +933,7 @@ export default function DashboardPage() {
     data.mcpClients,
     data.webhookEvents,
     data.agentActivity,
+    data.slackDM,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -1127,6 +1189,21 @@ export default function DashboardPage() {
         >
           {data.agentActivity.state === "ready" && (
             <AgentActivityCardBody data={data.agentActivity.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Slack DM ↔ Joshua"
+          icon={MessageCircle}
+          to="/slack-dm"
+          status={data.slackDM}
+          stubbed={isStubbed(data.slackDM)}
+          onRetry={() =>
+            void loadOne("slackDM", () => api.getRecentSlackDM())
+          }
+        >
+          {data.slackDM.state === "ready" && (
+            <SlackDMCardBody data={data.slackDM.data} />
           )}
         </DashboardCard>
       </div>

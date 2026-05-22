@@ -5055,6 +5055,111 @@ async def list_recent_agent_activity():
 
 
 # ---------------------------------------------------------------------------
+# Slack DM conversation lens (KR-SLACK-DM-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing view of Kora ↔ Joshua DM exchanges. Pairs with
+# CC#3's KR-FEAT-SLACK-DM bucket (Feature 5 backend) — ST2 will swap
+# this stub for a real read of ${HERMES_HOME}/slack_dm_log.jsonl.
+#
+# v1 stub: 4 representative messages per bucket §2(a) verbatim,
+# spanning inbound (received) + outbound (sent_ok) + filtered
+# (filtered_non_joshua) so the operator's first look surfaces the
+# filtering posture as well as the happy path.
+#
+# SECURITY (3-layer contract, this iteration's specific risks):
+#   1. user_id_label is a LABEL (joshua / kora_bot / unknown_user)
+#      — never a raw Slack user ID (which has the shape U[A-Z0-9]{8,}).
+#      Backend test pins via regex.
+#   2. channel_id is a STUB label (D_STUB1 / D_STUB2). When CC#3
+#      flips real data the real channel IDs must be hashed or
+#      truncated (PII-adjacent). Backend test pins the stub shape.
+#   3. text content is rendered as plain text by the FE — React's
+#      default child escaping defangs any HTML/markdown/script in
+#      the message body. FE pins via dangerouslySetInnerHTML grep.
+#   4. Walk-the-whole-payload guard catching xoxb-/xoxp-/Slack
+#      signing-secret token shapes anywhere in the response —
+#      backend bug or future log entry that leaks creds gets caught
+#      at the API edge, not in the operator's browser.
+
+
+@app.get("/api/slack-dm/recent")
+async def list_recent_slack_dm():
+    """Return recent Kora ↔ Joshua DM messages for the operator lens.
+
+    v1 stub — pinned shape so CC#3's KR-FEAT-SLACK-DM ST2 can swap
+    the body without touching the FE.
+
+    Per-message fields:
+      id              — opaque id
+      direction       — "inbound" | "outbound"
+      timestamp       — ISO-8601
+      channel_id      — STUB label (D_STUB1 etc) in v1; real IDs
+                        must be hashed/truncated when flipped
+      thread_ts       — Slack thread parent ts (or null)
+      user_id_label   — LABEL only (joshua / kora_bot / unknown_user);
+                        never the raw U... Slack user ID
+      text            — message body (FE renders as plain text)
+      handled_status  — received | sent_ok | sent_failed |
+                        filtered_non_joshua | filtered_bot |
+                        filtered_subtype | handler_error | dropped_paused
+    """
+    return {
+        "messages": [
+            {
+                "id": "stub-1",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:55:13Z",
+                "channel_id": "D_STUB1",
+                "thread_ts": None,
+                "user_id_label": "joshua",
+                "text": "Kora, what's the daemon status?",
+                "handled_status": "received",
+            },
+            {
+                "id": "stub-2",
+                "direction": "outbound",
+                "timestamp": "2026-05-22T17:55:14Z",
+                "channel_id": "D_STUB1",
+                "thread_ts": "1779380123.456",
+                "user_id_label": "kora_bot",
+                "text": "Kora received: Kora, what's the daemon status?",
+                "handled_status": "sent_ok",
+            },
+            {
+                "id": "stub-3",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:52:01Z",
+                "channel_id": "D_STUB1",
+                "thread_ts": None,
+                "user_id_label": "joshua",
+                "text": "hey",
+                "handled_status": "received",
+            },
+            {
+                "id": "stub-4",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:48:22Z",
+                "channel_id": "D_STUB2",
+                "thread_ts": None,
+                "user_id_label": "unknown_user",
+                "text": "[filtered: non-Joshua sender]",
+                "handled_status": "filtered_non_joshua",
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_recent_24h": 12,
+        "by_direction_24h": {"inbound": 7, "outbound": 5},
+        "by_status_24h": {
+            "received": 6,
+            "sent_ok": 5,
+            "filtered_non_joshua": 1,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
