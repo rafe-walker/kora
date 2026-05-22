@@ -4,6 +4,7 @@ import {
   Activity,
   AlertOctagon,
   AlertTriangle,
+  Archive,
   ArrowRight,
   CheckCircle2,
   DollarSign,
@@ -26,7 +27,7 @@ import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
-import { api } from "@/lib/api";
+import { api, diagBundleHref } from "@/lib/api";
 import type {
   BootStatusResponse,
   CostStateResponse,
@@ -507,10 +508,26 @@ export default function DashboardPage() {
 
       <div className="flex items-start justify-between gap-4">
         <H2>Kora — Overview</H2>
-        <Button size="sm" ghost disabled={refreshing} onClick={() => loadAll(true)}>
-          <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
-          Reload
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Diag bundle: standard browser download via <a href download>;
+              no JS fetcher needed. Operator click → zip with all 10
+              panel sources + manifest for substrate-team triage. */}
+          <a
+            href={diagBundleHref()}
+            download
+            title="Download a zip of all panel data sources for substrate-team triage"
+            className="inline-flex"
+          >
+            <Button size="sm" ghost>
+              <Archive className="h-3 w-3" />
+              Diag bundle
+            </Button>
+          </a>
+          <Button size="sm" ghost disabled={refreshing} onClick={() => loadAll(true)}>
+            <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />
+            Reload
+          </Button>
+        </div>
       </div>
 
       {anyStubbed && (

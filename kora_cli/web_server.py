@@ -4515,6 +4515,132 @@ async def get_runbook_content(runbook_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Diagnostic bundle (KR-P2-DIAG-BUNDLE)
+# ---------------------------------------------------------------------------
+#
+# One click → zip containing all 10 panel data sources + manifest.
+# Operator sends to substrate-team for triage instead of screenshotting
+# panel-by-panel.
+#
+# Two firm contracts:
+#   1. EXPLICIT allowlist (_PANEL_SOURCES). New sources don't auto-leak
+#      into the bundle — adding one here is the explicit decision to
+#      include it. Fail-CLOSED per bucket §1.
+#   2. Credential-safe. Every source endpoint already excludes
+#      credentials per its own design (cost-state has a credential-
+#      leak guard test from PR #49; charter never returns tokens;
+#      etc.). The DIAG-BUNDLE test #6 belt+braces grep against the
+#      assembled bundle catches any aggregation accident.
+#
+# Per-endpoint try/except: bundle never fails entirely. A failed
+# endpoint surfaces as an entry in manifest.errors[] with type +
+# message; its JSON file is omitted (operator + substrate-team can
+# tell from the manifest what's missing and why).
+
+
+def _panel_sources() -> Dict[str, Any]:
+    """Explicit (endpoint_name → async fetcher) mapping for the bundle.
+
+    Kept as a function (not module-level dict) so the fetchers resolve
+    to the current bound versions when the dict is built. Names match
+    the bucket §3 documented zip-file names (without ``.json`` suffix).
+
+    Adding a new source requires (a) appending to this dict and (b)
+    confirming the source endpoint's response doesn't include
+    credentials. Bucket §1 fail-CLOSED principle: no auto-discovery.
+    """
+    return {
+        "operational_state": get_operational_state,
+        "boot_status": get_boot_status,
+        "cost_state": get_cost_state,
+        "health_rollup": get_health_rollup,
+        "dr_state": get_dr_state,
+        "sea_tickets_kora_assigned": get_kora_assigned_sea_tickets,
+        "kora_control_observed_state": get_kora_control_observed_state,
+        "capabilities": get_capabilities,
+        "charter": get_charter,
+        # /api/chain-events takes query params; pre-bind the bucket §2
+        # defaults (kora.* prefix, 500 events) into a small wrapper.
+        "chain_events": lambda: get_chain_events(prefix="kora.", limit=500),
+        # /api/runbooks (manifest only; content excluded — runbooks are
+        # static docs, would bloat the bundle).
+        "runbooks_manifest": list_runbooks,
+    }
+
+
+@app.get("/api/diag-bundle")
+async def get_diag_bundle():
+    """Stream a zip aggregating all 10 panel data sources for operator triage.
+
+    Defensive: per-endpoint try/except — bundle never fails entirely.
+    Credential-safe: never includes raw tokens or secrets.
+    """
+    import io as _io
+    import json as _json
+    import zipfile as _zipfile
+    from datetime import datetime, timezone
+
+    from fastapi.responses import StreamingResponse
+
+    now = datetime.now(timezone.utc)
+    bundle_id = f"kora-diag-bundle-{now.strftime('%Y%m%d-%H%M%S')}"
+
+    buf = _io.BytesIO()
+    errors: List[Dict[str, str]] = []
+    included: List[str] = []
+
+    sources = _panel_sources()
+
+    with _zipfile.ZipFile(buf, "w", _zipfile.ZIP_DEFLATED) as zf:
+        for endpoint_name, fetcher in sources.items():
+            try:
+                data = await fetcher()
+                zf.writestr(
+                    f"{endpoint_name}.json",
+                    _json.dumps(data, default=str, indent=2),
+                )
+                included.append(endpoint_name)
+            except Exception as exc:
+                # Don't fail the whole bundle for one bad endpoint —
+                # surface in manifest so operator + substrate-team can
+                # tell from the bundle what's missing and why.
+                _log.exception(
+                    "[kora.diag_bundle] %s fetch failed", endpoint_name
+                )
+                errors.append(
+                    {
+                        "endpoint": endpoint_name,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+        manifest = {
+            "bundle_id": bundle_id,
+            "bundle_at": now.isoformat().replace("+00:00", "Z"),
+            "version": "1.0",
+            "endpoints_included": included,
+            "errors": errors,
+        }
+        zf.writestr("manifest.json", _json.dumps(manifest, indent=2))
+
+    payload = buf.getvalue()
+
+    async def _iter():
+        # Single-chunk yield is the right shape here (~10 small JSONs,
+        # well under a MB). StreamingResponse still gets us the
+        # Content-Disposition + media_type plumbing.
+        yield payload
+
+    return StreamingResponse(
+        _iter(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{bundle_id}.zip"'
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
