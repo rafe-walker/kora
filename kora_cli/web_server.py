@@ -4810,6 +4810,105 @@ async def list_mcp_clients():
 
 
 # ---------------------------------------------------------------------------
+# Webhook events lens (KR-WEBHOOK-EVENTS-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing observability for public-port traffic on
+# /api/webhooks/* (Slack events, email inbound, future panels).
+# Anticipates Phase 2 Features 3 + 5; once the daemon deploys to
+# Fly, Joshua needs to see "what's hitting the public port" without
+# `flyctl logs`.
+#
+# v1 stub: 4 representative events per bucket §3 verbatim (verified
+# slack message, verified slack url_verification, dead-letter email
+# bad signature, slack rate-limited). CC#3 will wire real per-event
+# recording via either chain-event emission or a substrate
+# webhook_events table — blocked on substrate-team coord ask for
+# the dead-letter ledger shape. Until then the stub:true flag keeps
+# the FE banner visible.
+#
+# SECURITY: source_ip values are OCTET-MASKED in the response
+# (e.g. "54.203.x.x" not "54.203.99.142") — operator gets
+# geolocation hint without full PII exposure. CC#3 will enforce
+# the same mask when real data flips in. The §4 test regex-pins
+# the mask format so any future drift that emits a full IP gets
+# caught at the endpoint layer (3-layer security contract pattern
+# from KR-MCP-3 #106: backend shape + TS interface + test regex).
+
+
+@app.get("/api/webhooks/events/recent")
+async def list_recent_webhook_events():
+    """Return recent public-webhook events for the operator-facing lens.
+
+    v1 stub — pinned shape so CC#3's per-event recording (chain-event
+    emission OR substrate webhook_events table) can swap the body
+    without touching the FE.
+
+    Per-event fields:
+      id            — opaque event id
+      endpoint      — e.g. "/api/webhooks/slack/events"
+      received_at   — ISO-8601 timestamp
+      status        — verified | dead_letter | rate_limited | handler_error
+      source_ip     — OCTET-MASKED ("54.203.x.x" never "54.203.99.142")
+      event_type    — handler-side classification (e.g. "message",
+                      "url_verification", "hmac_invalid"); null when
+                      rate-limited (request never reached the handler)
+      details       — handler-shape-specific dict (slack_team_id,
+                      reason, etc.) — future redaction pass for PII
+                      lands when real data wires in (out of scope here)
+    """
+    return {
+        "events": [
+            {
+                "id": "stub-1",
+                "endpoint": "/api/webhooks/slack/events",
+                "received_at": "2026-05-22T17:55:13Z",
+                "status": "verified",
+                "source_ip": "54.203.x.x",
+                "event_type": "message",
+                "details": {
+                    "slack_team_id": "T_STUB",
+                    "channel_id": "C_STUB",
+                },
+            },
+            {
+                "id": "stub-2",
+                "endpoint": "/api/webhooks/slack/events",
+                "received_at": "2026-05-22T17:52:01Z",
+                "status": "verified",
+                "source_ip": "54.203.x.x",
+                "event_type": "url_verification",
+                "details": {"challenge_echoed": True},
+            },
+            {
+                "id": "stub-3",
+                "endpoint": "/api/webhooks/email/inbound",
+                "received_at": "2026-05-22T17:48:22Z",
+                "status": "dead_letter",
+                "source_ip": "203.0.113.x",
+                "event_type": "hmac_invalid",
+                "details": {
+                    "reason": "signature_mismatch",
+                    "header_present": True,
+                },
+            },
+            {
+                "id": "stub-4",
+                "endpoint": "/api/webhooks/slack/events",
+                "received_at": "2026-05-22T17:45:09Z",
+                "status": "rate_limited",
+                "source_ip": "198.51.100.x",
+                "event_type": None,
+                "details": {"rate_limit_window": "60/minute"},
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_recent_24h": 4,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
