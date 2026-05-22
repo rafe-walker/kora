@@ -4298,6 +4298,223 @@ async def get_chain_events(
 
 
 # ---------------------------------------------------------------------------
+# Operator runbooks viewer (KR-P2-RUNBOOKS-PANEL)
+# ---------------------------------------------------------------------------
+#
+# When DR fires at 2am, operator opens /runbooks and reads inline. No
+# tabbing to docs. Read-only — runbooks are markdown files; operators
+# update via kora-docs + redeploy.
+#
+# The manifest is EXPLICIT — pinned tuples of (id, title, repo-relative
+# path). Auto-discovery rejected: ops want a known stable index of
+# "these are the runbooks I might need at 2am", not a wandering scan
+# of every .md in kora_docs/.
+#
+# Path-traversal defense is structural: the user-supplied {id} is only
+# ever used as a dict key against _RUNBOOK_MANIFEST. The path values
+# themselves are pinned strings, never concatenated with input.
+# Belt+braces: an extra id validation regex rejects anything outside
+# [a-z0-9_].
+#
+# Some manifest entries reference files in kora_docs/ which is a
+# separate repo (rafe-walker/kora-docs) — not vendored into this
+# repo. Those surface as ``available: false`` placeholders. Operator
+# sees the runbook is supposed to exist but isn't authored yet;
+# manifest entry serves as the "documented but pending" pointer.
+
+import re as _re_runbooks
+
+
+# Manifest: (title, repo-relative path)
+_RUNBOOK_MANIFEST: Dict[str, Tuple[str, str]] = {
+    "dr_runbook": (
+        "Disaster Recovery — post-PITR substrate_epoch bump",
+        "kora_docs/15_status_and_roadmap/dr_runbook.md",
+    ),
+    "token_rotation_runbook": (
+        "Token rotation — wsk_* + CLAUDE_CODE_OAUTH_TOKEN unified procedure",
+        "kora_docs/15_status_and_roadmap/token_rotation_runbook.md",
+    ),
+    "deploy_runbook_canonical": (
+        "Deploy — canonical (post-KR-P2-F-pre)",
+        "kora_docs/15_status_and_roadmap/deploy_runbook.md",
+    ),
+    "kora_dna": (
+        "Kora DNA reference",
+        "kora_docs/00_canonical_current_state/kora_dna.md",
+    ),
+    "deploy_fly_io": (
+        "Fly deploy + Doppler secret refresh",
+        "docs/deploy-fly-io.md",
+    ),
+}
+
+_RUNBOOK_ID_RE = _re_runbooks.compile(r"^[a-z][a-z0-9_]*$")
+_RUNBOOK_MAX_BYTES = 1_048_576  # 1 MiB hard cap
+
+
+def _runbook_repo_root() -> Path:
+    """Resolve the kora-repo root from this module's location.
+
+    web_server.py lives at <root>/kora_cli/web_server.py, so the repo
+    root is 2 parents up. Using __file__ rather than os.getcwd() keeps
+    the resolution stable across uvicorn launch dirs.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def _runbook_resolved_path(rel_path: str) -> Path:
+    """Resolve a manifest path against the repo root.
+
+    Manifest paths are repo-relative + author-controlled — they are
+    NOT user input. ``Path.resolve()`` here normalizes; we additionally
+    check ``resolved.is_relative_to(root)`` as belt+braces so a future
+    typo in the manifest can't accidentally point outside the repo.
+    """
+    return (_runbook_repo_root() / rel_path).resolve()
+
+
+def _runbook_safe_stat(rel_path: str) -> Optional[Tuple[int, str]]:
+    """Return (size_bytes, last_modified_iso) for an available runbook,
+    or ``None`` when the file doesn't exist or sits outside the repo
+    root. Never raises."""
+    from datetime import datetime, timezone
+
+    try:
+        resolved = _runbook_resolved_path(rel_path)
+        root = _runbook_repo_root()
+        if not resolved.is_relative_to(root):
+            return None
+        if not resolved.is_file():
+            return None
+        stat = resolved.stat()
+        last_modified = datetime.fromtimestamp(
+            stat.st_mtime, tz=timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+        return stat.st_size, last_modified
+    except Exception:
+        _log.exception(
+            "[kora.runbooks] stat failed for %s", rel_path
+        )
+        return None
+
+
+@app.get("/api/runbooks")
+async def list_runbooks():
+    """Return the explicit manifest of known operator runbooks.
+
+    One entry per pinned (id, title, path) tuple; ``available`` reflects
+    whether the file is present + readable on the deploy filesystem.
+    Missing files surface as placeholders so operators see "this
+    runbook is documented but not yet authored" rather than an empty
+    panel.
+    """
+    runbooks: List[Dict[str, Any]] = []
+    for runbook_id, (title, rel_path) in _RUNBOOK_MANIFEST.items():
+        stat = _runbook_safe_stat(rel_path)
+        if stat is None:
+            runbooks.append(
+                {
+                    "id": runbook_id,
+                    "title": title,
+                    "path": rel_path,
+                    "available": False,
+                    "size_bytes": None,
+                    "last_modified": None,
+                }
+            )
+        else:
+            size_bytes, last_modified = stat
+            runbooks.append(
+                {
+                    "id": runbook_id,
+                    "title": title,
+                    "path": rel_path,
+                    "available": True,
+                    "size_bytes": size_bytes,
+                    "last_modified": last_modified,
+                }
+            )
+    return {"runbooks": runbooks}
+
+
+@app.get("/api/runbooks/{runbook_id}/content")
+async def get_runbook_content(runbook_id: str):
+    """Return the raw markdown content for the named runbook.
+
+    Path-traversal defense:
+      1. ``runbook_id`` must match ``^[a-z][a-z0-9_]*$`` (rejects ``..``,
+         ``/``, etc.).
+      2. ``runbook_id`` is used only as a dict-key lookup against
+         ``_RUNBOOK_MANIFEST``; the path string in the response is the
+         manifest's pinned value, never composed from user input.
+      3. After resolving, we verify the path stays inside the repo root
+         (guards against a future manifest typo with ``..``).
+
+    Caps:
+      * File size > ``_RUNBOOK_MAX_BYTES`` (1 MiB) → 413.
+
+    Errors:
+      * Invalid id format → 404 (and log a WARN so operators can spot
+        traversal attempts).
+      * Unknown id → 404.
+      * Manifest entry but file missing → 404 with a clear message
+        (separately distinguishable from "unknown id" so the FE can
+        render the "[runbook pending]" placeholder).
+    """
+    if not _RUNBOOK_ID_RE.match(runbook_id):
+        _log.warning(
+            "[kora.runbooks] rejecting malformed runbook_id=%r — "
+            "possible path-traversal attempt",
+            runbook_id,
+        )
+        raise HTTPException(status_code=404, detail="Runbook not found")
+
+    entry = _RUNBOOK_MANIFEST.get(runbook_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Runbook not found")
+
+    title, rel_path = entry
+    resolved = _runbook_resolved_path(rel_path)
+    root = _runbook_repo_root()
+
+    if not resolved.is_relative_to(root):
+        _log.warning(
+            "[kora.runbooks] manifest entry %r resolves outside repo "
+            "root (%s) — refusing to serve",
+            runbook_id,
+            resolved,
+        )
+        raise HTTPException(status_code=404, detail="Runbook not found")
+
+    if not resolved.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Runbook '{runbook_id}' not yet authored",
+        )
+
+    size = resolved.stat().st_size
+    if size > _RUNBOOK_MAX_BYTES:
+        _log.warning(
+            "[kora.runbooks] %r exceeds cap (%d > %d bytes); refusing",
+            runbook_id,
+            size,
+            _RUNBOOK_MAX_BYTES,
+        )
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Runbook '{runbook_id}' exceeds {_RUNBOOK_MAX_BYTES} "
+                f"byte cap (actual {size}). Split the file or raise "
+                f"the cap in web_server._RUNBOOK_MAX_BYTES."
+            ),
+        )
+
+    text = resolved.read_text(encoding="utf-8")
+    return Response(content=text, media_type="text/markdown; charset=utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
