@@ -67,6 +67,49 @@ BEARER_TOKEN_ENV = "KORA_MCP_BEARER_TOKEN"
 
 
 # ---------------------------------------------------------------------------
+# Caller auth (KR-MCP-RUNTIME-SURFACE ST2)
+# ---------------------------------------------------------------------------
+
+from kora_cli.listeners.mcp_caller_auth import (  # noqa: E402
+    Caller,
+    resolve_caller,
+)
+
+
+def _resolve_caller_dep(
+    authorization: Optional[str] = Header(default=None),
+) -> Caller:
+    """FastAPI dependency: resolve presented bearer → ``Caller``.
+
+    Replaces the legacy ``_require_bearer`` single-token check. The
+    resolver supports two modes (see ``mcp_caller_auth``):
+
+      - Mode 2 — file ACL at ``~/.kora/mcp_callers.yaml`` (per-caller
+        identity + per-caller allowed-caps).
+      - Mode 1 — ``KORA_MCP_BEARER_TOKEN`` env (comma-separated for
+        multi-token rotation; resolves to anonymous caller — only
+        ungated read-only tools work).
+
+    Any unresolved presented token → 401. Tool-level cap-gate
+    enforcement is downstream (in ``post_jsonrpc``); this dep only
+    determines whether the caller is identifiable at all.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or malformed Authorization header",
+        )
+    presented = authorization[len("Bearer ") :].strip()
+    caller = resolve_caller(presented)
+    if caller is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid bearer token",
+        )
+    return caller
+
+
+# ---------------------------------------------------------------------------
 # Tool definition: kora__daemon_status
 # ---------------------------------------------------------------------------
 
@@ -92,11 +135,71 @@ TOOLS: list = [DAEMON_STATUS_TOOL]
 # happens at module-load time but doesn't ripple to test fixtures that
 # need to patch the dispatch table.
 from kora_cli.listeners.mcp_tools import (  # noqa: E402
+    ST2_TOOL_DESCRIPTORS as _ST2_DESCRIPTORS,
+    ST2_TOOL_DISPATCH as _ST2_DISPATCH,
     TOOL_DESCRIPTORS as _ST1_DESCRIPTORS,
     TOOL_DISPATCH as _ST1_DISPATCH,
+    _ST2_DevOnlyError,  # noqa: F401
+    _ST2_ToolInputError,  # noqa: F401
 )
 
 TOOLS.extend(_ST1_DESCRIPTORS)
+TOOLS.extend(_ST2_DESCRIPTORS)
+
+
+# Tool registry — per-tool gating metadata.
+# ``requires_cap_gate``: True → caller.can_invoke(tool_name) must pass.
+# Default False for read-only tools; True for mutating tools.
+# Operator can opt-in to gate a read tool by adding its name to a caller's
+# allowed_caps + setting the flag here (not exposed in ST2 — future bucket).
+_TOOL_FLAGS: Dict[str, Dict[str, bool]] = {}
+# Set defaults from descriptors (each ST2 descriptor carries the flags).
+for _tool in TOOLS:
+    _TOOL_FLAGS[_tool["name"]] = {
+        "requires_cap_gate": bool(_tool.get("requires_cap_gate", False)),
+        "dev_only": bool(_tool.get("dev_only", False)),
+    }
+
+
+def _check_cap_gate(
+    req_id: Any, tool_name: Optional[str], caller: Caller
+) -> Optional[Dict[str, Any]]:
+    """Return a JSON-RPC error envelope if the cap gate denies; else None.
+
+    Decision tree:
+
+      - Unknown tool: pass through; the downstream "unknown tool"
+        branch handles it.
+      - Tool's ``requires_cap_gate`` is False: allow regardless of
+        caller identity.
+      - Tool's ``requires_cap_gate`` is True + caller can_invoke
+        tool: allow.
+      - Tool's ``requires_cap_gate`` is True + caller cannot:
+        return -32001 ``capability_denied`` with the required cap
+        in the error data so the caller can self-diagnose.
+    """
+    if tool_name is None:
+        return None
+    flags = _TOOL_FLAGS.get(tool_name)
+    if flags is None:
+        return None  # unknown tool — downstream handles -32602
+    if not flags.get("requires_cap_gate", False):
+        return None
+    if caller.can_invoke(tool_name):
+        return None
+    # Denied.
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {
+            "code": -32001,
+            "message": "capability_denied",
+            "data": {
+                "required_capability": tool_name,
+                "caller_actor_kind": caller.actor_kind,
+            },
+        },
+    }
 
 
 def _execute_daemon_status() -> Dict[str, Any]:
@@ -163,14 +266,24 @@ def _require_bearer(
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
-@router.get("/tools/list", dependencies=[Depends(_require_bearer)])
-def get_tools_list() -> Dict[str, Any]:
-    """Convenience endpoint matching the bucket-spec smoke test."""
+@router.get("/tools/list")
+def get_tools_list(
+    caller: Caller = Depends(_resolve_caller_dep),
+) -> Dict[str, Any]:
+    """Convenience endpoint matching the bucket-spec smoke test.
+
+    Tool descriptors include ``requires_cap_gate`` + ``dev_only``
+    flags so callers can predict which tools their identity
+    permits and which are env-restricted.
+    """
     return {"tools": TOOLS}
 
 
-@router.post("", dependencies=[Depends(_require_bearer)])
-async def post_jsonrpc(request: Request) -> Dict[str, Any]:
+@router.post("")
+async def post_jsonrpc(
+    request: Request,
+    caller: Caller = Depends(_resolve_caller_dep),
+) -> Dict[str, Any]:
     """JSON-RPC 2.0 entry. Handles ``tools/list`` + ``tools/call``."""
     try:
         body = await request.json()
@@ -190,6 +303,14 @@ async def post_jsonrpc(request: Request) -> Dict[str, Any]:
     if method == "tools/call":
         tool_name = params.get("name")
         tool_args = params.get("arguments") or {}
+
+        # Capability gate (ST2) — runs BEFORE any dispatch.
+        # tool registry flags `requires_cap_gate` per tool; if true,
+        # caller's allowed_caps must include the tool name.
+        gate_err = _check_cap_gate(req_id, tool_name, caller)
+        if gate_err is not None:
+            return gate_err
+
         if tool_name == "kora__daemon_status":
             return _jsonrpc_result(
                 req_id,
@@ -209,6 +330,44 @@ async def post_jsonrpc(request: Request) -> Dict[str, Any]:
         if tool_name in _ST1_DISPATCH:
             try:
                 model = await _ST1_DISPATCH[tool_name](tool_args)
+            except Exception as exc:
+                logger.exception(
+                    "[mcp] tool %s raised %r", tool_name, exc
+                )
+                return _jsonrpc_error(
+                    req_id, -32603, f"tool error: {type(exc).__name__}"
+                )
+            return _jsonrpc_result(
+                req_id,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": model.model_dump_json(),
+                        }
+                    ]
+                },
+            )
+        # KR-MCP-RUNTIME-SURFACE ST2 — mutating tools. Dispatchers
+        # receive the resolved Caller for audit-logging the actor_kind.
+        if tool_name in _ST2_DISPATCH:
+            try:
+                model = await _ST2_DISPATCH[tool_name](tool_args, caller)
+            except _ST2_DevOnlyError as exc:
+                # Surface dev-only refusal as a distinct JSON-RPC error
+                # so callers don't confuse it with a generic capability
+                # denial (caps could be granted but env still refuses).
+                return _jsonrpc_error(
+                    req_id,
+                    -32001,
+                    f"dev_only_tool: {exc}",
+                )
+            except _ST2_ToolInputError as exc:
+                # Args validation failed (bad target_state, etc.) —
+                # -32602 invalid params.
+                return _jsonrpc_error(
+                    req_id, -32602, f"invalid params: {exc}"
+                )
             except Exception as exc:
                 logger.exception(
                     "[mcp] tool %s raised %r", tool_name, exc

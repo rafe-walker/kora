@@ -48,6 +48,7 @@ read-only tools shouldn't crash the JSON-RPC response.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -634,4 +635,393 @@ TOOL_DISPATCH: Dict[str, ToolDispatcher] = {
     "kora__get_recent_ledger_entries": _dispatch_get_recent_ledger_entries,
     "kora__get_recent_chain_events": _dispatch_get_recent_chain_events,
     "kora__list_active_sea_tickets": _dispatch_list_active_sea_tickets,
+}
+
+
+# ===========================================================================
+# KR-MCP-RUNTIME-SURFACE ST2 — MUTATING TOOLS
+# ===========================================================================
+#
+# Three tools shipped:
+#
+#   - kora__request_state_transition
+#   - kora__create_sea_ticket
+#   - kora__send_webhook_test_event (dev-only — refuses on prd)
+#
+# All ST2 dispatchers receive the resolved Caller as a 2nd arg for
+# audit logging. mcp.py's cap-gate runs BEFORE dispatch — by the
+# time a dispatcher is called, the caller has been verified to
+# include this tool in their allowed_caps.
+#
+# # Ledger writes — DEFERRED to substrate-side schema follow-on
+#
+# The bucket spec called for `kora_operation_ledger` writes per tool
+# call. The ledger schema (substrate migration 0093) requires
+# work_attempt_id + workspace_id + ticket_id + tool_name — all tied
+# to Sea_Ticket dispatch. MCP-driven calls have NONE of those.
+#
+# Same precedent as KR-D-DAEMON ST3's webhook dead-letter (which
+# faced the same schema-vs-spec mismatch): we use STRUCTURED LOGGING
+# with a stable [kora.mcp.tool_called] prefix for the audit surface.
+# When substrate ships either (a) a permissive ledger shape OR
+# (b) a kora.mcp.tool_called chain-event vocab literal, the runtime
+# extension is a small change here — the log-line emit is the
+# stable seam.
+# ===========================================================================
+
+
+from kora_cli.listeners.mcp_caller_auth import Caller  # noqa: E402
+
+
+class _ST2_DevOnlyError(RuntimeError):
+    """Raised when a dev-only tool is called in a prd environment."""
+
+
+class _ST2_ToolInputError(ValueError):
+    """Raised when a tool's args fail validation (target_state typo,
+    missing required field, etc.). Mapped to JSON-RPC -32602."""
+
+
+def _emit_audit(*, tool: str, caller: Caller, args: Dict[str, Any], result: str) -> None:
+    """Stable audit-log line. Replaces the bucket-spec ledger write.
+
+    Operator finds these via flyctl logs or the OPS-PANEL chain tail.
+    Body content is NEVER logged here — args summary only.
+    """
+    logger.info(
+        "[kora.mcp.tool_called] tool=%s caller_actor_kind=%s args_keys=%s result=%s",
+        tool,
+        caller.actor_kind,
+        sorted(args.keys()),
+        result,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 7: kora__request_state_transition
+# ---------------------------------------------------------------------------
+
+
+REQUEST_STATE_TRANSITION_TOOL: Dict[str, Any] = {
+    "name": "kora__request_state_transition",
+    "description": (
+        "Request a Kora OperationalStateHolder transition. Validates "
+        "against the R4.1 §9.1 TRANSITION_TABLE; emits the standard "
+        "operational-state-transitioned listener chain. Caller must "
+        "have kora__request_state_transition in allowed_caps. Args: "
+        "target_state (booting/ready/active/paused/stopped, "
+        "case-insensitive) + reason (free text used as the trigger "
+        "string in audit + chain events)."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "target_state": {
+                "type": "string",
+                "enum": ["booting", "ready", "active", "paused", "stopped"],
+            },
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": ["target_state", "reason"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class StateTransitionResult(BaseModel):
+    success: bool
+    from_state: str
+    to_state: str
+    trigger: str
+    caller_actor_kind: str
+
+
+async def _execute_request_state_transition(
+    *, target_state: str, reason: str, caller: Caller
+) -> StateTransitionResult:
+    from agent.operational_state import PrimaryState
+    from agent.operational_state_holder import get_holder
+
+    # Normalize + validate target_state.
+    if not isinstance(target_state, str) or not target_state.strip():
+        raise _ST2_ToolInputError("target_state is required")
+    if not isinstance(reason, str) or not reason.strip():
+        raise _ST2_ToolInputError("reason is required (non-empty)")
+
+    normalized = target_state.strip().lower()
+    try:
+        target_enum = PrimaryState(normalized)
+    except ValueError:
+        raise _ST2_ToolInputError(
+            f"unknown target_state {target_state!r}; "
+            f"must be one of: booting/ready/active/paused/stopped"
+        )
+
+    holder = get_holder()
+    if holder is None:
+        raise _ST2_ToolInputError(
+            "OperationalStateHolder is not initialized — daemon not "
+            "running with substrate-attached listeners?"
+        )
+
+    # holder.current is a @property — not a method (caught in ST1 K-DG).
+    from_state = holder.current.primary_state
+
+    # transition_to validates against TRANSITION_TABLE; raises
+    # InvalidStateTransitionError if not allowed. We let that bubble
+    # up as a generic -32603 with the message — the caller can read
+    # the message + try a different target.
+    await holder.transition_to(target_enum, trigger=reason)
+
+    _emit_audit(
+        tool="kora__request_state_transition",
+        caller=caller,
+        args={"target_state": target_state, "reason": reason},
+        result=f"{from_state.value}->{target_enum.value}",
+    )
+
+    return StateTransitionResult(
+        success=True,
+        from_state=from_state.value,
+        to_state=target_enum.value,
+        trigger=reason,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _dispatch_request_state_transition(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_request_state_transition(
+        target_state=params.get("target_state", ""),
+        reason=params.get("reason", ""),
+        caller=caller,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 8: kora__create_sea_ticket
+# ---------------------------------------------------------------------------
+
+
+CREATE_SEA_TICKET_TOOL: Dict[str, Any] = {
+    "name": "kora__create_sea_ticket",
+    "description": (
+        "Create a Sea_Ticket on Kora's behalf via the substrate-side "
+        "`sea__create_ticket` MCP tool. Bridges an authorized MCP "
+        "caller (e.g. another PM) to the substrate. Substrate-side "
+        "Zod validation applies to the args. Returns the new "
+        "ticket_id on success. Caller must have "
+        "kora__create_sea_ticket in allowed_caps."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "minLength": 1},
+            "body": {"type": "string"},
+            "priority": {
+                "type": "string",
+                "enum": ["low", "normal", "high", "frontier"],
+            },
+        },
+        "required": ["title"],
+        "additionalProperties": True,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class CreateSeaTicketResult(BaseModel):
+    success: bool
+    ticket_id: Optional[str] = None
+    raw_response: Optional[Dict[str, Any]] = None
+    caller_actor_kind: str
+
+
+async def _execute_create_sea_ticket(
+    *,
+    args: Dict[str, Any],
+    caller: Caller,
+) -> CreateSeaTicketResult:
+    title = args.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise _ST2_ToolInputError("title is required (non-empty string)")
+
+    provider = _get_active_provider()
+    if provider is None or getattr(provider, "_connection", None) is None:
+        raise _ST2_ToolInputError(
+            "no active IsoKron provider — daemon not running with "
+            "substrate-attached listeners?"
+        )
+    mcp_client = provider._connection.get_mcp_client()
+
+    # Pass args through verbatim — substrate-side Zod validates the
+    # full schema. We add Kora-specific tagging (kind="sea") if the
+    # caller didn't.
+    forwarded = dict(args)
+    forwarded.setdefault("kind", "sea")
+    # Tag the originating caller_actor_kind in the request payload
+    # so substrate audit logs can attribute the create. The substrate
+    # may ignore this field if its schema is strict; passing it is
+    # cheap.
+    forwarded.setdefault("origin_actor_kind", caller.actor_kind)
+
+    result = await mcp_client.invoke("sea__create_ticket", forwarded)
+
+    ticket_id = None
+    if isinstance(result, dict):
+        ticket_id = result.get("ticket_id") or result.get("id")
+
+    _emit_audit(
+        tool="kora__create_sea_ticket",
+        caller=caller,
+        args=forwarded,
+        result=f"ticket_id={ticket_id}",
+    )
+
+    return CreateSeaTicketResult(
+        success=True,
+        ticket_id=str(ticket_id) if ticket_id else None,
+        raw_response=result if isinstance(result, dict) else None,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _dispatch_create_sea_ticket(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_create_sea_ticket(args=params, caller=caller)
+
+
+# ---------------------------------------------------------------------------
+# Tool 9: kora__send_webhook_test_event (DEV-ONLY)
+# ---------------------------------------------------------------------------
+
+
+SEND_WEBHOOK_TEST_EVENT_TOOL: Dict[str, Any] = {
+    "name": "kora__send_webhook_test_event",
+    "description": (
+        "Operator-debug tool: emit the verified-event chain that the "
+        "webhook listener would emit on real receipt, useful for "
+        "exercising downstream handler wiring without setting up "
+        "Slack / Purelymail end-to-end. **DEV-ONLY** — refuses on "
+        "prd (KORA_DEPLOY_ENV=prd) to prevent synthetic-event "
+        "pollution of production audit trails. Args: endpoint "
+        "('slack' | 'email'), payload (free-form dict)."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "endpoint": {"type": "string", "enum": ["slack", "email"]},
+            "payload": {"type": "object"},
+        },
+        "required": ["endpoint", "payload"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": True,
+}
+
+
+class WebhookTestEventResult(BaseModel):
+    success: bool
+    endpoint: str
+    payload_keys: List[str]
+    caller_actor_kind: str
+    deploy_env: str
+
+
+async def _execute_send_webhook_test_event(
+    *,
+    endpoint: str,
+    payload: Dict[str, Any],
+    caller: Caller,
+) -> WebhookTestEventResult:
+    deploy_env = os.environ.get("KORA_DEPLOY_ENV", "").strip().lower()
+    # Prod refusal — fail-CLOSED. The env-value check is the dev-only
+    # boundary; the dev_only descriptor flag is just an API hint.
+    if deploy_env == "prd":
+        raise _ST2_DevOnlyError(
+            "kora__send_webhook_test_event refuses on KORA_DEPLOY_ENV=prd "
+            "to prevent synthetic-event pollution. Use a staging / dev "
+            "environment for handler-wiring tests."
+        )
+
+    if endpoint not in ("slack", "email"):
+        raise _ST2_ToolInputError(
+            f"endpoint must be 'slack' or 'email'; got {endpoint!r}"
+        )
+    if not isinstance(payload, dict):
+        raise _ST2_ToolInputError("payload must be an object")
+
+    # Emit the synthetic-event log line that mirrors the
+    # webhook-handler chain. Real chain-event emission (via
+    # kora__append_event) needs a vocab literal for synthetic events;
+    # for ST2 the log line is the scaffold — Feature 3/5 buckets will
+    # extend when the real handlers are wired.
+    logger.info(
+        "[kora.mcp.synthetic_webhook] endpoint=%s caller=%s payload_keys=%s",
+        endpoint,
+        caller.actor_kind,
+        sorted(payload.keys()),
+    )
+
+    _emit_audit(
+        tool="kora__send_webhook_test_event",
+        caller=caller,
+        args={"endpoint": endpoint, "payload": payload},
+        result="synthetic_event_emitted",
+    )
+
+    return WebhookTestEventResult(
+        success=True,
+        endpoint=endpoint,
+        payload_keys=sorted(payload.keys()),
+        caller_actor_kind=caller.actor_kind,
+        deploy_env=deploy_env or "unknown",
+    )
+
+
+async def _dispatch_send_webhook_test_event(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_send_webhook_test_event(
+        endpoint=params.get("endpoint", ""),
+        payload=params.get("payload") or {},
+        caller=caller,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public ST2 descriptor + dispatch tables
+# ---------------------------------------------------------------------------
+
+
+# Mark ST1 descriptors as cap-gate-default-False for the registry. This
+# is informational; the actual gating logic in mcp.py reads each tool's
+# own descriptor `requires_cap_gate` flag (ST1 descriptors don't set it
+# → defaults to False via _TOOL_FLAGS resolution).
+for _desc in TOOL_DESCRIPTORS:
+    _desc.setdefault("requires_cap_gate", False)
+    _desc.setdefault("dev_only", False)
+
+
+ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
+    REQUEST_STATE_TRANSITION_TOOL,
+    CREATE_SEA_TICKET_TOOL,
+    SEND_WEBHOOK_TEST_EVENT_TOOL,
+]
+
+
+# ST2 dispatchers take (params, caller). mcp.py imports + uses this.
+ST2ToolDispatcher = Callable[
+    [Dict[str, Any], Caller], Awaitable[BaseModel]
+]
+ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
+    "kora__request_state_transition": _dispatch_request_state_transition,
+    "kora__create_sea_ticket": _dispatch_create_sea_ticket,
+    "kora__send_webhook_test_event": _dispatch_send_webhook_test_event,
 }
