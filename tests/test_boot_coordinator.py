@@ -471,11 +471,18 @@ def test_boot_result_enum_has_3_members():
 
 
 @pytest.mark.asyncio
-async def test_invariant_pause_returns_paused_without_holder_transition_or_emit():
+async def test_invariant_pause_returns_paused_no_stopped_transition_no_boot_failed_emit():
     """When the failing gate has class INVARIANT_PAUSE, the coordinator
     must NOT transition holder to STOPPED + must NOT emit
-    kora.boot.failed. The gate itself already did the right work
-    (transitioned to PAUSED + emitted dr-specific event)."""
+    kora.boot.failed. The gate's handler does the dr-specific emit +
+    PAUSED transition; the coordinator's responsibility is to NOT
+    elevate to STOPPED.
+
+    (Note: this gate fixture doesn't transition the holder itself —
+    in real code the gate's handler does. The coordinator's
+    defensive transition (KR-P2-FAIL-SAFETIES ST3) covers this case
+    — see ``test_invariant_pause_defensively_transitions_holder_*``
+    below for that contract.)"""
     holder = _holder()
     provider = _make_emit_provider()
 
@@ -494,12 +501,106 @@ async def test_invariant_pause_returns_paused_without_holder_transition_or_emit(
     assert summary.result is BootResult.PAUSED
     assert summary.failed_gate is not None
     assert summary.failed_gate.gate_class is GateClass.INVARIANT_PAUSE
-    # Holder UNTOUCHED by coordinator (still BOOTING — the gate would
-    # have transitioned to PAUSED in real code, but in this unit test
-    # we're only asserting that the coordinator doesn't re-transition).
-    assert holder.current.primary_state is PrimaryState.BOOTING
-    # NO kora.boot.failed emit
+    # Coordinator does NOT route to STOPPED (no kora.boot.failed
+    # emit either — INVARIANT_PAUSE is its own routing).
     assert provider._connection.submit_and_wait.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_invariant_pause_defensively_transitions_holder_when_gate_did_not():
+    """KR-P2-FAIL-SAFETIES ST3 — closes audit DEGRADED 6c.
+
+    If the failing gate is INVARIANT_PAUSE but did NOT transition the
+    holder (handler threw mid-call, or in this test fixture
+    because the gate doesn't run the dr_handler), the coordinator
+    defensively transitions to PAUSED with reason=SUBSTRATE before
+    returning the BootSummary. Otherwise the BootSummary would say
+    PAUSED while the holder still reports BOOTING — a coherence
+    gap that lets downstream consumers proceed past a halt boundary.
+    """
+    holder = _holder()
+    provider = _make_emit_provider()
+
+    pause_gate = _ProgrammableGate(
+        "3b_epoch_dr_check",
+        GateClass.INVARIANT_PAUSE,
+        [GateOutcome.FAIL],
+    )
+
+    summary = await run_boot_sequence(
+        memory_provider=provider,
+        holder=holder,
+        gates=[pause_gate],
+    )
+
+    assert summary.result is BootResult.PAUSED
+    # Coordinator defensively transitioned the holder
+    assert holder.current.primary_state is PrimaryState.PAUSED
+    from agent.operational_state import DegradationReason
+
+    assert DegradationReason.SUBSTRATE in holder.current.degradation_reasons
+
+
+@pytest.mark.asyncio
+async def test_invariant_pause_idempotent_when_handler_already_transitioned():
+    """When the gate's handler already transitioned the holder to
+    PAUSED+SUBSTRATE, the coordinator's defensive check must SKIP
+    the re-transition. Otherwise the audit-history ring would carry
+    duplicate transition records on every successful DR-mismatch
+    boot."""
+    from agent.operational_state import DegradationReason
+
+    holder = _holder()
+    provider = _make_emit_provider()
+
+    # Build a gate that transitions the holder INSIDE its run() —
+    # mimicking what dr_handler.handle_epoch_mismatch does.
+    class _HandlerTransitioningGate(_ProgrammableGate):
+        async def _run(self, ctx):
+            await ctx.holder.transition_to(
+                PrimaryState.PAUSED,
+                trigger="dr handler emitted PAUSED",
+                add_reasons={DegradationReason.SUBSTRATE},
+            )
+            return await super()._run(ctx)
+
+    pause_gate = _HandlerTransitioningGate(
+        "3b_epoch_dr_check",
+        GateClass.INVARIANT_PAUSE,
+        [GateOutcome.FAIL],
+    )
+
+    # Snapshot the history-ring size before
+    pre_history_len = len(holder.history(limit=100))
+
+    summary = await run_boot_sequence(
+        memory_provider=provider,
+        holder=holder,
+        gates=[pause_gate],
+    )
+
+    assert summary.result is BootResult.PAUSED
+    assert holder.current.primary_state is PrimaryState.PAUSED
+    assert DegradationReason.SUBSTRATE in holder.current.degradation_reasons
+    # Coordinator's defensive transition is conditional on the
+    # holder NOT already being PAUSED+SUBSTRATE — so the
+    # history-ring grew by exactly 1 (the handler's transition),
+    # NOT 2.
+    post_history_len = len(holder.history(limit=100))
+    # The boot sequence also adds the BOOTING-initial transition
+    # via the coordinator's first transition_to call. Tolerate +1
+    # for that; the defensive transition would add another +1 if
+    # it fired, which we DON'T want.
+    added = post_history_len - pre_history_len
+    # 1 transition from the handler + 0 from the coordinator's
+    # (conditional) defensive transition = 1. The defensive must
+    # have skipped.
+    assert added == 1, (
+        f"history ring grew by {added}; expected 1 (handler only). "
+        f"The coordinator's defensive transition_to fired even "
+        f"though the handler already transitioned — check the "
+        f"`if current.primary_state is not PAUSED` guard."
+    )
 
 
 @pytest.mark.asyncio
