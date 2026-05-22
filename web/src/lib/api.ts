@@ -1417,20 +1417,43 @@ export function diagBundleHref(): string {
 // connections_pct, etc.) — surfaced as an opaque Record so each FE
 // renderer can read the keys it knows about; unknown keys render as
 // plain key/value pairs.
-export type HeartbeatStatus = "healthy" | "degraded" | "unhealthy";
+// KR-FEAT-HEARTBEAT ST2: the live probe path adds "unknown" status
+// (auth-env missing / probe timeout / probe-loop crash). FE renders
+// this as a yellow "no data" badge — distinct from "unhealthy"
+// (active failure) so operators don't mistake a configuration gap
+// for a real outage.
+export type HeartbeatStatus =
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "unknown";
 
 export interface HeartbeatService {
   name: string;
   status: HeartbeatStatus;
-  last_check_at: string;
-  latency_ms: number;
+  // last_check_at is nullable because an "unknown" snapshot from a
+  // probe that never completed a roundtrip has no meaningful
+  // timestamp; FE renders "—" in that case.
+  last_check_at: string | null;
+  // Likewise nullable — auth-missing / timeout cases never measure
+  // latency.
+  latency_ms: number | null;
   details: Record<string, unknown>;
+  // Operator-readable failure string (sanitized — never includes the
+  // auth token). Null on healthy paths.
+  error: string | null;
 }
 
 export interface HeartbeatServicesResponse {
   services: HeartbeatService[];
   generated_at: string;
   stub: boolean;
+  // KR-FEAT-HEARTBEAT ST2: ``true`` when the snapshot cache is empty
+  // (daemon just started; first probe cycle hasn't completed yet).
+  // FE renders "Probes warming up..." instead of an empty state +
+  // suppresses any "all services down" alerting heuristic until the
+  // first cycle lands.
+  cache_warming: boolean;
 }
 
 // MCP client picker (KR-MCP-3) — Kora-as-MCP-client surface.

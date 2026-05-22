@@ -4662,63 +4662,70 @@ async def get_diag_bundle():
 async def get_heartbeat_services():
     """Return per-service heartbeat status for Joshua's backend stack.
 
-    v1 stub. Replace body with a projection of the live
-    HeartbeatPoller state once KR-FEAT-HEARTBEAT lands.
+    KR-FEAT-HEARTBEAT ST2: flipped from stub to live read via
+    :func:`kora_cli.heartbeat_probes.current_service_snapshots`.
+    The heartbeat scheduler populates the snapshot cache every
+    ``KORA_HEARTBEAT_PROBE_INTERVAL_SEC`` seconds (default 300).
 
-    Service status enum: ``healthy`` | ``degraded`` | ``unhealthy``.
-    Each service surfaces a small ``details`` dict — shape varies per
-    service (e.g. Sentry carries ``unresolved_issues``; Supabase
-    carries ``connections_pct``); FE renders as expandable key/value.
+    Two-branch shape:
+
+      - Live path: ``stub=False`` + ``cache_warming=False`` +
+        ``services`` projected from the snapshot cache.
+      - Cache-warming path: ``stub=False`` + ``cache_warming=True``
+        + ``services=[]``. Returned when the daemon has just
+        started and the first probe cycle hasn't completed —
+        FE renders "Probes warming up..." instead of an empty
+        state. Suppresses any false "all services down" alert
+        heuristic.
+
+    Service status enum: ``healthy`` | ``degraded`` | ``unhealthy``
+    | ``unknown`` (the latter added in this flip; see TS
+    ``HeartbeatStatus`` in ``web/src/lib/api.ts``).
     """
+    from datetime import datetime, timezone
+
+    from kora_cli.heartbeat_probes import current_service_snapshots
+
+    snapshots = current_service_snapshots()
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if not snapshots:
+        return {
+            "services": [],
+            "generated_at": now_iso,
+            "stub": False,
+            "cache_warming": True,
+        }
+
+    # Stable ordering so FE doesn't re-shuffle cards between
+    # refreshes: render in the default-probe registration order
+    # (vercel → sentry → doppler → supabase → fly), then any
+    # extras (operator-added probes via a future config-driven
+    # extension) by alphabetical name.
+    canonical_order = ("vercel", "sentry", "doppler", "supabase", "fly")
+    ordered_names = [n for n in canonical_order if n in snapshots] + sorted(
+        name for name in snapshots if name not in canonical_order
+    )
+
+    services: list[dict[str, Any]] = []
+    for name in ordered_names:
+        snapshot = snapshots[name]
+        services.append({
+            "name": snapshot.name,
+            "status": snapshot.status,
+            "last_check_at": snapshot.last_check_at.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "latency_ms": snapshot.latency_ms,
+            "details": dict(snapshot.details),
+            "error": snapshot.error,
+        })
+
     return {
-        "services": [
-            {
-                "name": "vercel",
-                "status": "healthy",
-                "last_check_at": "2026-05-22T18:00:00Z",
-                "latency_ms": 142,
-                "details": {
-                    "deployments_last_24h": 8,
-                    "error_rate_24h": 0.0,
-                },
-            },
-            {
-                "name": "sentry",
-                "status": "degraded",
-                "last_check_at": "2026-05-22T18:00:00Z",
-                "latency_ms": 230,
-                "details": {"unresolved_issues": 12},
-            },
-            {
-                "name": "doppler",
-                "status": "healthy",
-                "last_check_at": "2026-05-22T18:00:00Z",
-                "latency_ms": 95,
-                "details": {
-                    "projects_total": 3,
-                    "oldest_secret_age_days": 47,
-                },
-            },
-            {
-                "name": "supabase",
-                "status": "healthy",
-                "last_check_at": "2026-05-22T18:00:00Z",
-                "latency_ms": 38,
-                "details": {"connections_pct": 14},
-            },
-            {
-                "name": "fly",
-                "status": "healthy",
-                "last_check_at": "2026-05-22T18:00:00Z",
-                "latency_ms": 88,
-                "details": {
-                    "apps_running": 2,
-                    "deploys_last_24h": 1,
-                },
-            },
-        ],
-        "generated_at": "2026-05-22T18:00:05Z",
-        "stub": True,
+        "services": services,
+        "generated_at": now_iso,
+        "stub": False,
+        "cache_warming": False,
     }
 
 
