@@ -59,7 +59,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 
@@ -244,6 +244,8 @@ class SeaTicketPoller:
         poll_interval_seconds: int = 60,
         claim_ttl_seconds: int = 600,
         heartbeat_interval_seconds: int = 60,
+        ramped_resume_duration_seconds: int = 3600,
+        ramped_resume_min_interval_seconds: int = 30,
     ) -> None:
         self._mcp_client = mcp_client
         self._memory_provider = memory_provider
@@ -284,6 +286,24 @@ class SeaTicketPoller:
         # The poll loop respects this flag; ST5 calls stop() at
         # gateway shutdown to break out of the sleep.
         self._stop_requested: bool = False
+
+        # KR-P2-K ST5 — ramped-resume state. After a PAUSED{COST} →
+        # READY recovery (monthly refresh), the poller drains the
+        # backlog at a throttled rate: at most one claim every
+        # ``ramped_resume_min_interval_seconds`` for
+        # ``ramped_resume_duration_seconds``. Both windows are
+        # operator-tunable; defaults match the bucket spec (1 claim
+        # per 30s for one hour after refresh).
+        self._ramped_resume_duration_seconds = ramped_resume_duration_seconds
+        self._ramped_resume_min_interval_seconds = (
+            ramped_resume_min_interval_seconds
+        )
+        self._ramped_resume_until: Optional[datetime] = None
+        # Wall-clock at the moment the most recent claim attempt began
+        # (set BEFORE the substrate invoke). Used only by the ramp gate;
+        # the durable ``claim_count`` for substrate-side budgeting lives
+        # in the ClaimState chain.
+        self._last_claim_started_at: Optional[datetime] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -481,6 +501,68 @@ class SeaTicketPoller:
                 exc_info=True,
             )
 
+    def start_ramped_resume(self) -> None:
+        """KR-P2-K ST5 — begin a rate-limited drain window.
+
+        Called after the cost holder's monthly refresh clears the
+        PAUSED{COST} operational state. For the next
+        ``ramped_resume_duration_seconds`` (default: 1 hour), the
+        poller enforces at least
+        ``ramped_resume_min_interval_seconds`` (default: 30s)
+        between claim attempts. Substrate-side ticket backlogs can
+        accumulate during a paused period; draining them all at
+        once would burn the freshly-refreshed budget within
+        minutes. The ramp gives operators a chance to land
+        rate-limit headers + reconciliation pulses before the
+        unthrottled flow resumes.
+
+        Idempotent — calling again extends the ramp window from
+        now+duration. The ``_last_claim_started_at`` cursor is
+        preserved so an active drain doesn't reset on a second call.
+        """
+        self._ramped_resume_until = datetime.now(timezone.utc) + timedelta(
+            seconds=self._ramped_resume_duration_seconds
+        )
+        logger.info(
+            "[sea_ticket_poller] ramped resume started until %s "
+            "(min %ss between claims)",
+            self._ramped_resume_until.isoformat(),
+            self._ramped_resume_min_interval_seconds,
+        )
+
+    async def _await_ramped_resume_gate(self) -> None:
+        """Sleep until the ramp's minimum-inter-claim interval is
+        satisfied, OR return immediately if no ramp is active.
+
+        Called from ``_claim_and_work`` right before the substrate
+        claim invocation. Past the ``_ramped_resume_until`` deadline
+        the gate is a no-op; before it, the first claim of the
+        window passes through immediately (no last-claim cursor to
+        gate against), then subsequent claims sleep until the
+        interval has elapsed since the last claim's start time.
+        """
+        if self._ramped_resume_until is None:
+            return
+        now = datetime.now(timezone.utc)
+        if now >= self._ramped_resume_until:
+            # Window expired — drop the gate to avoid permanent state.
+            self._ramped_resume_until = None
+            return
+        if self._last_claim_started_at is None:
+            return
+        elapsed = (now - self._last_claim_started_at).total_seconds()
+        min_interval = float(self._ramped_resume_min_interval_seconds)
+        if elapsed < min_interval:
+            sleep_for = min_interval - elapsed
+            logger.debug(
+                "[sea_ticket_poller] ramped resume: sleeping %.1fs "
+                "(elapsed=%.1fs, min=%.0fs)",
+                sleep_for,
+                elapsed,
+                min_interval,
+            )
+            await asyncio.sleep(sleep_for)
+
     def _cost_rung_is_hard_stop(self) -> bool:
         """KR-P2-K ST4 — check whether the cost ladder has hit its
         100% hard-stop rung.
@@ -570,7 +652,15 @@ class SeaTicketPoller:
             )
             return
 
+        # KR-P2-K ST5 — ramped-resume gate. If the most recent monthly
+        # refresh started a ramp, throttle to at most 1 claim per
+        # ``ramped_resume_min_interval_seconds`` for the ramp window.
+        # The gate is a no-op once the window expires or if no ramp
+        # is active.
+        await self._await_ramped_resume_gate()
+
         kora_operation_id = str(uuid.uuid4())
+        self._last_claim_started_at = datetime.now(timezone.utc)
 
         claim_state = await self._claim(
             workspace_id=ticket.workspace_id,
