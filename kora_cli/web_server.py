@@ -3897,67 +3897,106 @@ async def get_capabilities():
 # banner is FE-rendered.
 
 
+# KR-P2-L ST4 — fallback payload returned when the live read fails.
+# Same shape the v1 stub returned so the FE renders unchanged on
+# either branch; the ``stub: True`` + ``error`` fields tell the
+# operator why the live read isn't engaged.
+_HEALTH_ROLLUP_FALLBACK: Dict[str, Any] = {
+    "overall": "healthy",
+    "control_plane": "healthy",
+    "worker": "healthy",
+    "stopped_reason": None,
+    "subsignals": {
+        "last_successful_write": {
+            "status": "fresh",
+            "value_at": "2026-05-21T22:30:00Z",
+            "threshold_seconds": 300,
+            "elapsed_seconds": 45,
+        },
+        "claim_state": {
+            "status": "fresh",
+            "value": "active",
+            "claim_id": "stub_claim_001",
+        },
+        "credit_burn": {
+            "status": "fresh",
+            "value_pct": 43.7,
+            "threshold_pct": 90,
+            "rung": "warn_75",
+        },
+        "breaker_state": {
+            "status": "fresh",
+            "value": "closed",
+        },
+        "auth_validity_window": {
+            "status": "fresh",
+            "expires_at": "2027-04-18T00:00:00Z",
+            "threshold_days": 30,
+            "days_remaining": 332,
+        },
+        "dispatch_reachable": {
+            "status": "fresh",
+            "value_at": "2026-05-21T22:30:00Z",
+            "threshold_seconds": 60,
+            "elapsed_seconds": 5,
+        },
+        "last_heartbeat": {
+            "status": "fresh",
+            "value_at": "2026-05-21T22:29:58Z",
+            "threshold_seconds": 90,
+            "elapsed_seconds": 7,
+        },
+        "escalation_watcher_liveness": {
+            "status": "fresh",
+            "value_at": "2026-05-21T22:29:55Z",
+            "threshold_seconds": 15,
+            "elapsed_seconds": 10,
+        },
+    },
+}
+
+
 @app.get("/api/health-rollup")
 async def get_health_rollup():
     """Return Kora's health rollup with 8 R4.1 §9.7 subsignals.
 
-    v1 stub. Replace body with ``HealthRollupHolder.current()`` projection
-    once KR-P2-L lands.
+    KR-P2-L ST4: flipped from stub to live read via
+    :func:`agent.health_rollup_holder.HealthRollupHolder.current`.
+
+    Two-branch shape (mirrors KR-P2-DR-FLIP):
+      - Live path → projects ``HealthRollup`` via
+        :func:`rollup_to_panel_payload`; includes ``stub: False``.
+      - Fallback (holder uninit / collect raises / projection raises)
+        → returns ``_HEALTH_ROLLUP_FALLBACK`` shape + ``stub: True``
+        + ``error`` field naming the underlying cause, so the
+        operator sees why the live read isn't engaged rather than a
+        500.
+
+    The holder is lazy-initialized on first request if the gateway
+    boot didn't already (keeps the endpoint usable in
+    agent-session-only contexts where no explicit init runs).
     """
-    return {
-        "overall": "healthy",
-        "control_plane": "healthy",
-        "worker": "healthy",
-        "stopped_reason": None,
-        "subsignals": {
-            "last_successful_write": {
-                "status": "fresh",
-                "value_at": "2026-05-21T22:30:00Z",
-                "threshold_seconds": 300,
-                "elapsed_seconds": 45,
-            },
-            "claim_state": {
-                "status": "fresh",
-                "value": "active",
-                "claim_id": "stub_claim_001",
-            },
-            "credit_burn": {
-                "status": "fresh",
-                "value_pct": 43.7,
-                "threshold_pct": 90,
-                "rung": "warn_75",
-            },
-            "breaker_state": {
-                "status": "fresh",
-                "value": "closed",
-            },
-            "auth_validity_window": {
-                "status": "fresh",
-                "expires_at": "2027-04-18T00:00:00Z",
-                "threshold_days": 30,
-                "days_remaining": 332,
-            },
-            "dispatch_reachable": {
-                "status": "fresh",
-                "value_at": "2026-05-21T22:30:00Z",
-                "threshold_seconds": 60,
-                "elapsed_seconds": 5,
-            },
-            "last_heartbeat": {
-                "status": "fresh",
-                "value_at": "2026-05-21T22:29:58Z",
-                "threshold_seconds": 90,
-                "elapsed_seconds": 7,
-            },
-            "escalation_watcher_liveness": {
-                "status": "fresh",
-                "value_at": "2026-05-21T22:29:55Z",
-                "threshold_seconds": 15,
-                "elapsed_seconds": 10,
-            },
-        },
-        "stub": True,
-    }
+    try:
+        from agent.health_rollup_holder import (
+            get_health_rollup_holder,
+            init_health_rollup_holder,
+            rollup_to_panel_payload,
+        )
+
+        holder = get_health_rollup_holder()
+        if holder is None:
+            holder = init_health_rollup_holder()
+        rollup = holder.current()
+        payload = rollup_to_panel_payload(rollup)
+        payload["stub"] = False
+        return payload
+    except Exception as exc:
+        _log.exception("[kora.health_panel] live read failed")
+        return {
+            **_HEALTH_ROLLUP_FALLBACK,
+            "stub": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
 
 # ---------------------------------------------------------------------------
