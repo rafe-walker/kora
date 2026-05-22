@@ -60,7 +60,7 @@ the project — never even as a stale fallback.
 |---|---|---|---|
 | `KORA_MCP_BEARER_TOKEN` | Daemon MCP listener (KR-D-DAEMON ST2) | Bearer token for `/mcp` HTTP transport. Listener fails-CLOSED if unset. Mint as long random hex (`openssl rand -hex 32`). Rotate quarterly alongside `wsk_*`. | 64-hex |
 | `KORA_SLACK_SIGNING_SECRET` | Daemon webhook listener — Slack route (KR-D-DAEMON ST3) | From Slack app Settings → Basic Information → Signing Secret. **NEW for Phase 2** — consumed by the webhook plane on public port 9118; HMAC is the auth boundary. | 32-hex |
-| `KORA_PUREMAIL_HMAC_SECRET` | Daemon webhook listener — email route (KR-D-DAEMON ST3) | **Deferred until inbound-email wiring** (Feature 3 / KR-FEAT-EMAIL). Mark as TBD in Doppler until Purelymail integration; the daemon will fail Slack-only smoke without it (the email route always rejects 401 if the secret is unset). | (TBD per Purelymail) |
+| `KORA_PUREMAIL_HMAC_SECRET` | Daemon webhook listener — email route (KR-D-DAEMON ST3). **Now harmless dead-code** post-KR-FEAT-EMAIL double-STOP-ASK: Purelymail has no inbound webhooks (verified 2026-05-22). Route + verifier stay in tree as reactivatable scaffolding if a webhook-relay path is later chosen. Set to any value (or leave unset) — the route 401s anyone who tries since there's no real Purelymail signing scheme to validate. | (unset OR any opaque string) |
 | `SLACK_APP_TOKEN` | Legacy Slack Bolt gateway (`hermes gateway slack`) | Optional. Only required if `SLACK_GATEWAY_ENABLED=true` (the default). When `false`, leave unset. | `xapp-<token>` |
 | `SLACK_BOT_TOKEN` | Legacy Slack Bolt gateway | Same gating as SLACK_APP_TOKEN. | `xoxb-<token>` |
 | `SLACK_SIGNING_SECRET` | Legacy Slack Bolt gateway | Same gating as SLACK_APP_TOKEN. **Same value as `KORA_SLACK_SIGNING_SECRET`** — both come from the same Slack app's Basic Information page; the env-var split exists because the legacy gateway and the new webhook listener consume the secret via different code paths. Operator sets both to the same value until a follow-on refactor consolidates them. | Same as `KORA_SLACK_SIGNING_SECRET` |
@@ -93,6 +93,29 @@ outbound services on Joshua's behalf").
 **Validation tip**: after setting these, restart the daemon (or wait
 ≤5 min for the next probe cycle); `GET /api/heartbeat/services`
 should flip each service from `unknown` to `healthy` / `degraded`.
+
+#### Phase 2 Feature 3 — Purelymail outbound (KR-FEAT-EMAIL)
+
+Outbound email via SMTP. Per the bucket's double-STOP-ASK:
+Purelymail has no inbound webhooks AND no REST send API; SMTP
+is the only documented outbound mechanism. Inbound deferred to
+`KR-FEAT-EMAIL-INBOUND-IMAP` follow-on bucket.
+
+Full mint + smoke-test walkthrough in
+`purelymail_outbound_runbook.md`. All 5 secrets live in
+`kora-runtime-gateways`:
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `KORA_PUREMAIL_SMTP_USERNAME` | `PurelymailClient.__init__` (fail-CLOSED on missing) | Full email address bound to the App Password. Typically `kora@stormhavenenterprises.com`. | `kora@<domain>` |
+| `KORA_PUREMAIL_SMTP_APP_PASSWORD` | `PurelymailClient.__init__` (fail-CLOSED on missing) | App Password minted in Purelymail dashboard → Account → App Passwords. Assumes 2FA enabled on the account. NEVER use the main account password. | `<opaque>` |
+| `KORA_PUREMAIL_SMTP_HOST` | Optional override | Default `smtp.purelymail.com`. Override only for staging / test relay. | `smtp.purelymail.com` |
+| `KORA_PUREMAIL_SMTP_PORT` | Optional override | Default `465` (SSL). Use `587` for STARTTLS if the deploy environment blocks 465 outbound. | `465` (default) or `587` |
+| `KORA_EMAIL_KORA_ALLOWED_FROM_DOMAINS` | `PurelymailClient.send_email` (raises if from-domain not in list) | Comma-separated allowed sender domains. Defense against accidental wide-open sends. **Unset = client rejects EVERY send** (operator-config error, not silent allow-all). | `stormhavenenterprises.com` |
+
+**Validation tip**: after setting these, redeploy the daemon then
+run the Step 4 smoke test in `purelymail_outbound_runbook.md`.
+Expected: `SendResult(status="ok", smtp_code=250, retry_count=0)`.
 
 ---
 
@@ -169,6 +192,19 @@ for SECRET in KORA_VERCEL_API_TOKEN KORA_SENTRY_API_TOKEN KORA_SENTRY_ORG \
     || echo "MISS gateways:$SECRET (heartbeat probe — panel shows unknown)"
 done
 
+# KR-FEAT-EMAIL outbound tokens. Required for `PurelymailClient`
+# to instantiate (fail-CLOSED on missing username/password); the
+# allowlist env is required for any send_email call to succeed
+# (operator-config error if unset). Skip this section if outbound
+# email isn't yet wired (Kora boots fine without — outbound is a
+# capability not a gate).
+for SECRET in KORA_PUREMAIL_SMTP_USERNAME KORA_PUREMAIL_SMTP_APP_PASSWORD \
+              KORA_EMAIL_KORA_ALLOWED_FROM_DOMAINS; do
+  doppler secrets get "$SECRET" -p kora-runtime-gateways -c "$CONFIG" --plain >/dev/null \
+    && echo "OK   gateways:$SECRET (Purelymail outbound)" \
+    || echo "MISS gateways:$SECRET (Purelymail outbound — send_email will raise)"
+done
+
 # Anti-secret check — these MUST be absent.
 for ANTI in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
   doppler secrets get "$ANTI" -p kora-runtime-anthropic -c "$CONFIG" --plain 2>/dev/null \
@@ -177,9 +213,14 @@ for ANTI in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
 done
 ```
 
-Expected output: every line begins with `OK`. Any `MISS` (except
-`KORA_PUREMAIL_HMAC_SECRET` if email is deferred) or any `FAIL` blocks
-the deploy.
+Expected output: every line begins with `OK` for the required
+sections. The heartbeat-probe section + Purelymail outbound section
+are opt-in capabilities — `MISS` there doesn't block deploy, just
+disables the corresponding capability (panel shows `unknown` /
+`send_email` raises). The `KORA_PUREMAIL_HMAC_SECRET` row was
+previously deploy-relevant under the original inbound-webhook
+design; post-KR-FEAT-EMAIL double-STOP-ASK it's harmless dead-code
+(see the row note). Any `FAIL` (anti-secret) blocks the deploy.
 
 ---
 
@@ -191,7 +232,8 @@ Per-secret rotation procedures (operator-driven):
 - `KORA_MCP_BEARER_TOKEN` — quarterly. Mint via `openssl rand -hex 32`; `doppler secrets set` in `kora-runtime-gateways`; redeploy; old token invalidated by Doppler push.
 - `KORA_SLACK_SIGNING_SECRET` + `SLACK_SIGNING_SECRET` — when Slack rotates the signing secret (rare; operator-triggered via Slack app config). Update both env vars to the new value simultaneously.
 - `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` — when re-installing the Slack app or scoping changes. Mint via Slack app config.
-- `KORA_PUREMAIL_HMAC_SECRET` — TBD; per Purelymail integration. Operator's call when wiring inbound email (Feature 3).
+- `KORA_PUREMAIL_HMAC_SECRET` — DEAD CODE post KR-FEAT-EMAIL double-STOP-ASK. No rotation needed; leave unset (route 401s anyway).
+- `KORA_PUREMAIL_SMTP_APP_PASSWORD` — quarterly aligned with `KORA_SERVICE_TOKEN` per `purelymail_outbound_runbook.md` Step 6. Zero-downtime swap: mint new App Password → Doppler update → redeploy → smoke test → revoke old. Revoking before the redeploy causes a 535 window.
 
 ---
 
