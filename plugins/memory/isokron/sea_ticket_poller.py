@@ -84,7 +84,7 @@ from plugins.memory.isokron.kora_operation_ledger import (
 # any agent session has wired the holder, ``get_holder()`` returns
 # None and ``_signal_operational_state`` logs at DEBUG and proceeds
 # (fail-soft per spec §2 ST1).
-from agent.operational_state import PrimaryState
+from agent.operational_state import DegradationReason, PrimaryState
 from agent.operational_state_holder import get_holder
 
 logger = logging.getLogger(__name__)
@@ -120,6 +120,11 @@ class SeaTicketResolution(Enum):
     FAILED_TERMINAL = "failed_terminal"
     FAILED_RETRYABLE = "failed_retryable"
     RELEASED = "released"
+    # KR-P2-K ST4 — cost ladder 100% hard-stop. Ridden on
+    # ``kora.sea_ticket.resolved`` when the runtime safe-releases a
+    # claim before transitioning operational-state to PAUSED with
+    # reason=COST. R4.1 §9.6: "never a held claim across a cost pause."
+    DEFERRED_COST_LIMIT = "deferred_cost_limit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,10 +432,19 @@ class SeaTicketPoller:
     # ------------------------------------------------------------------
 
     async def _signal_operational_state(
-        self, target: PrimaryState, *, trigger: str
+        self,
+        target: PrimaryState,
+        *,
+        trigger: str,
+        add_reasons: Optional[set[DegradationReason]] = None,
+        remove_reasons: Optional[set[DegradationReason]] = None,
     ) -> None:
         """KR-P2-CLEANUP ST1 (KR-P2-I-integration ST4 wire-in):
         transition the operational-state holder.
+
+        ``add_reasons`` / ``remove_reasons`` are forwarded to the
+        holder for degradation-reason updates (e.g. PAUSED with
+        ``{COST}`` for KR-P2-K ST4's hard-stop pause).
 
         Fail-soft per spec — log + swallow any holder access issue;
         observability shouldn't block the consumer loop. Cases:
@@ -452,7 +466,12 @@ class SeaTicketPoller:
                     trigger,
                 )
                 return
-            await holder.transition_to(target, trigger=trigger)
+            await holder.transition_to(
+                target,
+                trigger=trigger,
+                add_reasons=add_reasons,
+                remove_reasons=remove_reasons,
+            )
         except Exception:
             logger.warning(
                 "[sea_ticket_poller] operational-state transition to "
@@ -461,6 +480,32 @@ class SeaTicketPoller:
                 trigger,
                 exc_info=True,
             )
+
+    def _cost_rung_is_hard_stop(self) -> bool:
+        """KR-P2-K ST4 — check whether the cost ladder has hit its
+        100% hard-stop rung.
+
+        Returns ``True`` when the singleton cost holder reports
+        :attr:`agent.cost_state_holder.CostRung.HARD_STOP_100`.
+        Fail-soft on every error path (holder uninitialized, holder
+        attribute missing, exception raised): returns ``False`` and
+        logs DEBUG. The consumer must never crash because of the
+        cost-ladder estimator — observability is best-effort.
+        """
+        try:
+            from agent.cost_state_holder import CostRung, get_cost_holder
+
+            cost_holder = get_cost_holder()
+            if cost_holder is None:
+                return False
+            return cost_holder.active_rung() is CostRung.HARD_STOP_100
+        except Exception:
+            logger.debug(
+                "[sea_ticket_poller] cost-rung check raised; treating "
+                "as not-hard-stop",
+                exc_info=True,
+            )
+            return False
 
     async def _claim_and_work(self, ticket: SeaTicket) -> None:
         """Claim, invoke the agent loop, release.
@@ -503,6 +548,25 @@ class SeaTicketPoller:
                 control_cmd.level,
                 control_cmd.reason,
                 ticket.ticket_id,
+            )
+            return
+
+        # KR-P2-K ST4 — pre-claim hard-stop check. R4.1 §9.6: when the
+        # cost ladder has burned through the $200 monthly pool, the
+        # consumer must not initiate new work. Transition operational-
+        # state to PAUSED with reason=COST and skip without claiming
+        # (no claim is held yet → nothing to release).
+        if self._cost_rung_is_hard_stop():
+            logger.info(
+                "[sea_ticket_poller] cost ladder HARD_STOP_100 active "
+                "pre-claim; skipping ticket_id=%s and transitioning "
+                "to PAUSED{COST}",
+                ticket.ticket_id,
+            )
+            await self._signal_operational_state(
+                PrimaryState.PAUSED,
+                trigger="cost ladder HARD_STOP_100 pre-claim",
+                add_reasons={DegradationReason.COST},
             )
             return
 
@@ -601,6 +665,15 @@ class SeaTicketPoller:
         finally:
             await heartbeat.cancel()
 
+        # KR-P2-K ST4 — post-loop hard-stop check. R4.1 §9.6: "never a
+        # held claim across a cost pause." If the rung crossed to
+        # HARD_STOP_100 while the agent loop was running, safe-release
+        # the claim with resolution=DEFERRED_COST_LIMIT, then PAUSE.
+        # The release stays on the existing path so the lease isn't
+        # leaked; only the resolution string + post-release state
+        # transition change.
+        post_loop_hard_stop = self._cost_rung_is_hard_stop()
+
         # If the heartbeat detected substrate-side lease loss while
         # work was in progress, the lease is already gone — calling
         # release with the (now invalid) fence_token would just raise.
@@ -613,6 +686,22 @@ class SeaTicketPoller:
                 "expired substrate-side)",
                 ticket.ticket_id,
             )
+            if post_loop_hard_stop:
+                # No claim to safe-release (lease already expired),
+                # but the rung is hard-stopped — still need to
+                # transition to PAUSED{COST}.
+                logger.info(
+                    "[sea_ticket_poller] cost ladder HARD_STOP_100 "
+                    "active alongside lease-loss for ticket_id=%s; "
+                    "transitioning to PAUSED{COST}",
+                    ticket.ticket_id,
+                )
+                await self._signal_operational_state(
+                    PrimaryState.PAUSED,
+                    trigger="cost ladder HARD_STOP_100 post-loop (lease lost)",
+                    add_reasons={DegradationReason.COST},
+                )
+                return
             # KR-P2-CLEANUP ST1: lease is gone substrate-side; the
             # runtime is no longer ACTIVE. Transition back to READY
             # with the same "claim released" trigger the normal path
@@ -622,6 +711,22 @@ class SeaTicketPoller:
                 PrimaryState.READY, trigger="claim released"
             )
             return
+
+        # KR-P2-K ST4 — if the rung crossed to HARD_STOP_100 during
+        # the agent loop, override the resolution. The agent loop's
+        # own resolution is preserved in the trigger / summary for
+        # the audit log; the wire-format resolution that cockpit
+        # consumers index becomes ``deferred_cost_limit``.
+        if post_loop_hard_stop:
+            logger.info(
+                "[sea_ticket_poller] cost ladder HARD_STOP_100 active "
+                "post-loop for ticket_id=%s — overriding resolution "
+                "%s -> %s and safe-releasing before PAUSE",
+                ticket.ticket_id,
+                resolution.value,
+                SeaTicketResolution.DEFERRED_COST_LIMIT.value,
+            )
+            resolution = SeaTicketResolution.DEFERRED_COST_LIMIT
 
         # ST4: emit kora.sea_ticket.resolved with the resolution. The
         # emit is best-effort — a failure logs loudly but does NOT
@@ -647,6 +752,18 @@ class SeaTicketPoller:
             sea_ticket_id=ticket.ticket_id,
             claim_fence_token=claim_state.claim_fence_token,
         )
+
+        if post_loop_hard_stop:
+            # KR-P2-K ST4 — claim is safe-released; runtime can now
+            # PAUSE with reason=COST. Fires AFTER release so the
+            # substrate's ``sea_ticket.claim_released`` event lands
+            # before the runtime-mirror state transition.
+            await self._signal_operational_state(
+                PrimaryState.PAUSED,
+                trigger="cost ladder HARD_STOP_100 post-loop safe-release",
+                add_reasons={DegradationReason.COST},
+            )
+            return
 
         # KR-P2-CLEANUP ST1: release succeeded; runtime is back to
         # READY. Fires AFTER release so a failed release doesn't move
