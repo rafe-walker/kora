@@ -14,8 +14,26 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # that would otherwise accumulate when hermes runs as PID 1. See #15012.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini && \
+    build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini gnupg ca-certificates && \
     rm -rf /var/lib/apt/lists/*
+
+# Doppler CLI for runtime secret injection (KR-D-DEPLOY ST1).
+# Apt repo + GPG verification — the docker/dispatch.sh entrypoint nest-wraps
+# `doppler run` over the 3 kora-runtime-* projects when KORA_DEPLOY_ENV is set
+# + != "dev". See docs/deploy-fly-io.md + kora_docs for the env mapping.
+#
+# Pinned to a known-good version range for SBOM hygiene; bump intentionally
+# when Doppler ships a CVE fix or material CLI improvement we depend on.
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL --retry 3 --tlsv1.2 https://packages.doppler.com/public/cli/gpg.key \
+      | gpg --dearmor --yes -o /etc/apt/keyrings/doppler-cli.gpg && \
+    chmod 0644 /etc/apt/keyrings/doppler-cli.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/doppler-cli.gpg] https://packages.doppler.com/public/cli/deb/debian any-version main" \
+      > /etc/apt/sources.list.d/doppler-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends "doppler=3.71.*" && \
+    rm -rf /var/lib/apt/lists/* && \
+    doppler --version
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
