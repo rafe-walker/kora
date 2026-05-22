@@ -36,6 +36,7 @@ import {
   MessageSquare,
   OctagonAlert,
   Package,
+  Cable,
   Plug,
   PowerSquare,
   Puzzle,
@@ -81,6 +82,7 @@ import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
 import HealthRollupPage from "@/pages/HealthRollupPage";
 import HeartbeatPanel from "@/pages/HeartbeatPanel";
+import MCPClientsPanel from "@/pages/MCPClientsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -135,6 +137,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/operational-state": OperationalStatePage,
   "/health-rollup": HealthRollupPage,
   "/heartbeat": HeartbeatPanel,
+  "/mcp-clients": MCPClientsPanel,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -196,6 +199,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "heartbeat",
     label: "Heartbeat",
     icon: Heart,
+  },
+  {
+    path: "/mcp-clients",
+    labelKey: "mcpClients",
+    label: "MCP Clients",
+    icon: Cable,
   },
   {
     path: "/boot-status",

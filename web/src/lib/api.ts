@@ -120,6 +120,8 @@ export const api = {
     fetchText(`/api/runbooks/${encodeURIComponent(id)}/content`),
   getHeartbeatServices: () =>
     fetchJSON<HeartbeatServicesResponse>("/api/heartbeat/services"),
+  getMCPClients: () =>
+    fetchJSON<MCPClientsListResponse>("/api/mcp/clients/list"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1425,4 +1427,35 @@ export interface HeartbeatServicesResponse {
   services: HeartbeatService[];
   generated_at: string;
   stub: boolean;
+}
+
+// MCP client picker (KR-MCP-3) — Kora-as-MCP-client surface.
+// Distinct from the existing MCPServer types (KR-P2-C ST2) which
+// describe Kora-as-MCP-server admin state. SECURITY CONTRACT: the
+// shape carries auth_token_env (variable NAME only) +
+// auth_token_present (bool); never the token VALUE. The FE renders
+// presence/absence only — never expose values in tooltips, copy
+// buttons, dev-console, or anywhere else.
+export type MCPClientTransport = "stdio" | "streamable_http";
+export type MCPClientStatus =
+  | "connected"
+  | "configured_but_unconnected"
+  | "error"
+  | "unhealthy";
+
+export interface MCPClient {
+  name: string;
+  transport: MCPClientTransport;
+  endpoint: string;
+  status: MCPClientStatus;
+  auth_token_env: string;
+  auth_token_present: boolean;
+  allowed_tools_regex: string | null;
+  tools_count: number | null;
+}
+
+export interface MCPClientsListResponse {
+  clients: MCPClient[];
+  stub: boolean;
+  generated_at: string;
 }

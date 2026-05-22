@@ -4723,6 +4723,73 @@ async def get_heartbeat_services():
 
 
 # ---------------------------------------------------------------------------
+# MCP client picker (KR-MCP-3) — Phase 2 Feature 1
+# ---------------------------------------------------------------------------
+#
+# Operator-facing view of EXTERNAL MCPs Kora consumes (Kora-as-MCP-client).
+# Distinct from KR-P2-C ST2's /api/mcp/servers (Kora-as-MCP-server admin
+# at /mcp); this is /api/mcp/clients/list at /mcp-clients.
+#
+# v1 stub: 2 hardcoded clients (github + cloudflare) per bucket §3.
+# CC#1's KR-MCP-1 ST2 replaces this with the real catalog read using
+# the same payload shape. The ``stub: True`` flag is the explicit
+# "this is sample data" signal; FE renders a banner when True.
+#
+# HARD CONSTRAINT (bucket §5 + ship-checklist): NEVER include token
+# VALUES in the response. ``auth_token_env`` carries only the env-var
+# NAME (e.g. ``KORA_MCP_GITHUB_TOKEN``); ``auth_token_present`` is a
+# bool. Tokens live in Doppler — the cockpit never receives them.
+# The §4 test guards against any future drift that leaks a value-
+# shaped field.
+
+
+@app.get("/api/mcp/clients/list")
+async def list_mcp_clients():
+    """Return the catalog of external MCPs Kora is configured to consume.
+
+    v1 stub — pinned shape so CC#1's KR-MCP-1 ST2 can swap the body
+    without touching the FE.
+
+    Per-client fields:
+      name                  — short id (github, cloudflare, etc.)
+      transport             — "stdio" | "streamable_http"
+      endpoint              — command line or URL (UI truncates)
+      status                — connected / configured_but_unconnected /
+                              error / unhealthy
+      auth_token_env        — Doppler env-var NAME (never the value)
+      auth_token_present    — bool: env-var resolves to non-empty?
+      allowed_tools_regex   — null = all tools; string = filter
+      tools_count           — int when status=connected; null otherwise
+    """
+    return {
+        "clients": [
+            {
+                "name": "github",
+                "transport": "stdio",
+                "endpoint": "npx -y @modelcontextprotocol/server-github",
+                "status": "configured_but_unconnected",
+                "auth_token_env": "KORA_MCP_GITHUB_TOKEN",
+                "auth_token_present": False,
+                "allowed_tools_regex": None,
+                "tools_count": None,
+            },
+            {
+                "name": "cloudflare",
+                "transport": "streamable_http",
+                "endpoint": "https://mcp.cloudflare.com/sse",
+                "status": "configured_but_unconnected",
+                "auth_token_env": "KORA_MCP_CLOUDFLARE_TOKEN",
+                "auth_token_present": False,
+                "allowed_tools_regex": None,
+                "tools_count": None,
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
