@@ -111,8 +111,25 @@ class SlackDMHandler:
     file-backed; in-memory state is request-scoped.
     """
 
-    def __init__(self, log_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        log_path: Optional[Path] = None,
+        slack_client: Optional[Any] = None,
+    ) -> None:
+        """Construct the handler.
+
+        Args:
+          log_path: Override the JSONL log file path. Production
+            callers leave this ``None``; tests inject a tmp_path.
+          slack_client: ST2 — inject a SlackClient for outbound DM
+            replies. Production code leaves this ``None``; the
+            handler lazy-creates a SlackClient on first reply via
+            ``_get_or_create_slack_client``. Tests can inject a mock
+            client OR leave it ``None`` to test the lazy-creation
+            failure modes.
+        """
         self._log_path = log_path or _resolve_log_path()
+        self._slack_client: Optional[Any] = slack_client
 
     async def handle_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a Slack Events payload.
@@ -226,6 +243,10 @@ class SlackDMHandler:
         # All filters passed — Joshua DM received.
         self._append_log_entry(payload, HANDLED_RECEIVED)
         self._emit_received_event(payload)
+        # ST2 — outbound echo reply. Failures DO NOT propagate; we
+        # always return ok-to-Slack for the inbound, then log the
+        # reply outcome separately into the outbound JSONL.
+        await self._send_echo_reply(payload)
         return {"ok": True}
 
     # ------------------------------------------------------------------
@@ -315,3 +336,184 @@ class SlackDMHandler:
             _safe_extract(payload, "event", "ts") or "",
             len(_safe_extract(payload, "event", "text") or ""),
         )
+
+    # ------------------------------------------------------------------
+    # ST2 — outbound reply
+    # ------------------------------------------------------------------
+
+    # Echo format LOCKED per PM ruling. The trailing slice keeps the
+    # reply Slack-renderable even if Joshua pastes a >40k-char message.
+    # Real AI-driven reply generation lands in the KR-FEAT-SLACK-DM-AI
+    # follow-on; until then this confirms the round-trip.
+    _ECHO_TEXT_MAX = 200
+
+    async def _send_echo_reply(self, payload: Dict[str, Any]) -> None:
+        """Reply to a verified Joshua DM via SlackClient.post_dm.
+
+        Failure modes (each writes one outbound JSONL entry with
+        ``send_status: "failed"`` + a ``[kora.slack_dm.reply_failed]``
+        structured-log emit — never crashes the inbound handler):
+
+          - SlackClient construction fails (missing
+            ``KORA_SLACK_BOT_TOKEN``)
+          - SlackTransportError (transport / retry exhaustion / non-
+            retryable HTTP error)
+          - SlackAPIError (Slack returned 2xx + ``ok: false``)
+        """
+        channel_id = _safe_extract(payload, "event", "channel") or ""
+        original_text = _safe_extract(payload, "event", "text") or ""
+        # Per the bucket spec: thread under the originating DM via
+        # event.thread_ts (already in-thread) or event.ts (new thread).
+        thread_ts = _safe_extract(payload, "event", "thread_ts") or _safe_extract(
+            payload, "event", "ts"
+        )
+        echo_text = f"Kora received: {original_text[: self._ECHO_TEXT_MAX]}"
+
+        client = self._get_or_create_slack_client()
+        if client is None:
+            # SlackClient construction failed — already logged the
+            # reason inside _get_or_create. Surface as a failed
+            # outbound entry.
+            self._append_outbound_log_entry(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                text=echo_text,
+                slack_message_ts=None,
+                send_status="failed",
+                failure_reason="slack_client_not_configured",
+            )
+            self._emit_reply_failed_event(
+                channel_id=channel_id,
+                reason="slack_client_not_configured",
+            )
+            return
+
+        try:
+            response = await client.post_dm(
+                channel_id=channel_id,
+                text=echo_text,
+                thread_ts=thread_ts,
+            )
+        except Exception as exc:
+            # Includes SlackAPIError + SlackTransportError. Caught
+            # broadly so even an unexpected client-side failure
+            # (e.g. httpx version mismatch) doesn't propagate.
+            reason = self._reply_failure_reason(exc)
+            self._append_outbound_log_entry(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                text=echo_text,
+                slack_message_ts=None,
+                send_status="failed",
+                failure_reason=reason,
+            )
+            self._emit_reply_failed_event(
+                channel_id=channel_id, reason=reason
+            )
+            return
+
+        # Success.
+        message_ts = (
+            response.get("ts") if isinstance(response, dict) else None
+        )
+        self._append_outbound_log_entry(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            text=echo_text,
+            slack_message_ts=str(message_ts) if message_ts else None,
+            send_status="ok",
+        )
+
+    def _get_or_create_slack_client(self) -> Optional[Any]:
+        """Lazy SlackClient construction.
+
+        Returns the cached client if one is set (test injection or
+        prior successful construction). Otherwise tries to construct
+        one; on ``SlackClientNotConfigured`` returns ``None`` so the
+        caller can record a failed-outbound entry without crashing.
+        """
+        if self._slack_client is not None:
+            return self._slack_client
+        try:
+            from kora_cli.clients.slack_client import (
+                SlackClient,
+                SlackClientNotConfigured,
+            )
+
+            self._slack_client = SlackClient()
+            return self._slack_client
+        except Exception as exc:
+            # SlackClientNotConfigured is the expected failure when
+            # KORA_SLACK_BOT_TOKEN is unset. Log once + cache None so
+            # subsequent inbound events don't re-attempt.
+            logger.warning(
+                "[kora.slack_dm] SlackClient unavailable: %r — "
+                "outbound replies disabled",
+                exc,
+            )
+            return None
+
+    def _append_outbound_log_entry(
+        self,
+        *,
+        channel_id: str,
+        thread_ts: Optional[str],
+        text: str,
+        slack_message_ts: Optional[str],
+        send_status: str,
+        failure_reason: Optional[str] = None,
+    ) -> None:
+        """Outbound-side JSONL entry. Distinct schema from inbound
+        entries (``sent_at`` instead of ``received_at``) so operator
+        log-analysis can branch on key presence."""
+        entry: Dict[str, Any] = {
+            "sent_at": _now_iso(),
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+            "text": text,
+            "slack_message_ts": slack_message_ts,
+            "send_status": send_status,
+        }
+        if failure_reason:
+            entry["failure_reason"] = failure_reason
+
+        try:
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
+        except OSError as exc:
+            logger.warning(
+                "[kora.slack_dm] outbound log write failed (%s): %r",
+                self._log_path,
+                exc,
+            )
+
+    def _emit_reply_failed_event(
+        self, *, channel_id: str, reason: str
+    ) -> None:
+        """Stable structured-log emit for reply failure. Same audit
+        seam as ``_emit_received_event`` — extends to chain emit
+        when substrate ships the vocab literal."""
+        logger.warning(
+            "[kora.slack_dm.reply_failed] channel=%s reason=%s",
+            channel_id,
+            reason,
+        )
+
+    @staticmethod
+    def _reply_failure_reason(exc: BaseException) -> str:
+        """Map an exception to a stable JSONL ``failure_reason`` code.
+
+        Pure helper — no imports of SlackClient module needed inline
+        (the type-checks happen via attribute presence so a slimmed
+        SlackClient won't break this map).
+        """
+        if isinstance(exc, ImportError):
+            return "slack_client_import_error"
+        slack_error = getattr(exc, "slack_error", None)
+        if slack_error:
+            return f"slack_api:{slack_error}"
+        last_status = getattr(exc, "last_status", None)
+        if last_status is not None:
+            return f"transport:{last_status}"
+        return f"transport:{type(exc).__name__}"

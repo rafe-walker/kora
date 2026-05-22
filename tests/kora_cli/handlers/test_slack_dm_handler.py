@@ -79,7 +79,22 @@ def log_path(tmp_path):
 
 @pytest.fixture
 def handler(log_path):
-    return SlackDMHandler(log_path=log_path)
+    """ST1 tests focus on inbound filter behavior. After ST2 wired
+    the outbound reply, the handler attempts post_dm on identified
+    Joshua DMs — inject a no-op mock SlackClient so the outbound
+    side runs without env config + the happy-path tests can assert
+    against just the inbound JSONL entries (filter by the
+    ``handled_status`` key vs the outbound's ``send_status`` key).
+    """
+    from unittest.mock import AsyncMock
+
+    class _MockClient:
+        def __init__(self):
+            self.post_dm = AsyncMock(
+                return_value={"ok": True, "ts": "1700000001.999"}
+            )
+
+    return SlackDMHandler(log_path=log_path, slack_client=_MockClient())
 
 
 @pytest.fixture(autouse=True)
@@ -97,12 +112,23 @@ def _reset_holder(monkeypatch):
 
 
 def _read_log_lines(log_path: Path) -> list[dict]:
+    """Read ONLY inbound JSONL entries (filter to those with the
+    ``handled_status`` key). After ST2 the JSONL also contains
+    outbound entries with ``send_status`` instead — those have
+    their own dedicated test surface in
+    ``test_slack_dm_reply.py``; ST1 tests filter them out so the
+    inbound-filter assertions stay sharp.
+    """
     if not log_path.exists():
         return []
     return [
-        json.loads(line)
-        for line in log_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        entry
+        for entry in (
+            json.loads(line)
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if "handled_status" in entry
     ]
 
 
@@ -355,18 +381,35 @@ async def test_malformed_payload_does_not_crash(handler, log_path):
 
 @pytest.mark.asyncio
 async def test_jsonl_one_json_per_line(handler, log_path):
-    """Multiple events → multiple lines, each parseable as JSON."""
+    """Multiple events → multiple lines, each parseable as JSON.
+
+    After ST2 each identified Joshua DM also writes an outbound
+    JSONL entry. 3 inbound events (2 Joshua + 1 USOMEONE) →
+    5 lines total (3 inbound + 2 outbound for the Joshua pair).
+    The assertion is "all lines are valid JSON" — schema branches
+    on inbound (``received_at``) vs outbound (``sent_at``).
+    """
     for i, user in enumerate([JOSHUA_ID, "USOMEONE", JOSHUA_ID]):
         await handler.handle_event(
             _make_payload(user=user, ts=f"170000000{i}.001")
         )
     raw = log_path.read_text(encoding="utf-8")
     lines = raw.splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 5  # 3 inbound + 2 outbound (Joshua only)
+    inbound_count = 0
+    outbound_count = 0
     for line in lines:
         entry = json.loads(line)  # parse-or-raise
-        for required in ("received_at", "user_id", "text", "handled_status"):
-            assert required in entry
+        if "handled_status" in entry:
+            for required in ("received_at", "user_id", "text"):
+                assert required in entry
+            inbound_count += 1
+        else:
+            for required in ("sent_at", "channel_id", "send_status"):
+                assert required in entry
+            outbound_count += 1
+    assert inbound_count == 3
+    assert outbound_count == 2
 
 
 @pytest.mark.asyncio
