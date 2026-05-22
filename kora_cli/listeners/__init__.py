@@ -24,3 +24,8 @@ from kora_cli.listeners import webhooks  # noqa: F401
 # startup (no transport opens) means listener insertion here is
 # fast + can't fail on remote-MCP availability.
 from kora_cli.listeners import mcp_consumption  # noqa: F401
+# KR-FEAT-HEARTBEAT ST1 — service-probe listener. Registers
+# a heartbeat-scheduler task at module-import time. Probe-instance
+# construction happens per cycle (stateless across cycles), so
+# startup is a clean no-op + LOG line.
+from kora_cli.listeners import heartbeat_probes_listener  # noqa: F401
