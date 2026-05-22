@@ -12326,6 +12326,30 @@ Examples:
     )
     mcp_login_p.add_argument("name", help="Server name to re-authenticate")
 
+    # KR-MCP-1 ST2 — outbound multi-MCP pool surface ("kora mcp clients ...").
+    # Distinct from the existing inbound `kora mcp` actions (add/remove/list/
+    # test/configure/login) which manage agent-side MCP servers Kora consumes
+    # via tools/mcp_tool.py. The `clients` sub-action manages outbound
+    # endpoints Kora calls AS A CLIENT — github, cloudflare, etc. — via the
+    # kora_mcp.pool.MCPClientPool.
+    mcp_clients_p = mcp_sub.add_parser(
+        "clients",
+        help="Manage outbound MCP client endpoints (github, cloudflare, etc.)",
+    )
+    mcp_clients_sub = mcp_clients_p.add_subparsers(dest="clients_action")
+    mcp_clients_sub.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List configured outbound MCP endpoints + health",
+    )
+    mcp_clients_status_p = mcp_clients_sub.add_parser(
+        "status",
+        help="Show one outbound MCP endpoint's config + health",
+    )
+    mcp_clients_status_p.add_argument(
+        "name", help="Endpoint routing prefix (e.g. 'github', 'cloudflare')"
+    )
+
     _add_accept_hooks_flag(mcp_parser)
 
     def cmd_mcp(args):
