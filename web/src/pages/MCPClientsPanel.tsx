@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clock,
   HelpCircle,
   KeyRound,
   Network,
@@ -12,6 +13,7 @@ import {
   PowerOff,
   RefreshCw,
   Terminal,
+  TimerOff,
   XCircle,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -28,6 +30,11 @@ import type {
   MCPClientsListResponse,
   MCPClientTransport,
 } from "@/lib/api";
+import {
+  formatRelativeCheck,
+  isStaleCheck,
+  truncateError,
+} from "@/lib/mcpHealth";
 
 const STATUS_TONE: Record<MCPClientStatus, "success" | "warning" | "destructive" | "outline"> = {
   connected: "success",
@@ -69,6 +76,13 @@ function truncateEndpoint(value: string, max = 60): string {
   return value.slice(0, max) + "…";
 }
 
+function formatAbsoluteCheck(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
 interface MCPClientRowProps {
   client: MCPClient;
   expanded: boolean;
@@ -76,6 +90,9 @@ interface MCPClientRowProps {
 }
 
 function MCPClientRow({ client, expanded, onToggle }: MCPClientRowProps) {
+  const stale = isStaleCheck(client.last_check_at);
+  const relativeCheck = formatRelativeCheck(client.last_check_at);
+  const neverChecked = client.last_check_at === null;
   return (
     <Card>
       <CardContent className="flex flex-col gap-2 py-3">
@@ -99,6 +116,28 @@ function MCPClientRow({ client, expanded, onToggle }: MCPClientRowProps) {
           <Badge tone={STATUS_TONE[client.status]}>
             {STATUS_LABEL[client.status]}
           </Badge>
+          {/* KR-MCP-CONSUMPTION ST2 surface: relative check timestamp.
+              Italic + muted when never checked so it reads as "no
+              snapshot yet" rather than "checked just now". */}
+          <span
+            className={`text-xs flex items-center gap-1 ${
+              neverChecked ? "text-muted-foreground italic" : "text-muted-foreground"
+            }`}
+            title={
+              client.last_check_at
+                ? `last_check_at: ${formatAbsoluteCheck(client.last_check_at)}`
+                : "no snapshot taken yet"
+            }
+          >
+            <Clock className="h-3 w-3" />
+            {relativeCheck}
+          </span>
+          {stale && (
+            <Badge tone="warning">
+              <TimerOff className="h-3 w-3" />
+              <span className="ml-1">stale</span>
+            </Badge>
+          )}
           {client.tools_count !== null && (
             <span className="text-xs text-muted-foreground">
               {client.tools_count} tool{client.tools_count === 1 ? "" : "s"}
@@ -114,6 +153,25 @@ function MCPClientRow({ client, expanded, onToggle }: MCPClientRowProps) {
             )}
           </span>
         </button>
+
+        {/* Collapsed-view error line: red, truncated to ~80 chars.
+            Plain-text rendering — React's default escaping defangs
+            any HTML/markdown/script content in last_error.
+            HARD CONSTRAINT (bucket §2(a) SECURITY): NEVER use
+            dangerouslySetInnerHTML here — the operator-readable
+            failure string is sourced from the MCP catalog probe
+            (subprocess output / HTTP body), which is untrusted. */}
+        {client.last_error !== null && !expanded && (
+          <div className="ml-7 flex items-start gap-2 text-xs text-destructive">
+            <AlertOctagon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+            <span
+              className="break-all"
+              title={client.last_error}
+            >
+              {truncateError(client.last_error)}
+            </span>
+          </div>
+        )}
 
         {expanded && (
           <div className="ml-7 flex flex-col gap-2 pt-2 border-t border-border text-xs">
@@ -178,6 +236,46 @@ function MCPClientRow({ client, expanded, onToggle }: MCPClientRowProps) {
                   : client.tools_count}
               </span>
             </div>
+            {/* ── Last Check section (KR-MCP-CLIENTS-HEALTH-DISPLAY) ── */}
+            <div className="pt-2 border-t border-border flex flex-col gap-1.5">
+              <div className="flex gap-2">
+                <span className="text-muted-foreground min-w-[120px]">
+                  last_check_at
+                </span>
+                <span className="font-mono">
+                  {formatAbsoluteCheck(client.last_check_at)}
+                </span>
+                {client.last_check_at && (
+                  <span className="text-muted-foreground ml-2 italic">
+                    ({relativeCheck})
+                  </span>
+                )}
+                {stale && (
+                  <Badge tone="warning" className="ml-auto">
+                    <TimerOff className="h-3 w-3" />
+                    <span className="ml-1">stale (&gt;10m)</span>
+                  </Badge>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <span className="text-muted-foreground min-w-[120px]">
+                  last_error
+                </span>
+                {client.last_error === null ? (
+                  <span className="text-muted-foreground italic">
+                    none
+                  </span>
+                ) : (
+                  // Plain-text rendering of last_error — React's
+                  // default child escaping defangs any HTML/script.
+                  // Bucket §2(a) SECURITY: NEVER use
+                  // dangerouslySetInnerHTML here.
+                  <pre className="font-mono text-destructive whitespace-pre-wrap break-all flex-1 m-0">
+                    {client.last_error}
+                  </pre>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </CardContent>
@@ -233,6 +331,11 @@ export default function MCPClientsPanel() {
   }
 
   // Aggregate counts for the header summary strip.
+  // Post-KR-MCP-CONSUMPTION ST2: "errors" now means clients whose
+  // last probe surfaced an error message OR whose status is itself
+  // unhealthy/error. Union (not sum) — same client may be in both
+  // sets (status=unhealthy + last_error set). With_error is the
+  // strictest signal the operator can pivot on.
   const counts = data
     ? {
         connected: data.clients.filter((c) => c.status === "connected").length,
@@ -240,8 +343,12 @@ export default function MCPClientsPanel() {
           (c) => c.status === "configured_but_unconnected",
         ).length,
         errors: data.clients.filter(
-          (c) => c.status === "error" || c.status === "unhealthy",
+          (c) =>
+            c.status === "error" ||
+            c.status === "unhealthy" ||
+            c.last_error !== null,
         ).length,
+        stale: data.clients.filter((c) => isStaleCheck(c.last_check_at)).length,
       }
     : null;
 
@@ -316,6 +423,12 @@ export default function MCPClientsPanel() {
                     <span className="flex items-center gap-1.5 text-xs text-destructive">
                       <AlertOctagon className="h-3.5 w-3.5" />
                       {counts.errors} error{counts.errors === 1 ? "" : "s"}
+                    </span>
+                  )}
+                  {counts.stale > 0 && (
+                    <span className="flex items-center gap-1.5 text-xs text-warning">
+                      <TimerOff className="h-3.5 w-3.5" />
+                      {counts.stale} stale (&gt;10m)
                     </span>
                   )}
                 </>
