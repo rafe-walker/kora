@@ -118,6 +118,8 @@ export const api = {
   getRunbooks: () => fetchJSON<RunbooksManifest>("/api/runbooks"),
   getRunbookContent: (id: string) =>
     fetchText(`/api/runbooks/${encodeURIComponent(id)}/content`),
+  getHeartbeatServices: () =>
+    fetchJSON<HeartbeatServicesResponse>("/api/heartbeat/services"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1401,4 +1403,26 @@ export const DIAG_BUNDLE_URL = "/api/diag-bundle";
 
 export function diagBundleHref(): string {
   return `${HERMES_BASE_PATH}${DIAG_BUNDLE_URL}`;
+}
+
+// Backend service heartbeat (KR-HB-PANEL).
+// status enum: healthy | degraded | unhealthy. Per-service "details"
+// shape varies (Sentry has unresolved_issues, Supabase has
+// connections_pct, etc.) — surfaced as an opaque Record so each FE
+// renderer can read the keys it knows about; unknown keys render as
+// plain key/value pairs.
+export type HeartbeatStatus = "healthy" | "degraded" | "unhealthy";
+
+export interface HeartbeatService {
+  name: string;
+  status: HeartbeatStatus;
+  last_check_at: string;
+  latency_ms: number;
+  details: Record<string, unknown>;
+}
+
+export interface HeartbeatServicesResponse {
+  services: HeartbeatService[];
+  generated_at: string;
+  stub: boolean;
 }

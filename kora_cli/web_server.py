@@ -4641,6 +4641,88 @@ async def get_diag_bundle():
 
 
 # ---------------------------------------------------------------------------
+# Backend service heartbeat (KR-HB-PANEL)
+# ---------------------------------------------------------------------------
+#
+# v1 stub: hardcoded sample of 5 backend services (Vercel / Sentry /
+# Doppler / Supabase / Fly) so the operator-facing dashboard can ship
+# before the Python heartbeat module that talks to each service's API
+# lands (KR-FEAT-HEARTBEAT follow-on, post-KR-D-DAEMON ST2).
+#
+# The ``stub: True`` flag is the explicit "this is sample data, not
+# real polling" signal — the frontend renders a banner when True so
+# operators never get misled during a real outage.
+#
+# Flip-over: when KR-FEAT-HEARTBEAT lands and a HeartbeatPoller
+# emits per-service status, replace this body with a projection of
+# the live state and drop the ``stub`` flag. Page UI is unchanged.
+
+
+@app.get("/api/heartbeat/services")
+async def get_heartbeat_services():
+    """Return per-service heartbeat status for Joshua's backend stack.
+
+    v1 stub. Replace body with a projection of the live
+    HeartbeatPoller state once KR-FEAT-HEARTBEAT lands.
+
+    Service status enum: ``healthy`` | ``degraded`` | ``unhealthy``.
+    Each service surfaces a small ``details`` dict — shape varies per
+    service (e.g. Sentry carries ``unresolved_issues``; Supabase
+    carries ``connections_pct``); FE renders as expandable key/value.
+    """
+    return {
+        "services": [
+            {
+                "name": "vercel",
+                "status": "healthy",
+                "last_check_at": "2026-05-22T18:00:00Z",
+                "latency_ms": 142,
+                "details": {
+                    "deployments_last_24h": 8,
+                    "error_rate_24h": 0.0,
+                },
+            },
+            {
+                "name": "sentry",
+                "status": "degraded",
+                "last_check_at": "2026-05-22T18:00:00Z",
+                "latency_ms": 230,
+                "details": {"unresolved_issues": 12},
+            },
+            {
+                "name": "doppler",
+                "status": "healthy",
+                "last_check_at": "2026-05-22T18:00:00Z",
+                "latency_ms": 95,
+                "details": {
+                    "projects_total": 3,
+                    "oldest_secret_age_days": 47,
+                },
+            },
+            {
+                "name": "supabase",
+                "status": "healthy",
+                "last_check_at": "2026-05-22T18:00:00Z",
+                "latency_ms": 38,
+                "details": {"connections_pct": 14},
+            },
+            {
+                "name": "fly",
+                "status": "healthy",
+                "last_check_at": "2026-05-22T18:00:00Z",
+                "latency_ms": 88,
+                "details": {
+                    "apps_running": 2,
+                    "deploys_last_24h": 1,
+                },
+            },
+        ],
+        "generated_at": "2026-05-22T18:00:05Z",
+        "stub": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

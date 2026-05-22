@@ -80,6 +80,7 @@ import MCPPage from "@/pages/MCPPage";
 import IdentityPage from "@/pages/IdentityPage";
 import OperationalStatePage from "@/pages/OperationalStatePage";
 import HealthRollupPage from "@/pages/HealthRollupPage";
+import HeartbeatPanel from "@/pages/HeartbeatPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -133,6 +134,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
   "/health-rollup": HealthRollupPage,
+  "/heartbeat": HeartbeatPanel,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -188,6 +190,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "healthRollup",
     label: "Health",
     icon: HeartPulse,
+  },
+  {
+    path: "/heartbeat",
+    labelKey: "heartbeat",
+    label: "Heartbeat",
+    icon: Heart,
   },
   {
     path: "/boot-status",

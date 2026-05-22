@@ -9,6 +9,7 @@ import {
   BookOpenCheck,
   CheckCircle2,
   DollarSign,
+  Heart,
   HeartPulse,
   Hourglass,
   Info,
@@ -40,6 +41,8 @@ import type {
   DRStateResponse,
   HealthRollupResponse,
   HealthStatus,
+  HeartbeatServicesResponse,
+  HeartbeatStatus,
   KoraAssignedSeaTicketsResponse,
   KoraControlObservedStateResponse,
   OperationalStateResponse,
@@ -65,6 +68,8 @@ interface DashboardData {
   charter: LoadStatus<CharterResponse>;
   recentEvents: LoadStatus<ChainEventsResponse>;
   runbooks: LoadStatus<RunbooksManifest>;
+  // KR-HB-PANEL — backend service heartbeat (stub)
+  heartbeat: LoadStatus<HeartbeatServicesResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -79,6 +84,7 @@ const INITIAL_DATA: DashboardData = {
   charter: { state: "loading" },
   recentEvents: { state: "loading" },
   runbooks: { state: "loading" },
+  heartbeat: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -493,6 +499,55 @@ function truncateMiddle(value: string, head: number): string {
   return `${value.slice(0, head)}…${value.slice(-4)}`;
 }
 
+function HeartbeatCardBody({ data }: { data: HeartbeatServicesResponse }) {
+  // Aggregate per-status counts. "5 services / 1 degraded / 0 unhealthy"
+  // (the spec §3(c) example) matches what the panel itself shows in its
+  // summary strip, kept consistent so the dashboard card + panel agree.
+  const total = data.services.length;
+  const counts: Record<HeartbeatStatus, number> = {
+    healthy: 0,
+    degraded: 0,
+    unhealthy: 0,
+  };
+  for (const s of data.services) counts[s.status]++;
+  // Worst-status tone drives the headline number colour: unhealthy >
+  // degraded > healthy. operator scans the dashboard for "is anything
+  // wrong" and this surfaces it without making them squint at chips.
+  const worst =
+    counts.unhealthy > 0
+      ? "unhealthy"
+      : counts.degraded > 0
+        ? "degraded"
+        : "healthy";
+  const headlineClass =
+    worst === "unhealthy"
+      ? "text-destructive"
+      : worst === "degraded"
+        ? "text-warning"
+        : "text-foreground";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {total}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          service{total === 1 ? "" : "s"}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        {counts.healthy > 0 && (
+          <Badge tone="success">{counts.healthy} healthy</Badge>
+        )}
+        {counts.degraded > 0 && (
+          <Badge tone="warning">{counts.degraded} degraded</Badge>
+        )}
+        {counts.unhealthy > 0 && (
+          <Badge tone="destructive">{counts.unhealthy} unhealthy</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -631,6 +686,8 @@ export default function DashboardPage() {
         loadOne("charter", () => api.getCharter()),
         loadOne("recentEvents", () => api.getChainEvents({ limit: 5 })),
         loadOne("runbooks", () => api.getRunbooks()),
+        // KR-HB-PANEL
+        loadOne("heartbeat", () => api.getHeartbeatServices()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -660,6 +717,7 @@ export default function DashboardPage() {
     data.charter,
     data.recentEvents,
     data.runbooks,
+    data.heartbeat,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -796,8 +854,8 @@ export default function DashboardPage() {
         </DashboardCard>
       </div>
 
-      {/* ── Row 2: newer surfaces (KR-P2-DASHBOARD-V2) ───────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+      {/* ── Row 2: newer surfaces (KR-P2-DASHBOARD-V2 + KR-HB-PANEL) ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
         <DashboardCard
           title="Capabilities"
           icon={ShieldCheck}
@@ -851,6 +909,21 @@ export default function DashboardPage() {
         >
           {data.runbooks.state === "ready" && (
             <RunbooksCardBody data={data.runbooks.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Heartbeat"
+          icon={Heart}
+          to="/heartbeat"
+          status={data.heartbeat}
+          stubbed={isStubbed(data.heartbeat)}
+          onRetry={() =>
+            void loadOne("heartbeat", () => api.getHeartbeatServices())
+          }
+        >
+          {data.heartbeat.state === "ready" && (
+            <HeartbeatCardBody data={data.heartbeat.data} />
           )}
         </DashboardCard>
       </div>
