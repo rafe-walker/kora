@@ -22,6 +22,46 @@ through this adapter by pointing at http://localhost:8642/v1.
 
 Requires:
 - aiohttp (already available in the gateway)
+
+# Class C identifier convention (K-DG identity-literal taxonomy)
+
+This file is the canonical home for **Class C** wire-format-stable
+identifiers in the Kora runtime. The K-DG taxonomy (originated in
+CC#3's KR-P2-B2 STOP-ASK, commit ``64eaaae``; documented in
+``kora_docs/00_canonical_current_state/identity_literal_taxonomy.md``)
+classifies remaining ``Hermes`` literals in the codebase into three
+buckets:
+
+  - **Class A** — user-facing identity strings (display_name,
+    persona labels in platform messages). Swept to ``display_name``
+    per KR-P2-B/B2.
+  - **Class B** — ``hermes`` CLI binary command names + entrypoint
+    scripts. Preserved (operator muscle memory, installer scripts,
+    documentation references).
+  - **Class C** — stable HTTP / wire-format identifiers. Preserved
+    permanently. Renaming would break any external HTTP consumer
+    that has integrated against them.
+
+The Class C identifiers in this file:
+
+  - ``X-Hermes-Session-Id`` request header — session continuity
+    handle for stateless ``/v1/chat/completions`` calls.
+  - ``X-Hermes-Session-Key`` request header — long-term memory
+    scoping key for both ``/v1/chat/completions`` and
+    ``/v1/responses`` calls.
+  - ``hermes-agent`` user-agent / platform string — exposed via
+    ``GET /v1/models`` + ``GET /health`` + the ``platform`` field
+    in JSON responses.
+
+# Adding new Class C identifiers — guidance
+
+If you introduce a NEW HTTP header or wire-format identifier here,
+consider whether it's genuinely Class C (stable forever) before
+naming. **Default to a Kora-prefixed name for new identifiers**
+(``X-Kora-*``, ``kora-agent``, etc.); only fall to Hermes-prefixed
+if external compatibility with the existing ecosystem is genuinely
+required. Class C is intentionally a small, closed set — every
+addition is a permanent contract.
 """
 
 import asyncio
