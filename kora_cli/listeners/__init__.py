@@ -19,3 +19,8 @@ from kora_cli.listeners import heartbeat  # noqa: F401
 from kora_cli.listeners import web  # noqa: F401
 from kora_cli.listeners import mcp  # noqa: F401
 from kora_cli.listeners import webhooks  # noqa: F401
+# KR-MCP-CONSUMPTION ST1 — registers AFTER web/mcp so the pool
+# accessor is available once the MCP-server routes go live. Lazy
+# startup (no transport opens) means listener insertion here is
+# fast + can't fail on remote-MCP availability.
+from kora_cli.listeners import mcp_consumption  # noqa: F401
