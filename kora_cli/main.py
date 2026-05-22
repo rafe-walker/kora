@@ -10326,7 +10326,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "cron", "curator", "daemon", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
@@ -10450,6 +10450,13 @@ def main():
     from kora_cli.boot_cmd import add_boot_parser
 
     add_boot_parser(subparsers)
+
+    # =========================================================================
+    # daemon command (KR-D-DAEMON ST1) — always-alive runtime
+    # =========================================================================
+    from kora_cli.daemon import add_daemon_parser
+
+    add_daemon_parser(subparsers)
 
     # =========================================================================
     # model command
