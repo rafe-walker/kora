@@ -124,6 +124,8 @@ export const api = {
     fetchJSON<MCPClientsListResponse>("/api/mcp/clients/list"),
   getRecentWebhookEvents: () =>
     fetchJSON<WebhookEventsResponse>("/api/webhooks/events/recent"),
+  getRecentAgentActivity: () =>
+    fetchJSON<AgentActivityResponse>("/api/agent-activity/recent"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1489,4 +1491,40 @@ export interface WebhookEventsResponse {
   stub: boolean;
   generated_at: string;
   total_recent_24h: number;
+}
+
+// Agent activity lens (KR-AGENT-ACTIVITY-PANEL).
+// SECURITY CONTRACT (3-layer, same shape as KR-MCP-3 / WEBHOOK-EVENTS):
+//   * result_summary is a SHORT TEXTUAL summary — never raw JSON
+//     payloads. Backend tests enforce; FE renders verbatim.
+//   * caller_actor_kind is a LABEL (claude_pm / kora_drone_N / etc.)
+//     — never bearer-token-shaped or token-hash-shaped. Backend
+//     tests enforce against base64/hex patterns.
+//   * This TS type is the third enforcement layer — fields are
+//     declared as plain strings with the wire-contract documented;
+//     no separate "raw_payload" or "auth_token" fields exist.
+export type AgentCallStatus =
+  | "ok"
+  | "capability_denied"
+  | "denied_prod_only"
+  | "tool_not_found"
+  | "handler_error"
+  | "timeout";
+
+export interface AgentCall {
+  id: string;
+  tool_name: string;
+  caller_actor_kind: string; // label only — never a token or hash
+  called_at: string;
+  duration_ms: number;
+  status: AgentCallStatus;
+  result_summary: string; // textual summary — never raw JSON
+}
+
+export interface AgentActivityResponse {
+  calls: AgentCall[];
+  stub: boolean;
+  generated_at: string;
+  total_recent_24h: number;
+  by_caller_24h: Record<string, number>;
 }

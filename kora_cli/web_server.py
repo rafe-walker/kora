@@ -4909,6 +4909,104 @@ async def list_recent_webhook_events():
 
 
 # ---------------------------------------------------------------------------
+# Agent activity lens (KR-AGENT-ACTIVITY-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing observability for OTHER agents calling Kora via the
+# /mcp endpoint (Feature 4). Pairs with CC#3's KR-MCP-RUNTIME-SURFACE
+# bucket — ST2 will swap this stub for real per-call ledger reads
+# from kora_cli/listeners/mcp.py (PR #101 stubbed kora__daemon_status
+# only; ST2 adds the full kora__* tool surface).
+#
+# v1 stub: 5 representative calls per bucket §3 verbatim, deliberately
+# spanning ok / capability_denied / denied_prod_only so operator sees
+# what failures look like. stub:true keeps the FE banner visible.
+#
+# SECURITY (3-layer contract, same pattern as KR-MCP-3 / WEBHOOK-EVENTS):
+#   1. ``result_summary`` is a SHORT TEXTUAL summary — never raw JSON
+#      payloads. Backend test asserts no embedded {/[/" sequences that
+#      would indicate a JSON dump leaked into the summary line.
+#   2. ``caller_actor_kind`` is a LABEL (claude_pm / kora_drone_7 /
+#      etc.) — never bearer-token-shaped or token-hash-shaped. Backend
+#      test asserts the field doesn't match base64/hex patterns of
+#      typical token shapes.
+#   3. TS interface enforces both contracts at compile time.
+
+
+@app.get("/api/agent-activity/recent")
+async def list_recent_agent_activity():
+    """Return recent agent-driven MCP tool calls for the operator lens.
+
+    v1 stub — pinned shape so CC#3's KR-MCP-RUNTIME-SURFACE ST2 can
+    swap the body without touching the FE.
+
+    Per-call fields:
+      id                — opaque call id
+      tool_name         — kora__* MCP tool invoked
+      caller_actor_kind — LABEL only (claude_pm, kora_drone_N, etc.);
+                          never a token or token hash
+      called_at         — ISO-8601 timestamp
+      duration_ms       — int (>= 0)
+      status            — ok | capability_denied | denied_prod_only |
+                          tool_not_found | handler_error | timeout
+      result_summary    — short TEXTUAL summary; never raw JSON
+    """
+    return {
+        "calls": [
+            {
+                "id": "stub-1",
+                "tool_name": "kora__get_operational_state",
+                "caller_actor_kind": "claude_pm",
+                "called_at": "2026-05-22T17:58:42Z",
+                "duration_ms": 124,
+                "status": "ok",
+                "result_summary": "state: RUNNING, 0 active sea_tickets",
+            },
+            {
+                "id": "stub-2",
+                "tool_name": "kora__create_sea_ticket",
+                "caller_actor_kind": "claude_pm",
+                "called_at": "2026-05-22T17:51:08Z",
+                "duration_ms": 832,
+                "status": "ok",
+                "result_summary": "ticket: sea_abc123",
+            },
+            {
+                "id": "stub-3",
+                "tool_name": "kora__request_state_transition",
+                "caller_actor_kind": "kora_drone_7",
+                "called_at": "2026-05-22T17:44:19Z",
+                "duration_ms": 67,
+                "status": "capability_denied",
+                "result_summary": "required: cap_kora_state_transition",
+            },
+            {
+                "id": "stub-4",
+                "tool_name": "kora__get_recent_chain_events",
+                "caller_actor_kind": "claude_pm",
+                "called_at": "2026-05-22T17:42:55Z",
+                "duration_ms": 198,
+                "status": "ok",
+                "result_summary": "20 events returned",
+            },
+            {
+                "id": "stub-5",
+                "tool_name": "kora__send_webhook_test_event",
+                "caller_actor_kind": "claude_pm",
+                "called_at": "2026-05-22T17:40:11Z",
+                "duration_ms": 12,
+                "status": "denied_prod_only",
+                "result_summary": "dev-only tool refused on prd environment",
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_recent_24h": 23,
+        "by_caller_24h": {"claude_pm": 19, "kora_drone_7": 4},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

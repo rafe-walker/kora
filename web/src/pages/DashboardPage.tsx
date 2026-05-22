@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Waves,
+  Workflow,
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -52,6 +53,8 @@ import type {
   RunbooksManifest,
   WebhookEventsResponse,
   WebhookEventStatus,
+  AgentActivityResponse,
+  AgentCallStatus,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -79,6 +82,8 @@ interface DashboardData {
   mcpClients: LoadStatus<MCPClientsListResponse>;
   // KR-WEBHOOK-EVENTS-PANEL — public-port traffic lens (stub)
   webhookEvents: LoadStatus<WebhookEventsResponse>;
+  // KR-AGENT-ACTIVITY-PANEL — recent agent-driven /mcp calls (stub)
+  agentActivity: LoadStatus<AgentActivityResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -96,6 +101,7 @@ const INITIAL_DATA: DashboardData = {
   heartbeat: { state: "loading" },
   mcpClients: { state: "loading" },
   webhookEvents: { state: "loading" },
+  agentActivity: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -643,6 +649,50 @@ function WebhookEventsCardBody({ data }: { data: WebhookEventsResponse }) {
   );
 }
 
+function AgentActivityCardBody({ data }: { data: AgentActivityResponse }) {
+  // Operator-attention contract (mirrors WebhookEvents):
+  // headline goes destructive when denied-class calls cross 10 in the
+  // visible window OR any handler_error / timeout shows up — both are
+  // "something is actively breaking, not just noisy".
+  const counts: Record<AgentCallStatus, number> = {
+    ok: 0,
+    capability_denied: 0,
+    denied_prod_only: 0,
+    tool_not_found: 0,
+    handler_error: 0,
+    timeout: 0,
+  };
+  for (const c of data.calls) counts[c.status]++;
+  const deniedTotal = counts.capability_denied + counts.denied_prod_only;
+  const hardFailTotal = counts.handler_error + counts.timeout;
+  const alert = deniedTotal > 10 || hardFailTotal > 0;
+  const headlineClass = alert ? "text-destructive" : "text-foreground";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {data.total_recent_24h}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          call{data.total_recent_24h === 1 ? "" : "s"} / 24h
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        {counts.ok > 0 && <Badge tone="success">{counts.ok} ok</Badge>}
+        {deniedTotal > 0 && (
+          <Badge tone="warning">{deniedTotal} denied</Badge>
+        )}
+        {counts.handler_error > 0 && (
+          <Badge tone="destructive">
+            {counts.handler_error} handler-error
+          </Badge>
+        )}
+        {counts.timeout > 0 && (
+          <Badge tone="destructive">{counts.timeout} timeout</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -787,6 +837,8 @@ export default function DashboardPage() {
         loadOne("mcpClients", () => api.getMCPClients()),
         // KR-WEBHOOK-EVENTS-PANEL
         loadOne("webhookEvents", () => api.getRecentWebhookEvents()),
+        // KR-AGENT-ACTIVITY-PANEL
+        loadOne("agentActivity", () => api.getRecentAgentActivity()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -819,6 +871,7 @@ export default function DashboardPage() {
     data.heartbeat,
     data.mcpClients,
     data.webhookEvents,
+    data.agentActivity,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -1057,6 +1110,23 @@ export default function DashboardPage() {
         >
           {data.webhookEvents.state === "ready" && (
             <WebhookEventsCardBody data={data.webhookEvents.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Agent Activity"
+          icon={Workflow}
+          to="/agent-activity"
+          status={data.agentActivity}
+          stubbed={isStubbed(data.agentActivity)}
+          onRetry={() =>
+            void loadOne("agentActivity", () =>
+              api.getRecentAgentActivity(),
+            )
+          }
+        >
+          {data.agentActivity.state === "ready" && (
+            <AgentActivityCardBody data={data.agentActivity.data} />
           )}
         </DashboardCard>
       </div>
