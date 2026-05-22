@@ -184,10 +184,38 @@ async def _handle_slack(request: Request) -> Response:
         challenge = payload.get("challenge", "")
         return PlainTextResponse(challenge)
 
-    # All other event types — Feature 5 will land the real handler.
-    # ST3 scaffolding logs + acknowledges.
+    # KR-FEAT-SLACK-DM ST1 — route verified `event_callback` payloads
+    # to the Slack-DM handler. The handler owns Kora-specific filtering
+    # (identity / channel-type / bot / subtype / state-gate) + JSONL
+    # persistence + chain-event emit. Belt-and-suspenders exception
+    # guard at the listener boundary: the handler wraps its own body
+    # too, but if SlackDMHandler construction itself fails, we still
+    # need to 200 Slack to prevent its aggressive retries.
+    if isinstance(payload, dict) and payload.get("type") == "event_callback":
+        try:
+            from kora_cli.handlers.slack_dm_handler import SlackDMHandler
+
+            handler = SlackDMHandler()
+            await handler.handle_event(payload)
+        except Exception as exc:
+            logger.warning(
+                "[kora.webhook.slack] handler raised %r — dead-lettering",
+                exc,
+            )
+            emit_webhook_dead_letter(
+                source="slack",
+                reason=f"handler_error: {type(exc).__name__}",
+                headers=dict(request.headers),
+                peer_ip=_peer_ip(request),
+                request_id=request.headers.get("x-request-id"),
+                body_bytes=len(raw_body),
+            )
+        return JSONResponse({"ok": True})
+
+    # Other Slack event-wrapper types we don't route (e.g.
+    # rate_limit, app_rate_limited). Log + 200 OK.
     logger.info(
-        "[kora.webhook.slack] event accepted: type=%s",
+        "[kora.webhook.slack] event accepted but not routed: type=%s",
         payload.get("type") if isinstance(payload, dict) else "(unknown)",
     )
     return JSONResponse({"ok": True})
