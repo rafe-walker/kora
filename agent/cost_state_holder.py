@@ -420,6 +420,62 @@ class CostStateHolder:
             breaker_re_tripped=breaker_re_tripped,
         )
 
+    def refresh_billing_period(self, new_period_start: datetime) -> None:
+        """KR-P2-K ST5 — refresh at month boundary.
+
+        Resets ``spent_to_date_usd`` to 0 and rolls
+        ``billing_period_start`` to ``new_period_start``. Also clears
+        the reconciliation state (``last_reconciled_at`` /
+        ``last_reconciled_anthropic_usd``) so the first reconciliation
+        of the new period sets fresh ground truth.
+
+        Preserves ``latest_rate_limit_pulse`` (the Anthropic
+        rate-limit window doesn't align with the billing period
+        reset; the most recent pulse remains operator-informative)
+        and ``credit_pool_usd`` / ``extra_usage_off`` (config).
+
+        Args:
+            new_period_start: Tz-aware start of the new billing period.
+                Must be strictly forward of the current
+                ``billing_period_start`` (refusing a same-period
+                refresh prevents accidental loss of within-period
+                spend).
+
+        Raises:
+            ValueError: if ``new_period_start`` is naive or not
+                strictly forward of the current period start.
+
+        Note: the caller is responsible for the cross-holder
+        side-effect of clearing PAUSED{COST} on the operational-state
+        holder and starting the SeaTicketPoller's ramped resume.
+        See :mod:`agent.cost_ladder_refresh` for the coordinator.
+        """
+        if new_period_start.tzinfo is None:
+            raise ValueError(
+                "new_period_start must be timezone-aware "
+                "(use datetime(..., tzinfo=timezone.utc))"
+            )
+        if new_period_start <= self._state.billing_period_start:
+            raise ValueError(
+                f"new_period_start ({new_period_start.isoformat()}) "
+                f"must be strictly forward of current period start "
+                f"({self._state.billing_period_start.isoformat()})"
+            )
+        logger.info(
+            "[kora.cost_ladder] refreshing billing period: %s -> %s "
+            "(spent_to_date was %.4f USD; resetting to 0)",
+            self._state.billing_period_start.isoformat(),
+            new_period_start.isoformat(),
+            self._state.spent_to_date_usd,
+        )
+        self._state = replace(
+            self._state,
+            spent_to_date_usd=0.0,
+            billing_period_start=new_period_start,
+            last_reconciled_at=None,
+            last_reconciled_anthropic_usd=None,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Singleton + accessors
