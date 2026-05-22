@@ -738,6 +738,129 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
+# ─── Clients (outbound multi-MCP pool, KR-MCP-1 ST2) ─────────────────────────
+
+
+def cmd_mcp_clients_list(_args=None):
+    """``hermes mcp clients list`` — show all configured outbound MCP
+    endpoints with config-level health.
+
+    Reads the ``mcp_clients`` block from ~/.kora/config.yaml merged
+    with the default catalog (github + cloudflare). DOES NOT open
+    transport connections — purely a config + auth-env check.
+    """
+    from kora_mcp.catalog import (
+        check_endpoint_health,
+        load_registry_from_config,
+    )
+
+    config = load_config() or {}
+    registry = load_registry_from_config(config, include_defaults=True)
+
+    print()
+    print(color("  MCP Clients (outbound):", Colors.CYAN + Colors.BOLD))
+    print()
+    if not registry.endpoints:
+        _info("(no client endpoints configured)")
+        print()
+        return
+
+    for endpoint in registry.endpoints:
+        health = check_endpoint_health(endpoint)
+        if health.healthy:
+            status = color("✓ ready", Colors.GREEN)
+        else:
+            status = color("⚠ unhealthy", Colors.YELLOW)
+        print(
+            f"    {color(endpoint.name, Colors.CYAN):30s} "
+            f"{endpoint.transport:18s} {status}"
+        )
+        _info(f"  endpoint: {endpoint.endpoint}")
+        if endpoint.auth_token_env:
+            _info(f"  auth env: {endpoint.auth_token_env}")
+        if endpoint.allowed_tools_regex:
+            _info(f"  allowlist: {endpoint.allowed_tools_regex}")
+        if not health.healthy:
+            _warning(health.reason)
+        print()
+
+
+def cmd_mcp_clients_status(args):
+    """``hermes mcp clients status <name>`` — detailed health for one
+    outbound MCP endpoint."""
+    from kora_mcp.catalog import (
+        check_endpoint_health,
+        find_endpoint_by_name,
+        load_registry_from_config,
+    )
+
+    name = getattr(args, "name", None)
+    if not name:
+        _error("usage: hermes mcp clients status <name>")
+        return
+
+    config = load_config() or {}
+    registry = load_registry_from_config(config, include_defaults=True)
+    endpoint = find_endpoint_by_name(registry, name)
+    if endpoint is None:
+        _error(f"no MCP client endpoint named {name!r}")
+        _info(
+            f"available: {', '.join(e.name for e in registry.endpoints) or '(none)'}"
+        )
+        return
+
+    print()
+    print(color(f"  MCP Client: {endpoint.name}", Colors.CYAN + Colors.BOLD))
+    print()
+    _info(f"transport:   {endpoint.transport}")
+    _info(f"endpoint:    {endpoint.endpoint}")
+    _info(f"timeout_s:   {endpoint.timeout_seconds}")
+    _info(f"startup_s:   {endpoint.startup_timeout_seconds}")
+    if endpoint.auth_token_env:
+        _info(f"auth env:    {endpoint.auth_token_env}")
+    if endpoint.allowed_tools_regex:
+        _info(f"allowlist:   {endpoint.allowed_tools_regex}")
+    print()
+
+    health = check_endpoint_health(endpoint)
+    if health.healthy:
+        _success("config-level health: ready (auth env set; transport not opened)")
+    else:
+        _warning(f"config-level health: unhealthy — {health.reason}")
+    print()
+
+
+def cmd_mcp_clients(args):
+    """Subcommand-action dispatcher for ``hermes mcp clients ...``.
+
+    Mirrors the parent ``mcp_command`` dispatcher pattern. The
+    K-DG subcommand-dispatcher check
+    (``feedback_k_dg_subcommand_dispatcher_check``): both the
+    argparse ``add_parser`` entry AND this dispatcher branch must
+    be wired for every sub-action — otherwise the parser accepts
+    the action but dispatch is a silent no-op.
+    """
+    sub_action = getattr(args, "clients_action", None)
+
+    handlers = {
+        "list": cmd_mcp_clients_list,
+        "ls": cmd_mcp_clients_list,
+        "status": cmd_mcp_clients_status,
+    }
+
+    handler = handlers.get(sub_action)
+    if handler:
+        handler(args)
+        return
+
+    # No sub-action → show list + usage
+    cmd_mcp_clients_list()
+    print(color("  Commands:", Colors.CYAN))
+    _info("hermes mcp clients list              List outbound MCP endpoints")
+    _info("hermes mcp clients status <name>     Show one endpoint's health")
+    print()
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
@@ -759,6 +882,8 @@ def mcp_command(args):
         "configure": cmd_mcp_configure,
         "config": cmd_mcp_configure,
         "login": cmd_mcp_login,
+        # KR-MCP-1 ST2 — outbound multi-MCP pool surface
+        "clients": cmd_mcp_clients,
     }
 
     handler = handlers.get(action)
@@ -777,4 +902,6 @@ def mcp_command(args):
         _info("hermes mcp test <name>                        Test connection")
         _info("hermes mcp configure <name>                   Toggle tools")
         _info("hermes mcp login <name>                       Re-authenticate OAuth")
+        _info("hermes mcp clients list                       List outbound MCP endpoints")
+        _info("hermes mcp clients status <name>              Outbound endpoint health")
         print()
