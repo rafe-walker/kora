@@ -1237,7 +1237,14 @@ export type DRMatchStatus =
   | "pending_runbook"
   | "unknown";
 
-export type EpochSource = "boot-success" | "dr-recovery" | "operator-bump";
+export type EpochSource =
+  | "boot-success"
+  | "dr-recovery"
+  | "operator-bump"
+  // "synthesized": single-entry projection from the live kora_known_epoch
+  // when no persistent history table exists yet (KR-P2-DR-EPOCH-SYNTH).
+  // Auto-disappears when substrate ships a real history table.
+  | "synthesized";
 
 export interface DRCurrent {
   substrate_epoch: number;
@@ -1249,9 +1256,16 @@ export interface DRCurrent {
 
 export interface EpochHistoryEntry {
   epoch: number;
-  observed_at: string;
+  // observed_at is null on synthesized entries — substrate STABLE
+  // accessor exposes only the epoch value, not when it was first
+  // published, so synthesis can't fill this honestly.
+  observed_at: string | null;
   kora_known_at: string | null;
   source: EpochSource;
+  // True iff this entry was synthesized from the live kora_known_epoch
+  // rather than read from a real history row. FE renders a subdued
+  // "synth" badge to distinguish from audit-trail rows.
+  synthesized?: boolean;
 }
 
 export interface DRObservedEvent {
