@@ -276,8 +276,35 @@ async def run_boot_sequence(
     # holder to PAUSED + emitted the dr-specific chain event. The
     # coordinator MUST NOT transition to STOPPED or emit
     # kora.boot.failed (would clobber the gate's audit + wrongly
-    # signal a STOPPED-class failure). Just return PAUSED.
+    # signal a STOPPED-class failure).
+    #
+    # KR-P2-FAIL-SAFETIES ST3 (closes audit DEGRADED 6c): the
+    # coordinator defensively transitions the holder if the gate's
+    # handler didn't reach the transition_to call (e.g. emit or
+    # listener exception propagated before holder.transition_to). The
+    # check is conditional so a successful handler doesn't generate a
+    # duplicate transition record in the holder's audit ring. Per the
+    # locked rule `feedback_fail_closed_by_default_security_infra`:
+    # holder-coherence with BootSummary is the security-relevant
+    # invariant — a BootSummary saying PAUSED while the holder still
+    # reports BOOTING would let downstream consumers proceed past a
+    # boundary that was supposed to halt them.
     if failed.gate_class is GateClass.INVARIANT_PAUSE:
+        current = holder.current
+        if (
+            current.primary_state is not PrimaryState.PAUSED
+            or DegradationReason.SUBSTRATE not in current.degradation_reasons
+        ):
+            await holder.transition_to(
+                PrimaryState.PAUSED,
+                trigger=(
+                    f"boot coordinator defensive PAUSED transition "
+                    f"(gate={failed.gate_id}, "
+                    f"class=invariant_pause); gate handler did not "
+                    f"complete the holder transition"
+                ),
+                add_reasons={DegradationReason.SUBSTRATE},
+            )
         return BootSummary(
             result=BootResult.PAUSED,
             gate_results=results,
