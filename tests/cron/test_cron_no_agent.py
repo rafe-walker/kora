@@ -104,7 +104,7 @@ def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
     from tools.cronjob_tools import cronjob
 
     result = json.loads(
-        cronjob(action="create", schedule="every 5m", no_agent=True, deliver="local")
+        cronjob(action="create", schedule="every 5m", no_agent=True, deliver="local", work_class="local_only")
     )
     assert result.get("success") is False
     assert "no_agent=True requires a script" in result.get("error", "")
@@ -123,7 +123,7 @@ def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
             script="alert.sh",
             no_agent=True,
             deliver="local",
-        )
+        work_class="local_only")
     )
     assert result.get("success") is True
     assert result["job"]["no_agent"] is True
@@ -143,7 +143,7 @@ def test_cronjob_tool_update_toggles_no_agent(hermes_env):
             script="w.sh",
             no_agent=True,
             deliver="local",
-        )
+        work_class="local_only")
     )
     job_id = created["job_id"]
 
@@ -161,7 +161,7 @@ def test_cronjob_tool_update_no_agent_without_script_errors(hermes_env):
     from tools.cronjob_tools import cronjob
 
     created = json.loads(
-        cronjob(action="create", schedule="every 5m", prompt="do a thing", deliver="local")
+        cronjob(action="create", schedule="every 5m", prompt="do a thing", deliver="local", work_class="local_only")
     )
     job_id = created["job_id"]
 
@@ -184,7 +184,7 @@ def test_cronjob_tool_create_does_not_require_prompt_when_no_agent(hermes_env):
             script="w.sh",
             no_agent=True,
             deliver="local",
-        )
+        work_class="local_only")
     )
     assert result.get("success") is True
 
