@@ -20,6 +20,7 @@ import {
   PowerSquare,
   Radio,
   RefreshCw,
+  Mail,
   MessageCircle,
   Scroll,
   ShieldAlert,
@@ -58,6 +59,8 @@ import type {
   AgentCallStatus,
   SlackDMResponse,
   SlackDMHandledStatus,
+  EmailResponse,
+  EmailHandledStatus,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -89,6 +92,8 @@ interface DashboardData {
   agentActivity: LoadStatus<AgentActivityResponse>;
   // KR-SLACK-DM-PANEL — Kora ↔ Joshua DM conversation (stub)
   slackDM: LoadStatus<SlackDMResponse>;
+  // KR-EMAIL-PANEL — Kora ↔ Joshua email inbox/outbox (stub)
+  email: LoadStatus<EmailResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -108,6 +113,7 @@ const INITIAL_DATA: DashboardData = {
   webhookEvents: { state: "loading" },
   agentActivity: { state: "loading" },
   slackDM: { state: "loading" },
+  email: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -752,6 +758,71 @@ function SlackDMCardBody({ data }: { data: SlackDMResponse }) {
   );
 }
 
+function EmailCardBody({ data }: { data: EmailResponse }) {
+  // Operator-attention contract per spec §2(c): headline goes
+  // destructive when filtered_non_allowlist > 0 (someone outside
+  // the allowlist is emailing the bot — investigate) OR any
+  // spoofing_warning fires in the visible window OR sent_failed /
+  // handler_error appears. Same shape as the SlackDM headline rule.
+  const filteredNonAllow = data.by_status_24h["filtered_non_allowlist"] ?? 0;
+  const sentFailed = data.by_status_24h["sent_failed"] ?? 0;
+  const handlerError = data.by_status_24h["handler_error"] ?? 0;
+  // spoofing_warning is per-message; sum across the visible window
+  // (by_status_24h doesn't break it out — it's an inbound-only red
+  // flag orthogonal to handled_status).
+  const spoofingCount = data.messages.filter(
+    (m) => m.spoofing_warning === true,
+  ).length;
+  const alert =
+    filteredNonAllow > 0 ||
+    spoofingCount > 0 ||
+    sentFailed > 0 ||
+    handlerError > 0;
+  const headlineClass = alert ? "text-destructive" : "text-foreground";
+  const FLAGGED: EmailHandledStatus[] = [
+    "filtered_non_allowlist",
+    "filtered_wrong_recipient",
+    "sent_failed",
+    "handler_error",
+    "dropped_paused",
+  ];
+  const flaggedTotal =
+    FLAGGED.reduce((sum, s) => sum + (data.by_status_24h[s] ?? 0), 0) +
+    spoofingCount;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {data.total_recent_24h}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          email{data.total_recent_24h === 1 ? "" : "s"} / 24h
+          {flaggedTotal > 0
+            ? ` · ${flaggedTotal} flagged`
+            : ""}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        <Badge tone="outline">
+          ←{data.by_direction_24h.inbound} →{data.by_direction_24h.outbound}
+        </Badge>
+        {filteredNonAllow > 0 && (
+          <Badge tone="destructive">
+            {filteredNonAllow} non-allowlist
+          </Badge>
+        )}
+        {spoofingCount > 0 && (
+          <Badge tone="destructive">{spoofingCount} spoofing</Badge>
+        )}
+        {sentFailed > 0 && (
+          <Badge tone="destructive">{sentFailed} send-failed</Badge>
+        )}
+        {handlerError > 0 && (
+          <Badge tone="destructive">{handlerError} handler-error</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -900,6 +971,8 @@ export default function DashboardPage() {
         loadOne("agentActivity", () => api.getRecentAgentActivity()),
         // KR-SLACK-DM-PANEL
         loadOne("slackDM", () => api.getRecentSlackDM()),
+        // KR-EMAIL-PANEL
+        loadOne("email", () => api.getRecentEmail()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -934,6 +1007,7 @@ export default function DashboardPage() {
     data.webhookEvents,
     data.agentActivity,
     data.slackDM,
+    data.email,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -1204,6 +1278,19 @@ export default function DashboardPage() {
         >
           {data.slackDM.state === "ready" && (
             <SlackDMCardBody data={data.slackDM.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Email ↔ Joshua"
+          icon={Mail}
+          to="/email"
+          status={data.email}
+          stubbed={isStubbed(data.email)}
+          onRetry={() => void loadOne("email", () => api.getRecentEmail())}
+        >
+          {data.email.state === "ready" && (
+            <EmailCardBody data={data.email.data} />
           )}
         </DashboardCard>
       </div>

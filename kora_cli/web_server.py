@@ -5167,6 +5167,149 @@ async def list_recent_slack_dm():
 
 
 # ---------------------------------------------------------------------------
+# Email inbox/outbox lens (KR-EMAIL-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing view of recent inbound + outbound email exchanges.
+# Pairs with CC#1's KR-FEAT-EMAIL bucket (Feature 3 backend) — ST2
+# will swap this stub for a real read of
+# ${HERMES_HOME}/email_inbound_log.jsonl +
+# ${HERMES_HOME}/email_outbound_log.jsonl (Purelymail-backed).
+#
+# v1 stub: 4 representative messages per bucket §2(a) verbatim,
+# spanning inbound (received) + outbound (sent_ok) + filtered
+# (filtered_non_allowlist) + inbound-with-attachment so the
+# operator's first look surfaces the filtering posture + the
+# attachment-count affordance.
+#
+# 4-layer SECURITY contract (extending the now-standard 3-layer
+# pattern with an email-specific token sweep):
+#   1. from_label / to_label are LABELS (joshua / kora /
+#      unknown_sender) — never raw email addresses. Backend test
+#      asserts no `[^\s]+@[^\s]+\.[^\s]+` match anywhere in payload.
+#   2. message_id is a label-shaped placeholder in v1. Real
+#      Purelymail message IDs are PII-adjacent — CC#1 will
+#      hash/truncate when real data flips. Backend test pins the
+#      stub-shape.
+#   3. body_text_truncated_400 is rendered as PLAIN TEXT by the FE.
+#      Real bodies may contain HTML/markdown/scripts — React
+#      default escaping defangs them; FE pins via
+#      dangerouslySetInnerHTML grep. has_html is metadata only.
+#   4. Walk-the-whole-payload guard against Purelymail API token
+#      shapes + HMAC-secret-shape (32/64-char hex) + bearer-token
+#      shapes — backend bug or future log-entry edit that leaks
+#      creds gets caught at the API edge.
+
+
+@app.get("/api/email/recent")
+async def list_recent_email():
+    """Return recent email exchanges for the operator lens.
+
+    v1 stub — pinned shape so CC#1's KR-FEAT-EMAIL ST2 can swap
+    the body without touching the FE.
+
+    Per-message fields:
+      id                          — opaque id
+      direction                   — "inbound" | "outbound"
+      timestamp                   — ISO-8601
+      message_id                  — STUB label in v1; real Purelymail
+                                    IDs hashed/truncated by CC#1
+      from_label / to_label       — LABELS only (joshua / kora /
+                                    unknown_sender); never raw
+                                    "user@host.tld" email addresses
+      subject                     — message subject
+      body_text_truncated_400     — plain-text body, capped to 400
+                                    chars at the API edge
+      has_html                    — bool: original body had HTML
+      attachments_count           — int (>= 0)
+      handled_status              — received | sent_ok | sent_failed |
+                                    filtered_non_allowlist |
+                                    filtered_wrong_recipient |
+                                    dropped_paused | handler_error
+      spoofing_warning            — bool (inbound only): DMARC/SPF
+                                    failure or similar red flag
+      in_reply_to                 — outbound only; references the
+                                    inbound message_id we're replying to
+    """
+    return {
+        "messages": [
+            {
+                "id": "stub-1",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:55:13Z",
+                "message_id": "stub-msg-id-1",
+                "from_label": "joshua",
+                "to_label": "kora",
+                "subject": "Quick status check",
+                "body_text_truncated_400": (
+                    "Hey Kora, can you give me a status update on the daemon?"
+                ),
+                "has_html": False,
+                "attachments_count": 0,
+                "handled_status": "received",
+                "spoofing_warning": False,
+            },
+            {
+                "id": "stub-2",
+                "direction": "outbound",
+                "timestamp": "2026-05-22T17:55:14Z",
+                "message_id": "stub-msg-id-2",
+                "from_label": "kora",
+                "to_label": "joshua",
+                "subject": "Re: Quick status check",
+                "body_text_truncated_400": (
+                    "Kora received: Hey Kora, can you give me a "
+                    "status update on the daemon?"
+                ),
+                "has_html": False,
+                "attachments_count": 0,
+                "handled_status": "sent_ok",
+                "in_reply_to": "stub-msg-id-1",
+            },
+            {
+                "id": "stub-3",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:48:22Z",
+                "message_id": "stub-msg-id-3",
+                "from_label": "unknown_sender",
+                "to_label": "kora",
+                "subject": "[filtered: non-allowlist sender]",
+                "body_text_truncated_400": (
+                    "(body suppressed for non-allowlist sender)"
+                ),
+                "has_html": True,
+                "attachments_count": 0,
+                "handled_status": "filtered_non_allowlist",
+                "spoofing_warning": False,
+            },
+            {
+                "id": "stub-4",
+                "direction": "inbound",
+                "timestamp": "2026-05-22T17:30:11Z",
+                "message_id": "stub-msg-id-4",
+                "from_label": "joshua",
+                "to_label": "kora",
+                "subject": "Test with attachment",
+                "body_text_truncated_400": "Sending you a screenshot",
+                "has_html": True,
+                "attachments_count": 1,
+                "handled_status": "received",
+                "spoofing_warning": False,
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_recent_24h": 18,
+        "by_direction_24h": {"inbound": 11, "outbound": 7},
+        "by_status_24h": {
+            "received": 10,
+            "sent_ok": 7,
+            "filtered_non_allowlist": 1,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
