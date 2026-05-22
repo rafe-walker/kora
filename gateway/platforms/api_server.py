@@ -2462,6 +2462,7 @@ class APIServerAdapter(BasePlatformAdapter):
             deliver = body.get("deliver", "local")
             skills = body.get("skills")
             repeat = body.get("repeat")
+            work_class = body.get("work_class")
 
             if not name:
                 return web.json_response({"error": "Name is required"}, status=400)
@@ -2477,12 +2478,28 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
+            # KR-P2-D ST1: work_class is fail-CLOSED at the web surface
+            # too. Surface a 400 with the same message coerce_work_class
+            # raises so the admin UI form-validator can surface it.
+            from agent.cron_work_class import (
+                CronWorkClassError,
+                coerce_work_class,
+            )
+            try:
+                coerce_work_class(
+                    work_class,
+                    operator_facing=True,
+                    surface="POST /api/jobs",
+                )
+            except CronWorkClassError as exc:
+                return web.json_response({"error": str(exc)}, status=400)
 
             kwargs = {
                 "prompt": prompt,
                 "schedule": schedule,
                 "name": name,
                 "deliver": deliver,
+                "work_class": work_class,
             }
             if skills:
                 kwargs["skills"] = skills

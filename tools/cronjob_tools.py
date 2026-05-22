@@ -351,6 +351,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    work_class: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -362,6 +363,22 @@ def cronjob(
         if normalized == "create":
             if not schedule:
                 return tool_error("schedule is required for create", success=False)
+            # KR-P2-D ST1: work_class is fail-CLOSED at the operator-facing
+            # tool surface. The agent (or whoever's invoking the tool)
+            # MUST declare one of the four CronWorkClass values per the
+            # locked design intent (feedback_cron_is_wakeup_substrate_via_sea).
+            from agent.cron_work_class import (
+                CronWorkClassError,
+                coerce_work_class,
+            )
+            try:
+                normalized_work_class = coerce_work_class(
+                    work_class,
+                    operator_facing=True,
+                    surface="cronjob tool (create)",
+                )
+            except CronWorkClassError as exc:
+                return tool_error(str(exc), success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
             # Job-shape validation differs by mode:
@@ -418,6 +435,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                work_class=normalized_work_class,
             )
             return json.dumps(
                 {

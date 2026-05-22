@@ -166,6 +166,12 @@ def cron_status():
 
 
 def cron_create(args):
+    # KR-P2-D ST1: --work-class is fail-CLOSED at the CLI surface via
+    # the cronjob_tool's coerce_work_class call server-side; this
+    # layer just forwards the raw string. Argparse marks the flag
+    # required via the parser registration (NOT this function — see
+    # the parser config in kora_cli/cli.py or wherever the cron
+    # subparser is wired).
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -179,6 +185,7 @@ def cron_create(args):
         workdir=getattr(args, "workdir", None),
         profile=getattr(args, "profile", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        work_class=getattr(args, "work_class", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
