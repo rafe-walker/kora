@@ -1454,6 +1454,18 @@ export interface MCPClient {
   auth_token_present: boolean;
   allowed_tools_regex: string | null;
   tools_count: number | null;
+  // KR-MCP-CONSUMPTION ST2 additive fields. The daemon's heartbeat
+  // scheduler probes each endpoint every
+  // KORA_MCP_HEALTH_CHECK_INTERVAL_SEC (default 300s); these
+  // capture the last cycle's result.
+  //   last_check_at: ISO string when the snapshot was taken
+  //                  (null if no cycle has run yet for this endpoint).
+  //   last_error:    operator-readable failure string from the last
+  //                  cycle (null on success / no snapshot).
+  // FE rendering of these fields lands as a small follow-on bucket
+  // (KR-MCP-CLIENTS-HEALTH-DISPLAY) on CC#2's lane.
+  last_check_at: string | null;
+  last_error: string | null;
 }
 
 export interface MCPClientsListResponse {

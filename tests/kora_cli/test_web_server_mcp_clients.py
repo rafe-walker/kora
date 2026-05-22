@@ -112,6 +112,9 @@ async def test_each_client_entry_has_required_keys_and_valid_enums(_isolate_conf
         "auth_token_present",
         "allowed_tools_regex",
         "tools_count",
+        # KR-MCP-CONSUMPTION ST2 additive fields
+        "last_check_at",
+        "last_error",
     }
     for client in result["clients"]:
         assert set(client.keys()) == required
@@ -128,6 +131,13 @@ async def test_each_client_entry_has_required_keys_and_valid_enums(_isolate_conf
             assert isinstance(client["tools_count"], int)
         else:
             assert client["tools_count"] is None
+        # ST2 additive fields: null or string
+        assert client["last_check_at"] is None or isinstance(
+            client["last_check_at"], str
+        )
+        assert client["last_error"] is None or isinstance(
+            client["last_error"], str
+        )
 
 
 # ---- 5. SECURITY: no token-value shapes ----------------------------
@@ -347,3 +357,160 @@ async def test_cron_endpoint_still_works_with_mcp_clients_registered(_isolate_co
 
     jobs = await web_server.list_cron_jobs(profile="all")
     assert isinstance(jobs, list)
+
+
+# ---- 9. KR-MCP-CONSUMPTION ST2 snapshot wiring ----------------------
+
+
+@pytest.fixture
+def _clear_consumption_state():
+    """Reset the listener's singletons between snapshot tests."""
+    from kora_cli.listeners.mcp_consumption import (
+        _clear_health_cache,
+        _clear_singleton,
+    )
+
+    _clear_singleton()
+    _clear_health_cache()
+    yield
+    _clear_singleton()
+    _clear_health_cache()
+
+
+def _seed_snapshot(
+    prefix: str,
+    *,
+    connected: bool,
+    tools_count,
+    last_error,
+    age_seconds: int = 0,
+) -> None:
+    from kora_cli.listeners.mcp_consumption import HealthSnapshot, _health_cache
+    from datetime import datetime, timedelta, timezone
+
+    _health_cache[prefix] = HealthSnapshot(
+        connected=connected,
+        tools_count=tools_count,
+        last_check_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        last_error=last_error,
+    )
+
+
+@pytest.mark.asyncio
+async def test_snapshot_connected_surfaces_status_and_tools_count(
+    _isolate_config, _clear_consumption_state, monkeypatch
+):
+    """Fresh connected snapshot + auth env set → status=connected +
+    tools_count=N + last_check_at populated + last_error=None."""
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_real")
+    _seed_snapshot("github", connected=True, tools_count=7, last_error=None)
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    github = next(c for c in result["clients"] if c["name"] == "github")
+    assert github["status"] == "connected"
+    assert github["tools_count"] == 7
+    assert github["last_check_at"] is not None
+    assert github["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_failed_surfaces_configured_but_unconnected_and_last_error(
+    _isolate_config, _clear_consumption_state, monkeypatch
+):
+    """Failed snapshot (connected=False) + auth env set →
+    status=configured_but_unconnected + tools_count=null + last_error
+    surfaced."""
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_real")
+    _seed_snapshot(
+        "github",
+        connected=False,
+        tools_count=None,
+        last_error="MCPCallFailed: transport timeout",
+    )
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    github = next(c for c in result["clients"] if c["name"] == "github")
+    assert github["status"] == "configured_but_unconnected"
+    assert github["tools_count"] is None
+    assert github["last_error"] == "MCPCallFailed: transport timeout"
+    assert github["last_check_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_stale_snapshot_degrades_to_configured_but_unconnected(
+    _isolate_config, _clear_consumption_state, monkeypatch
+):
+    """Connected snapshot OLDER than the cadence → treated as stale
+    → status=configured_but_unconnected even though
+    snapshot.connected=True. The heartbeat scheduler missed a cycle;
+    operator sees the gap rather than a false "connected" badge."""
+    from kora_cli.listeners.mcp_consumption import (
+        DEFAULT_HEALTH_CHECK_INTERVAL_SEC,
+    )
+
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_real")
+    # Snapshot taken 2x the cadence ago — definitively stale
+    _seed_snapshot(
+        "github",
+        connected=True,
+        tools_count=7,
+        last_error=None,
+        age_seconds=int(DEFAULT_HEALTH_CHECK_INTERVAL_SEC * 2),
+    )
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    github = next(c for c in result["clients"] if c["name"] == "github")
+    assert github["status"] == "configured_but_unconnected"
+    # tools_count still surfaces (operator can see the last-known
+    # count even when stale) — verify the policy: snapshot.connected=
+    # True means tools_count IS the snapshot's count; staleness only
+    # affects status string.
+    assert github["tools_count"] == 7
+    assert github["last_check_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_no_snapshot_surfaces_configured_but_unconnected_with_null_fields(
+    _isolate_config, _clear_consumption_state, monkeypatch
+):
+    """Auth env set + no snapshot in cache (daemon just started; no
+    heartbeat cycle yet) → status=configured_but_unconnected +
+    tools_count/last_check_at/last_error all null."""
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_real")
+    monkeypatch.setenv("KORA_MCP_CLOUDFLARE_TOKEN", "cf_real")
+    # Don't seed any snapshot
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    for client in result["clients"]:
+        assert client["status"] == "configured_but_unconnected"
+        assert client["tools_count"] is None
+        assert client["last_check_at"] is None
+        assert client["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_unhealthy_overrides_snapshot_when_auth_env_unset(
+    _isolate_config, _clear_consumption_state, monkeypatch
+):
+    """Auth env unset → status=unhealthy + ALL snapshot fields null
+    (snapshot ignored — the auth gap is the gating signal)."""
+    monkeypatch.delenv("KORA_MCP_GITHUB_TOKEN", raising=False)
+    # Seed a connected snapshot — it should NOT override unhealthy
+    _seed_snapshot("github", connected=True, tools_count=99, last_error=None)
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    github = next(c for c in result["clients"] if c["name"] == "github")
+    assert github["status"] == "unhealthy"
+    assert github["tools_count"] is None
+    assert github["last_check_at"] is None
+    assert github["last_error"] is None
