@@ -123,14 +123,22 @@ async def test_get_runbook_content_404_for_unauthored_manifest_entry(_isolate_co
     """Manifest entries pointing at kora_docs/ paths that don't exist in
     this repo (separate kora-docs repo) should 404 from /content with a
     "not yet authored" message — distinguishable from "unknown id" so
-    the FE can show the placeholder card."""
+    the FE can show the placeholder card.
+
+    Originally pinned ``dr_runbook`` (PR #84). PR #86
+    (KR-P2-RUNBOOKS-AUTHOR) vendored that file + token_rotation_runbook,
+    so the original assertion went stale — exactly the auto-improvement
+    behaviour PR #84's body predicted. Swapped to ``kora_dna``, which
+    is still a placeholder (Kora's DNA reference doc lives in the
+    separate kora-docs repo and isn't on a near-term vendoring plan).
+    """
     from fastapi import HTTPException
     from kora_cli import web_server
 
-    # dr_runbook references kora_docs/15_status_and_roadmap/dr_runbook.md
-    # which isn't vendored — file is missing.
+    # kora_dna references kora_docs/00_canonical_current_state/kora_dna.md
+    # which isn't vendored into this repo — file is missing.
     with pytest.raises(HTTPException) as exc:
-        await web_server.get_runbook_content("dr_runbook")
+        await web_server.get_runbook_content("kora_dna")
     assert exc.value.status_code == 404
     assert "not yet authored" in str(exc.value.detail).lower()
 
