@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -49,7 +50,7 @@ class TestRewriteSkillRefsNoop:
     def test_jobs_exist_but_map_empty(self, cron_env):
         from cron.jobs import create_job, rewrite_skill_refs
 
-        create_job(prompt="", schedule="every 1h", skills=["foo"])
+        create_job(prompt="", schedule="every 1h", skills=["foo"], work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(consolidated={}, pruned=[])
         assert report["jobs_updated"] == 0
         # Early return: we don't even scan when there's nothing to apply.
@@ -58,7 +59,7 @@ class TestRewriteSkillRefsNoop:
     def test_jobs_exist_but_no_match(self, cron_env):
         from cron.jobs import create_job, get_job, rewrite_skill_refs
 
-        job = create_job(prompt="", schedule="every 1h", skills=["foo"])
+        job = create_job(prompt="", schedule="every 1h", skills=["foo"], work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(
             consolidated={"unrelated": "umbrella"},
             pruned=["other"],
@@ -76,7 +77,7 @@ class TestRewriteSkillRefsConsolidation:
     def test_single_skill_replaced(self, cron_env):
         from cron.jobs import create_job, get_job, rewrite_skill_refs
 
-        job = create_job(prompt="", schedule="every 1h", skills=["legacy-skill"])
+        job = create_job(prompt="", schedule="every 1h", skills=["legacy-skill"], work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(
             consolidated={"legacy-skill": "umbrella-skill"},
             pruned=[],
@@ -95,7 +96,7 @@ class TestRewriteSkillRefsConsolidation:
             prompt="",
             schedule="every 1h",
             skills=["keep-a", "legacy", "keep-b"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
 
         loaded = get_job(job["id"])
@@ -110,7 +111,7 @@ class TestRewriteSkillRefsConsolidation:
             prompt="",
             schedule="every 1h",
             skills=["umbrella", "legacy"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
 
         loaded = get_job(job["id"])
@@ -125,7 +126,7 @@ class TestRewriteSkillRefsConsolidation:
             schedule="every 1h",
             skills=["a", "b"],
             name="my-job",
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(
             consolidated={"a": "umbrella-a", "b": "umbrella-b"},
             pruned=[],
@@ -151,7 +152,7 @@ class TestRewriteSkillRefsPruning:
             prompt="",
             schedule="every 1h",
             skills=["keep", "stale"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(consolidated={}, pruned=["stale"])
 
         assert report["jobs_updated"] == 1
@@ -162,7 +163,7 @@ class TestRewriteSkillRefsPruning:
     def test_all_skills_pruned_leaves_empty_list(self, cron_env):
         from cron.jobs import create_job, get_job, rewrite_skill_refs
 
-        job = create_job(prompt="", schedule="every 1h", skills=["gone"])
+        job = create_job(prompt="", schedule="every 1h", skills=["gone"], work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(consolidated={}, pruned=["gone"])
 
         loaded = get_job(job["id"])
@@ -172,7 +173,7 @@ class TestRewriteSkillRefsPruning:
     def test_pruned_report_records_drops(self, cron_env):
         from cron.jobs import create_job, rewrite_skill_refs
 
-        create_job(prompt="", schedule="every 1h", skills=["keep", "stale"])
+        create_job(prompt="", schedule="every 1h", skills=["keep", "stale"], work_class=CronWorkClass.LOCAL_ONLY)
         report = rewrite_skill_refs(consolidated={}, pruned=["stale"])
 
         entry = report["rewrites"][0]
@@ -190,7 +191,7 @@ class TestRewriteSkillRefsMixed:
             prompt="",
             schedule="every 1h",
             skills=["keep", "legacy", "stale"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(
             consolidated={"legacy": "umbrella"},
             pruned=["stale"],
@@ -205,7 +206,7 @@ class TestRewriteSkillRefsMixed:
         which is the more useful outcome."""
         from cron.jobs import create_job, get_job, rewrite_skill_refs
 
-        job = create_job(prompt="", schedule="every 1h", skills=["ambiguous"])
+        job = create_job(prompt="", schedule="every 1h", skills=["ambiguous"], work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(
             consolidated={"ambiguous": "umbrella"},
             pruned=["ambiguous"],
@@ -221,9 +222,9 @@ class TestRewriteSkillRefsMultipleJobs:
     def test_only_affected_jobs_reported(self, cron_env):
         from cron.jobs import create_job, get_job, rewrite_skill_refs
 
-        j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"])
-        j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"])
-        j3 = create_job(prompt="", schedule="every 1h", skills=[])
+        j1 = create_job(prompt="", schedule="every 1h", skills=["legacy"], work_class=CronWorkClass.LOCAL_ONLY)
+        j2 = create_job(prompt="", schedule="every 1h", skills=["untouched"], work_class=CronWorkClass.LOCAL_ONLY)
+        j3 = create_job(prompt="", schedule="every 1h", skills=[], work_class=CronWorkClass.LOCAL_ONLY)
 
         report = rewrite_skill_refs(
             consolidated={"legacy": "umbrella"},
@@ -249,7 +250,7 @@ class TestRewriteSkillRefsMultipleJobs:
             prompt="",
             schedule="every 1h",
             skill="legacy",
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
 
         loaded = get_job(job["id"])
@@ -264,7 +265,7 @@ class TestRewriteSkillRefsPersistence:
         import json
         from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
 
-        create_job(prompt="", schedule="every 1h", skills=["legacy"])
+        create_job(prompt="", schedule="every 1h", skills=["legacy"], work_class=CronWorkClass.LOCAL_ONLY)
         rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
 
         # Read raw file contents
@@ -275,7 +276,7 @@ class TestRewriteSkillRefsPersistence:
     def test_noop_does_not_rewrite_file(self, cron_env):
         from cron.jobs import create_job, rewrite_skill_refs, JOBS_FILE
 
-        create_job(prompt="", schedule="every 1h", skills=["keep"])
+        create_job(prompt="", schedule="every 1h", skills=["keep"], work_class=CronWorkClass.LOCAL_ONLY)
         mtime_before = JOBS_FILE.stat().st_mtime_ns
 
         # Nothing in the map matches

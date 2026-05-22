@@ -619,14 +619,16 @@ def create_job(
             "there is nothing for the job to run."
         )
 
-    # KR-P2-D ST1: normalize work_class. The internal helper defaults to
-    # LOCAL_ONLY for back-compat with test fixtures + non-operator callers.
-    # Operator-facing surfaces (cronjob MCP tool, cron_create CLI,
-    # _handle_create_job web) pre-validate and pass an explicit enum value.
+    # KR-P2-D ST2: fail-CLOSED on missing work_class at the lowest
+    # layer. ST1 shipped an internal LOCAL_ONLY back-compat default
+    # for test fixtures; ST2's audit pass updated every test +
+    # production caller to declare explicitly, so the default is
+    # removed here. Every cron job's substrate-interaction policy is
+    # now operator-declared, never inferred.
     from agent.cron_work_class import CronWorkClass, coerce_work_class
 
     normalized_work_class = coerce_work_class(
-        work_class, operator_facing=False, surface="cron.jobs.create_job"
+        work_class, operator_facing=True, surface="cron.jobs.create_job"
     )
 
     # Normalize context_from: accept str or list of str, store as list or None

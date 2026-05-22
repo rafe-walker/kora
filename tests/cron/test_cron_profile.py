@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture()
@@ -64,7 +65,7 @@ class TestCreateAndUpdateJobProfile:
     def test_create_stores_profile_id(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job
 
-        job = create_job(prompt="hello", schedule="every 1h", profile="Support")
+        job = create_job(prompt="hello", schedule="every 1h", profile="Support", work_class=CronWorkClass.LOCAL_ONLY)
         stored = get_job(job["id"])
 
         assert stored is not None
@@ -73,7 +74,7 @@ class TestCreateAndUpdateJobProfile:
     def test_create_without_profile_preserves_old_behaviour(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job
 
-        job = create_job(prompt="hello", schedule="every 1h")
+        job = create_job(prompt="hello", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         stored = get_job(job["id"])
 
         assert stored is not None
@@ -82,7 +83,7 @@ class TestCreateAndUpdateJobProfile:
     def test_create_accepts_explicit_default(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job
 
-        job = create_job(prompt="hello", schedule="every 1h", profile="default")
+        job = create_job(prompt="hello", schedule="every 1h", profile="default", work_class=CronWorkClass.LOCAL_ONLY)
         stored = get_job(job["id"])
 
         assert stored is not None
@@ -91,7 +92,7 @@ class TestCreateAndUpdateJobProfile:
     def test_update_sets_and_clears_profile(self, isolated_cron_profile_home):
         from cron.jobs import create_job, get_job, update_job
 
-        job = create_job(prompt="x", schedule="every 1h")
+        job = create_job(prompt="x", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         update_job(job["id"], {"profile": "Support"})
         stored = get_job(job["id"])
         assert stored is not None
@@ -105,7 +106,7 @@ class TestCreateAndUpdateJobProfile:
     def test_update_rejects_missing_profile(self, isolated_cron_profile_home):
         from cron.jobs import create_job, update_job
 
-        job = create_job(prompt="x", schedule="every 1h")
+        job = create_job(prompt="x", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         with pytest.raises(FileNotFoundError):
             update_job(job["id"], {"profile": "missing"})
 

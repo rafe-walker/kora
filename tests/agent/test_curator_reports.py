@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture
@@ -316,7 +317,7 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
         schedule="every 1h",
         skills=["foo"],
         name="foo-watcher",
-    )
+    work_class=CronWorkClass.LOCAL_ONLY)
 
     # Simulate a curator pass that consolidated `foo` → `foo-umbrella`
     before = [{"name": "foo", "state": "active", "pinned": False}]
@@ -382,7 +383,7 @@ def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
         prompt="",
         schedule="every 1h",
         skills=["keep", "stale-one"],
-    )
+    work_class=CronWorkClass.LOCAL_ONLY)
 
     before = [{"name": "stale-one", "state": "active", "pinned": False}]
     after: list = []  # stale-one was archived with no target
@@ -413,7 +414,7 @@ def test_curator_report_has_no_cron_section_when_nothing_changes(curator_env_wit
     curator = curator_env_with_cron["curator"]
     jobs = curator_env_with_cron["jobs"]
 
-    jobs.create_job(prompt="", schedule="every 1h", skills=["foo"])
+    jobs.create_job(prompt="", schedule="every 1h", skills=["foo"], work_class=CronWorkClass.LOCAL_ONLY)
 
     run_dir = curator._write_run_report(
         started_at=datetime.now(timezone.utc),

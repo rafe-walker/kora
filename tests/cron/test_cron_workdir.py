@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture()
@@ -82,13 +83,13 @@ class TestCreateJobWorkdir:
             prompt="hello",
             schedule="every 1h",
             workdir=str(tmp_cron_dir),
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         stored = get_job(job["id"])
         assert stored["workdir"] == str(tmp_cron_dir.resolve())
 
     def test_workdir_none_preserves_old_behaviour(self, tmp_cron_dir):
         from cron.jobs import create_job, get_job
-        job = create_job(prompt="hello", schedule="every 1h")
+        job = create_job(prompt="hello", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         stored = get_job(job["id"])
         # Field is present on the dict but None — downstream code checks
         # truthiness to decide whether the feature is active.
@@ -101,13 +102,13 @@ class TestCreateJobWorkdir:
                 prompt="hello",
                 schedule="every 1h",
                 workdir="not/absolute",
-            )
+            work_class=CronWorkClass.LOCAL_ONLY)
 
 
 class TestUpdateJobWorkdir:
     def test_set_workdir_via_update(self, tmp_cron_dir):
         from cron.jobs import create_job, get_job, update_job
-        job = create_job(prompt="x", schedule="every 1h")
+        job = create_job(prompt="x", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         update_job(job["id"], {"workdir": str(tmp_cron_dir)})
         assert get_job(job["id"])["workdir"] == str(tmp_cron_dir.resolve())
 
@@ -115,7 +116,7 @@ class TestUpdateJobWorkdir:
         from cron.jobs import create_job, get_job, update_job
         job = create_job(
             prompt="x", schedule="every 1h", workdir=str(tmp_cron_dir)
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
         update_job(job["id"], {"workdir": None})
         assert get_job(job["id"])["workdir"] is None
 
@@ -123,13 +124,13 @@ class TestUpdateJobWorkdir:
         from cron.jobs import create_job, get_job, update_job
         job = create_job(
             prompt="x", schedule="every 1h", workdir=str(tmp_cron_dir)
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
         update_job(job["id"], {"workdir": ""})
         assert get_job(job["id"])["workdir"] is None
 
     def test_update_rejects_invalid_workdir(self, tmp_cron_dir):
         from cron.jobs import create_job, update_job
-        job = create_job(prompt="x", schedule="every 1h")
+        job = create_job(prompt="x", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         with pytest.raises(ValueError):
             update_job(job["id"], {"workdir": "nope/relative"})
 
