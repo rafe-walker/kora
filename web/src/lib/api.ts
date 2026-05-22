@@ -81,6 +81,20 @@ export const api = {
     fetchJSON<HealthRollupResponse>("/api/health-rollup"),
   getDRState: () => fetchJSON<DRStateResponse>("/api/dr-state"),
   getCharter: () => fetchJSON<CharterResponse>("/api/charter"),
+  getChainEvents: (opts?: {
+    prefix?: string;
+    limit?: number;
+    before_ts?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (opts?.prefix !== undefined) qs.set("prefix", opts.prefix);
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.before_ts) qs.set("before_ts", opts.before_ts);
+    const q = qs.toString();
+    return fetchJSON<ChainEventsResponse>(
+      `/api/chain-events${q ? "?" + q : ""}`,
+    );
+  },
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1310,4 +1324,28 @@ export interface CharterResponse {
   capability_groups: CharterCapabilityGroup[];
   substrate_tier_tools: string[];
   stub: boolean;
+}
+
+// Chain events live tail (KR-P2-CHAIN-EVENTS-PANEL).
+// actor_kind is nullable in v1 — requires a JOIN to actor_registry the
+// backend doesn't do yet. envelope is null except for constitution
+// events (carries revision_id + rules_hash for audit visibility).
+export interface ChainEvent {
+  event_id: string;
+  event_type: string;
+  actor_id: string | null;
+  actor_kind: string | null;
+  workspace_id: string;
+  occurred_at: string;
+  payload: Record<string, unknown>;
+  envelope: Record<string, unknown> | null;
+}
+
+export interface ChainEventsResponse {
+  events: ChainEvent[];
+  next_before_ts: string | null;
+  stub: boolean;
+  // Present only on the stub-fallback branch (uninit/failure path),
+  // mirroring the DR/COST flips. FE renders a small error banner.
+  error?: string;
 }

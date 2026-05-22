@@ -4145,6 +4145,132 @@ async def get_charter():
 
 
 # ---------------------------------------------------------------------------
+# Chain-events live tail (KR-P2-CHAIN-EVENTS-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Live read — operator-facing tail of recent event_log rows for the
+# active workspace. Pairs with the #kora-firehose Slack channel — same
+# data, different surface; this panel works without Slack open.
+#
+# Manual reload only (per bucket §1 verification 2, option a): no SSE,
+# no polling. Consistent UX with every other admin panel.
+#
+# Two-branch shape mirroring DR-FLIP / COST-FLIP: live drops stub;
+# uninit/failure returns the fallback shape with stub:true + error.
+
+
+_CHAIN_EVENTS_FALLBACK: Dict[str, Any] = {
+    "events": [],
+    "next_before_ts": None,
+}
+
+
+def _chain_event_envelope(event_type: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract operator-relevant envelope fields per event family.
+
+    Constitution events carry ``revision_id`` + ``rules_hash`` — surface
+    them so operators can spot a revision-flip at a glance. Other
+    families don't have a documented envelope yet; return None and the
+    FE skips the envelope display.
+    """
+    if event_type.startswith("kora.constitution."):
+        envelope: Dict[str, Any] = {}
+        for key in ("revision_id", "rules_hash"):
+            if key in payload:
+                envelope[key] = payload[key]
+        return envelope or None
+    return None
+
+
+@app.get("/api/chain-events")
+async def get_chain_events(
+    prefix: str = "kora.",
+    limit: int = 100,
+    before_ts: Optional[str] = None,
+):
+    """Return recent event_log rows for the active workspace.
+
+    Query params:
+      prefix: event_type filter (default "kora."). Empty string = no filter.
+      limit: max events to return (default 100, hard-capped at 500).
+      before_ts: ISO-8601 cursor; returns events strictly older than this.
+                 FE feeds previous page's last occurred_at to load older.
+    """
+    try:
+        from plugins.memory.isokron import get_last_active_provider
+        from plugins.memory.isokron.events import read_recent_events
+
+        provider = get_last_active_provider()
+        if provider is None:
+            return {
+                **_CHAIN_EVENTS_FALLBACK,
+                "stub": True,
+                "error": "IsoKronMemoryProvider not initialised",
+            }
+        ws = provider._resolve_workspace_id()
+        if ws is None:
+            return {
+                **_CHAIN_EVENTS_FALLBACK,
+                "stub": True,
+                "error": "no workspace_id resolvable",
+            }
+        connection = getattr(provider, "_connection", None)
+        if connection is None:
+            return {
+                **_CHAIN_EVENTS_FALLBACK,
+                "stub": True,
+                "error": "provider has no _connection",
+            }
+        pool = connection.get_pg_pool()
+
+        rows = await read_recent_events(
+            workspace_id=ws,
+            pool=pool,
+            event_type_prefix=prefix or None,
+            limit=limit,
+            before_ts=before_ts,
+        )
+    except Exception as exc:
+        _log.exception("[kora.chain_events_panel] live read failed")
+        return {
+            **_CHAIN_EVENTS_FALLBACK,
+            "stub": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    projected_events: List[Dict[str, Any]] = []
+    for row in rows:
+        envelope = _chain_event_envelope(row.event_type, row.payload)
+        projected_events.append(
+            {
+                "event_id": row.event_id,
+                "event_type": row.event_type,
+                "actor_id": row.actor_id,
+                # actor_kind requires a JOIN to actor_registry we don't
+                # do in v1. Set to None; FE renders as "—".
+                "actor_kind": None,
+                "workspace_id": ws,
+                "occurred_at": row.occurred_at,
+                "payload": row.payload,
+                "envelope": envelope,
+            }
+        )
+
+    # Pagination cursor: the oldest event in this batch is the cursor
+    # for the next "Load older" page. None when the batch is empty
+    # (no more older events to load).
+    next_before_ts = (
+        projected_events[-1]["occurred_at"] if projected_events else None
+    )
+
+    return {
+        "events": projected_events,
+        "next_before_ts": next_before_ts,
+        "stub": False,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

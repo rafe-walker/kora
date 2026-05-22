@@ -181,6 +181,157 @@ class DRObservedEventRow:
     payload: dict[str, Any]
 
 
+# ---------------------------------------------------------------------------
+# General live-tail event read (KR-P2-CHAIN-EVENTS-PANEL)
+# ---------------------------------------------------------------------------
+# read_dr_observed_events is event-type-specific. The CHAIN-EVENTS panel
+# needs an arbitrary-prefix + arbitrary-actor + cursor-paginated read.
+# Same tenant JOIN; adds actor_id projection + optional WHERE filters +
+# before_ts cursor for "Load older" pagination.
+
+# Note on actor_id / actor_kind:
+#   event_log.actor_id exists on the substrate side (confirmed via
+#   BUILD_DEVIATIONS K-7's verify-at-first-live-emit note). actor_kind
+#   lives on actor_registry (one JOIN away); v1 leaves actor_kind=None
+#   and emits only actor_id to keep this read simple. Operators can
+#   cross-reference actor_kind via actor_id in the cockpit if needed.
+
+
+@dataclass(frozen=True, slots=True)
+class ChainEventRow:
+    """One ``kora.*`` (or arbitrary-prefix) chain event with full payload.
+
+    Used by the KR-P2-CHAIN-EVENTS-PANEL's live tail. Carries the
+    structured payload (not truncated) and the actor_id (for operator
+    cross-reference); actor_kind requires a JOIN we don't do in v1.
+    """
+
+    event_id: str
+    event_type: str
+    actor_id: Optional[str]
+    occurred_at: str  # ISO-8601
+    payload: dict[str, Any]
+
+
+DEFAULT_RECENT_EVENTS_LIMIT = 100
+"""Per CHAIN-EVENTS-PANEL spec §3 — default 100, max 500."""
+
+MAX_RECENT_EVENTS_LIMIT = 500
+"""Hard cap so a buggy / hostile caller can't ask for 1M rows."""
+
+
+async def read_recent_events(
+    workspace_id: str,
+    pool: Any,
+    *,
+    event_type_prefix: Optional[str] = None,
+    actor_id_filter: Optional[str] = None,
+    limit: int = DEFAULT_RECENT_EVENTS_LIMIT,
+    before_ts: Optional[str] = None,
+) -> list[ChainEventRow]:
+    """Read recent event_log rows for the workspace.
+
+    Supports:
+      * ``event_type_prefix`` — e.g. ``"kora."`` (default behaviour
+        prior to KR-P2-CHAIN-EVENTS-PANEL was the implicit "kora.%")
+        or ``"kora.constitution."`` for family-narrowed views. Empty
+        string / None means "no prefix filter".
+      * ``actor_id_filter`` — restrict to events emitted by a specific
+        actor (e.g. just Kora). None means "any actor".
+      * ``limit`` — clamped to ``[1, MAX_RECENT_EVENTS_LIMIT]``.
+      * ``before_ts`` — pagination cursor (ISO-8601 string). When set,
+        returns only events with ``occurred_at < before_ts``. The FE
+        feeds the previous page's last ``occurred_at`` here to load
+        older events.
+
+    Returns rows ordered ``occurred_at DESC`` so the live tail renders
+    newest-first by default.
+
+    Defensive on malformed payload: WARN log + ``{}`` fallback so a
+    single bad row doesn't take down the whole read.
+    """
+    import json as _json
+
+    safe_limit = max(1, min(MAX_RECENT_EVENTS_LIMIT, int(limit)))
+
+    where_clauses = ["t.clerk_org_id = $1"]
+    params: list[Any] = [workspace_id]
+
+    if event_type_prefix:
+        params.append(f"{event_type_prefix}%")
+        where_clauses.append(f"el.event_type LIKE ${len(params)}")
+
+    if actor_id_filter:
+        params.append(actor_id_filter)
+        where_clauses.append(f"el.actor_id::text = ${len(params)}")
+
+    if before_ts:
+        params.append(before_ts)
+        where_clauses.append(f"el.occurred_at < ${len(params)}::timestamptz")
+
+    params.append(safe_limit)
+    limit_param = f"${len(params)}"
+
+    sql = f"""
+        SELECT
+          el.event_id::text   AS event_id,
+          el.event_type       AS event_type,
+          el.actor_id::text   AS actor_id,
+          el.occurred_at      AS occurred_at,
+          el.payload          AS payload
+        FROM hivex_foundation.event_log el
+        JOIN hivex_foundation.tenant t ON t.tenant_id = el.tenant_id
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY el.occurred_at DESC
+        LIMIT {limit_param}
+    """
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, *params)
+
+    out: list[ChainEventRow] = []
+    for row in rows:
+        occurred_at = row["occurred_at"]
+        occurred_iso = (
+            occurred_at.isoformat()
+            if hasattr(occurred_at, "isoformat")
+            else str(occurred_at)
+        )
+
+        raw_payload = row["payload"]
+        if isinstance(raw_payload, dict):
+            payload = raw_payload
+        elif isinstance(raw_payload, str):
+            try:
+                payload = _json.loads(raw_payload)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "[kora.event_log] malformed payload on event_id=%s "
+                    "(event_type=%s) — using {} fallback",
+                    row["event_id"],
+                    row["event_type"],
+                )
+                payload = {}
+        else:
+            payload = {}
+
+        out.append(
+            ChainEventRow(
+                event_id=row["event_id"],
+                event_type=row["event_type"],
+                actor_id=row.get("actor_id"),
+                occurred_at=occurred_iso,
+                payload=payload,
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# DR-observed event read (KR-P2-DR-FLIP — pre-existing)
+# ---------------------------------------------------------------------------
+
+
 async def read_dr_observed_events(
     workspace_id: str,
     pool: Any,
