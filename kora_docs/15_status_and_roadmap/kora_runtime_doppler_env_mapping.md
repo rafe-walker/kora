@@ -66,6 +66,34 @@ the project — never even as a stale fallback.
 | `SLACK_SIGNING_SECRET` | Legacy Slack Bolt gateway | Same gating as SLACK_APP_TOKEN. **Same value as `KORA_SLACK_SIGNING_SECRET`** — both come from the same Slack app's Basic Information page; the env-var split exists because the legacy gateway and the new webhook listener consume the secret via different code paths. Operator sets both to the same value until a follow-on refactor consolidates them. | Same as `KORA_SLACK_SIGNING_SECRET` |
 | `SLACK_GATEWAY_ENABLED` | Toggle for the legacy Bolt gateway | Defaults to `true` in `docker/entrypoint.sh`. Set to `false` if the legacy gateway should stay dormant (e.g. running webhook-only on the daemon). | `true` / `false` |
 
+#### Phase 2 Feature 2 — Heartbeat probes (KR-FEAT-HEARTBEAT)
+
+The daemon's heartbeat scheduler probes 5 backend services every
+`KORA_HEARTBEAT_PROBE_INTERVAL_SEC` (default 300s). Each probe needs
+a Doppler-injected service token. A probe with its auth env unset
+degrades gracefully (status: `unknown` in the panel + zero outbound
+calls) — these secrets are NOT deploy-blocking, but the heartbeat
+dashboard will show "auth env unset" until they're configured.
+
+All 5 live in `kora-runtime-gateways` (same project as the legacy
+gateway tokens — gateways = "tokens the runtime uses to reach
+outbound services on Joshua's behalf").
+
+| Secret | Probe | Mint via | Scope | Example shape |
+|---|---|---|---|---|
+| `KORA_VERCEL_API_TOKEN` | Vercel — recent deployments + error rate | <https://vercel.com/account/tokens> | Read-only scope sufficient (lists `/v6/deployments`). | `<32+ char opaque>` |
+| `KORA_SENTRY_API_TOKEN` | Sentry — unresolved issue count | <https://sentry.io/settings/account/api/auth-tokens/> | `org:read` scope minimum (`event:read` if probe extension wants project breakdown later). | `<64-hex>` |
+| `KORA_SENTRY_ORG` | Sentry — org slug for the issues query | Operator-known org slug (e.g. `stormhaven`). | — | `stormhaven` |
+| `KORA_DOPPLER_API_TOKEN` | Doppler — workplace reachability | <https://dashboard.doppler.com/workplace/.../tokens> → **Service Token** (NOT a project token). Workplace read-only scope. Mint a dedicated service token for the probe — keep separate from any per-project tokens. | Workplace read-only | `dp.st.<scope>.<opaque>` |
+| `KORA_SUPABASE_ANON_KEY` | Supabase — PostgREST endpoint reachability | Supabase project → Settings → API → **anon key** (NOT the service_role key). | `anon` (public) | `<JWT-shaped>` |
+| `KORA_SUPABASE_URL` | Supabase — project URL | Same Project Settings page. | — | `https://<project-ref>.supabase.co` |
+| `KORA_FLY_API_TOKEN` | Fly — `kora-runtime` machines state | `flyctl auth token` (operator workstation, deploy token) or Fly dashboard org tokens page. | Read access to the kora-runtime app(s). | `fly_<opaque>` |
+| `KORA_FLY_STAGING_APP_NAME` | Fly — optional staging app name | Optional. Set if the operator wants the probe to ALSO check the staging app. Leave unset to probe prod only. | — | `kora-runtime-staging` |
+
+**Validation tip**: after setting these, restart the daemon (or wait
+≤5 min for the next probe cycle); `GET /api/heartbeat/services`
+should flip each service from `unknown` to `healthy` / `degraded`.
+
 ---
 
 ## fly.toml `[env]` values (NOT in Doppler)
@@ -97,6 +125,8 @@ does not own them.
 |---|---|---|
 | `KORA_WEBHOOK_RATE_LIMIT` | `60/minute` | Tighten via Doppler-gateways if dead-letter rate spikes suggest a flood. slowapi syntax. |
 | `KORA_HEALTH_PROBE_CADENCE_SECONDS` | `300` | Lower if dashboard freshness suffers under default 5min cadence. |
+| `KORA_HEARTBEAT_PROBE_INTERVAL_SEC` | `300` | KR-FEAT-HEARTBEAT — backend-service probe cadence (Vercel/Sentry/Doppler/Supabase/Fly). Distinct from `KORA_HEALTH_PROBE_CADENCE_SECONDS` (the MCP-client health-check task); both default to 5min, registered as DISTINCT scheduler tasks so one slow cycle doesn't block the other. |
+| `KORA_MCP_HEALTH_CHECK_INTERVAL_SEC` | `300` | KR-MCP-CONSUMPTION ST2 — MCP-client-pool health check cadence. Same default as above; same isolation rationale. |
 | `KORA_LOG_LEVEL` | `INFO` | `DEBUG` for first-deploy investigation; revert to `INFO` afterwards. |
 | `KORA_DEV` | unset | Set to `1` ONLY for local-dev `kora daemon` invocation (bypasses Doppler wrap + lets `KORA_DEPLOY_ENV` default to `dev`). Never set in Fly. |
 
@@ -125,6 +155,18 @@ for SECRET in KORA_MCP_BEARER_TOKEN KORA_SLACK_SIGNING_SECRET SLACK_APP_TOKEN SL
   doppler secrets get "$SECRET" -p kora-runtime-gateways -c "$CONFIG" --plain >/dev/null \
     && echo "OK   gateways:$SECRET" \
     || echo "MISS gateways:$SECRET"
+done
+
+# KR-FEAT-HEARTBEAT probe tokens — NOT deploy-blocking. The
+# heartbeat panel surfaces "auth env unset" on missing probes
+# rather than failing the boot. Run this section opt-in to verify
+# the heartbeat-panel data path is fully configured.
+for SECRET in KORA_VERCEL_API_TOKEN KORA_SENTRY_API_TOKEN KORA_SENTRY_ORG \
+              KORA_DOPPLER_API_TOKEN KORA_SUPABASE_ANON_KEY KORA_SUPABASE_URL \
+              KORA_FLY_API_TOKEN; do
+  doppler secrets get "$SECRET" -p kora-runtime-gateways -c "$CONFIG" --plain >/dev/null \
+    && echo "OK   gateways:$SECRET (heartbeat probe)" \
+    || echo "MISS gateways:$SECRET (heartbeat probe — panel shows unknown)"
 done
 
 # Anti-secret check — these MUST be absent.
