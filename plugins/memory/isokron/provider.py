@@ -989,6 +989,68 @@ class IsoKronMemoryProvider(MemoryProvider):
                 exc,
             )
 
+    # -- KR-P2-CHARTER-PANEL: Constitution viewer read --------------------
+
+    def get_active_constitution_summary(
+        self,
+        workspace_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return cached Constitution summary for the operator-side viewer.
+
+        Reads ``self._constitution_cache`` for the resolved workspace_id
+        and returns ``{revision_id, rules_hash, loaded_at, workspace_id,
+        rules, rules_available}`` — or ``None`` when nothing is cached
+        (no agent turn has primed it yet).
+
+        v1 fallback mode (KR-P2-CHARTER-PANEL §1): substrate doesn't
+        expose rule CONTENT via a Kora-tier read, so ``rules_available``
+        is always ``False`` and ``rules`` is always ``[]``. The flip-over
+        PR (after substrate-team adds a Kora-tier rule-content SECDEF)
+        replaces this body to also populate ``rules`` and set
+        ``rules_available=True``; the API shape is unchanged.
+
+        Read-only: never triggers a substrate fetch. The cache is
+        primed by the existing pre-screen path on every agent turn.
+        """
+        ws = self._resolve_workspace_id(workspace_id=workspace_id)
+        if ws is None:
+            return None
+
+        # Reach into the TTLCache's internal entry tuple so we can
+        # recover the put-timestamp alongside the value. The cache API
+        # only surfaces the value via get(); the put time is what we
+        # want for the operator-facing "loaded_at". cache.py:48 documents
+        # the ``_entries: Dict[str, tuple[float, T]]`` shape we read here.
+        entry = self._constitution_cache._entries.get(ws)
+        if entry is None:
+            return None
+
+        put_at_unix, value = entry
+        # value is ``(revision_id, rules_hash)`` per the cache type
+        # annotation (provider.py:183); ``(None, None)`` is the sentinel
+        # for "fresh workspace, no revisions exist yet". Treat both
+        # halves as required-present for the viewer; the sentinel case
+        # surfaces as null revision_id + rules_hash but a valid
+        # loaded_at so the operator can see "we checked, nothing's
+        # there".
+        revision_id, rules_hash = value
+
+        from datetime import datetime, timezone
+        loaded_at = (
+            datetime.fromtimestamp(put_at_unix, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+        return {
+            "revision_id": revision_id,
+            "rules_hash": rules_hash,
+            "loaded_at": loaded_at,
+            "workspace_id": ws,
+            "rules": [],
+            "rules_available": False,
+        }
+
 
 # ---------------------------------------------------------------------------
 # Kora-action heuristic + scratchpad summarizer (module-level)
