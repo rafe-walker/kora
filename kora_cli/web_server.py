@@ -4747,10 +4747,15 @@ async def get_heartbeat_services():
 async def list_mcp_clients():
     """Return the catalog of external MCPs Kora is configured to consume.
 
-    v1 stub — pinned shape so CC#1's KR-MCP-1 ST2 can swap the body
-    without touching the FE.
+    KR-MCP-CLIENTS-FLIP: live read via
+    :func:`kora_mcp.catalog.load_effective_catalog` (default github
+    + cloudflare entries + operator overrides from
+    ``~/.kora/config.yaml``). Replaces the v1 stub body from
+    KR-MCP-3 (PR #106).
 
-    Per-client fields:
+    Per-client fields (pinned by TS ``MCPClient`` interface in
+    ``web/src/lib/api.ts``):
+
       name                  — short id (github, cloudflare, etc.)
       transport             — "stdio" | "streamable_http"
       endpoint              — command line or URL (UI truncates)
@@ -4760,32 +4765,47 @@ async def list_mcp_clients():
       auth_token_present    — bool: env-var resolves to non-empty?
       allowed_tools_regex   — null = all tools; string = filter
       tools_count           — int when status=connected; null otherwise
+
+    HARD CONSTRAINT (carried forward from KR-MCP-3 §5): token VALUES
+    never appear in this response. ``auth_token_env`` is the env-var
+    NAME; ``auth_token_present`` is a bool. The walk-all-keys
+    security test in ``test_web_server_mcp_clients.py`` pins this
+    invariant.
+
+    Status mapping (current — pre-KR-MCP-CONSUMPTION):
+
+      auth env unset / empty → ``unhealthy``
+      auth env set           → ``configured_but_unconnected``
+
+    The ``connected`` status surfaces once the daemon's MCP-client-
+    pool listener is wired (deferred per spec §3).
+    ``tools_count`` likewise remains ``null`` until that lands.
     """
+    from datetime import datetime, timezone
+
+    from kora_mcp.catalog import check_endpoint_health, load_effective_catalog
+
+    registry = load_effective_catalog()
+    clients: list[dict[str, Any]] = []
+    for endpoint in registry.endpoints:
+        health = check_endpoint_health(endpoint)
+        clients.append({
+            "name": endpoint.name,
+            "transport": endpoint.transport,
+            "endpoint": endpoint.endpoint,
+            "status": (
+                "configured_but_unconnected" if health.healthy else "unhealthy"
+            ),
+            "auth_token_env": endpoint.auth_token_env or "",
+            "auth_token_present": health.auth_env_set
+            and endpoint.auth_token_env is not None,
+            "allowed_tools_regex": endpoint.allowed_tools_regex,
+            "tools_count": None,
+        })
     return {
-        "clients": [
-            {
-                "name": "github",
-                "transport": "stdio",
-                "endpoint": "npx -y @modelcontextprotocol/server-github",
-                "status": "configured_but_unconnected",
-                "auth_token_env": "KORA_MCP_GITHUB_TOKEN",
-                "auth_token_present": False,
-                "allowed_tools_regex": None,
-                "tools_count": None,
-            },
-            {
-                "name": "cloudflare",
-                "transport": "streamable_http",
-                "endpoint": "https://mcp.cloudflare.com/sse",
-                "status": "configured_but_unconnected",
-                "auth_token_env": "KORA_MCP_CLOUDFLARE_TOKEN",
-                "auth_token_present": False,
-                "allowed_tools_regex": None,
-                "tools_count": None,
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
+        "clients": clients,
+        "stub": False,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 

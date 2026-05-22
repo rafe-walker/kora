@@ -1,13 +1,27 @@
-"""Tests for the KR-MCP-3 stub endpoint.
+"""Tests for the /api/mcp/clients/list endpoint.
 
-Bucket §4 scenarios:
+Originally landed by CC#2's KR-MCP-3 (PR #106) as a hardcoded stub.
+CC#1's KR-MCP-CLIENTS-FLIP swaps the body for a live read from
+``kora_mcp.catalog.load_effective_catalog`` (defaults github +
+cloudflare + operator overrides from ``~/.kora/config.yaml``).
+
+Scenarios:
   1. GET /api/mcp/clients/list returns 200
-  2. Top-level shape (clients + generated_at + stub:true)
-  3. Both expected clients present (github + cloudflare)
-  4. Each client entry has the required keys + valid status/transport enums
-  5. SECURITY: auth_token_env carries env-var NAME only, not value;
-     auth_token_present is bool; no token-value-shaped field leaks
-  6. Cron-regression sanity
+  2. Top-level shape (clients + generated_at + stub:false post-flip)
+  3. Default catalog (github + cloudflare) surfaced when no
+     operator overrides
+  4. Each client entry has the required keys + valid status/
+     transport enums (TS MCPClient interface contract)
+  5. SECURITY (preserved): auth_token_env carries env-var NAME
+     only, not value; auth_token_present is bool; no token-value-
+     shaped field leaks
+  6. Status mapping: unhealthy when auth env unset; configured_
+     but_unconnected when set
+  7. auth_token_present: false when env unset; true when set;
+     false when empty string
+  8. Operator config.yaml override respected (override-by-name +
+     add-new)
+  9. Cron-regression sanity
 """
 
 import re
@@ -54,13 +68,15 @@ async def test_endpoint_returns_200(_isolate_config):
 
 @pytest.mark.asyncio
 async def test_response_shape_has_required_keys(_isolate_config):
+    """Post-flip: stub flag is False (live read engaged). Top-level
+    keys identical so the FE doesn't need a schema change."""
     from kora_cli import web_server
 
     result = await web_server.list_mcp_clients()
     assert set(result.keys()) == {"clients", "generated_at", "stub"}
     assert isinstance(result["clients"], list)
     assert isinstance(result["generated_at"], str)
-    assert result["stub"] is True
+    assert result["stub"] is False
 
 
 # ---- 3. Expected clients ----------------------------------------------
@@ -184,35 +200,142 @@ async def test_no_token_value_shaped_keys_leak_in_response(_isolate_config):
     )
 
 
-# ---- 6. Bucket §3 stub values pinned --------------------------------
+# ---- 6. Status mapping (post-flip) ------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_stub_returns_configured_but_unconnected_for_all_clients(_isolate_config):
-    """The bucket §3 stub pins both clients as configured_but_unconnected
-    (since stub can't actually open a connection). Dashboard "0 connected"
-    aggregate count depends on this; pin it so a future stub edit
-    can't silently flip the count."""
+async def test_unhealthy_status_when_auth_env_unset(_isolate_config, monkeypatch):
+    """Post-flip: with no auth env vars set (default test env), every
+    endpoint reports ``unhealthy`` — auth_token_env is configured on
+    both defaults so its absence is a real gap."""
+    monkeypatch.delenv("KORA_MCP_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("KORA_MCP_CLOUDFLARE_TOKEN", raising=False)
     from kora_cli import web_server
 
     result = await web_server.list_mcp_clients()
     for client in result["clients"]:
-        assert client["status"] == "configured_but_unconnected", (
-            f"{client['name']}: expected configured_but_unconnected in "
-            f"stub, got {client['status']!r}"
+        assert client["status"] == "unhealthy", (
+            f"{client['name']}: expected unhealthy when auth env unset, "
+            f"got {client['status']!r}"
         )
 
 
 @pytest.mark.asyncio
-async def test_stub_returns_auth_token_present_false_for_all_clients(_isolate_config):
-    """Stub doesn't check real env vars; pins auth_token_present:false
-    so the FE renders the red-x indicator for all clients. CC#1's
-    KR-MCP-1 ST2 will resolve real env-var presence."""
+async def test_configured_but_unconnected_when_auth_env_set(
+    _isolate_config, monkeypatch
+):
+    """Post-flip: with auth env set + no open connection yet (pool
+    not wired into this endpoint surface; deferred to KR-MCP-
+    CONSUMPTION), status is configured_but_unconnected."""
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_test_value")
+    monkeypatch.setenv("KORA_MCP_CLOUDFLARE_TOKEN", "cf_test_value")
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    statuses = {c["name"]: c["status"] for c in result["clients"]}
+    assert statuses["github"] == "configured_but_unconnected"
+    assert statuses["cloudflare"] == "configured_but_unconnected"
+
+
+# ---- 7. auth_token_present semantics ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auth_token_present_false_when_env_unset(_isolate_config, monkeypatch):
+    monkeypatch.delenv("KORA_MCP_GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("KORA_MCP_CLOUDFLARE_TOKEN", raising=False)
     from kora_cli import web_server
 
     result = await web_server.list_mcp_clients()
     for client in result["clients"]:
         assert client["auth_token_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_auth_token_present_true_when_env_set(_isolate_config, monkeypatch):
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "ghp_real_value")
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    presence = {c["name"]: c["auth_token_present"] for c in result["clients"]}
+    assert presence["github"] is True
+
+
+@pytest.mark.asyncio
+async def test_auth_token_present_false_when_env_empty_string(
+    _isolate_config, monkeypatch
+):
+    """Empty string treated as unset — Doppler sometimes injects empty
+    values. Matches ST2's check_endpoint_health contract."""
+    monkeypatch.setenv("KORA_MCP_GITHUB_TOKEN", "")
+    monkeypatch.setenv("KORA_MCP_CLOUDFLARE_TOKEN", "   \n   ")
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    for client in result["clients"]:
+        assert client["auth_token_present"] is False
+
+
+# ---- 8. Operator config.yaml override respected -----------------------
+
+
+@pytest.mark.asyncio
+async def test_operator_override_replaces_default_by_name(
+    _isolate_config, monkeypatch
+):
+    """Operator config.yaml entry with name=github REPLACES the default
+    github entry (per ST2's load_registry_from_config contract).
+    Pin that the endpoint surfaces the operator's values."""
+    import yaml
+
+    config_yaml = {
+        "mcp_clients": {
+            "endpoints": [
+                {
+                    "name": "github",
+                    "transport": "streamable_http",
+                    "endpoint": "https://github-mcp.internal.acme.com",
+                    "auth_token_env": "ACME_GITHUB_PAT",
+                }
+            ]
+        }
+    }
+    (_isolate_config / "config.yaml").write_text(yaml.safe_dump(config_yaml))
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    github = next(c for c in result["clients"] if c["name"] == "github")
+    assert github["transport"] == "streamable_http"
+    assert github["endpoint"] == "https://github-mcp.internal.acme.com"
+    assert github["auth_token_env"] == "ACME_GITHUB_PAT"
+    # Cloudflare default still present (operator didn't override it)
+    assert any(c["name"] == "cloudflare" for c in result["clients"])
+
+
+@pytest.mark.asyncio
+async def test_operator_can_add_new_endpoint(_isolate_config):
+    import yaml
+
+    config_yaml = {
+        "mcp_clients": {
+            "endpoints": [
+                {
+                    "name": "slack",
+                    "transport": "stdio",
+                    "endpoint": "npx -y @modelcontextprotocol/server-slack",
+                    "auth_token_env": "KORA_MCP_SLACK_TOKEN",
+                }
+            ]
+        }
+    }
+    (_isolate_config / "config.yaml").write_text(yaml.safe_dump(config_yaml))
+
+    from kora_cli import web_server
+
+    result = await web_server.list_mcp_clients()
+    names = {c["name"] for c in result["clients"]}
+    assert names == {"github", "cloudflare", "slack"}
 
 
 # ---- 7. Cron-regression sanity --------------------------------------

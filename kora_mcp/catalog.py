@@ -235,3 +235,26 @@ def find_endpoint_by_name(
 ) -> Optional[MCPEndpointConfig]:
     """Convenience wrapper for the CLI ``status <name>`` command."""
     return registry.get_endpoint(name)
+
+
+def load_effective_catalog() -> MCPRegistryConfig:
+    """One-call helper: read ``~/.kora/config.yaml`` + merge with defaults.
+
+    Used by surfaces that need the live catalog without threading
+    the config dict themselves (the ``/api/mcp/clients/list``
+    endpoint in particular). Operator entries override defaults by
+    name; new operator entries are appended. Pydantic
+    ``extra="forbid"`` rejects unknown keys at load.
+
+    Returns an empty :class:`MCPRegistryConfig` if the config file
+    is unreadable — the endpoint surfaces "no clients configured"
+    rather than crashing. Inner validation errors propagate per
+    K-DG drift discipline (typos must surface, not silently load).
+    """
+    from kora_cli.config import load_config
+
+    try:
+        config = load_config() or {}
+    except Exception:
+        config = {}
+    return load_registry_from_config(config, include_defaults=True)
