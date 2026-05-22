@@ -67,6 +67,7 @@ from __future__ import annotations
 import logging
 import shlex
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .config import STDIO_SCHEME, IsoKronProviderConfig, parse_mcp_transport
@@ -152,6 +153,16 @@ class IsoKronMCPClient:
         self._exit_stack: Optional[AsyncExitStack] = None
         self._session: Any = None  # mcp.ClientSession when started
 
+        # KR-P2-L ST1 — health-rollup subsignal timestamps. Updated on
+        # successful `.invoke()` so the dispatch_reachable /
+        # last_successful_write / last_heartbeat subsignals have a
+        # ground-truth read source. Three cuts because the cockpit
+        # needs them broken out separately per R4.1 §9.7 freshness
+        # thresholds (60s / 300s / 90s respectively).
+        self._last_invoke_at: Optional[datetime] = None
+        self._last_successful_append_event_at: Optional[datetime] = None
+        self._last_successful_refresh_claim_at: Optional[datetime] = None
+
     @property
     def is_started(self) -> bool:
         return self._session is not None
@@ -159,6 +170,38 @@ class IsoKronMCPClient:
     @property
     def transport(self) -> str:
         return self._transport
+
+    @property
+    def last_invoke_at(self) -> Optional[datetime]:
+        """KR-P2-L ST1 — last successful MCP invoke timestamp.
+
+        Source for the ``dispatch_reachable`` subsignal — if no
+        successful invoke has happened recently the substrate is
+        considered unreachable. Includes ALL tool invocations
+        (append_event, claim, refresh, release, etc.).
+        """
+        return self._last_invoke_at
+
+    @property
+    def last_successful_append_event_at(self) -> Optional[datetime]:
+        """KR-P2-L ST1 — last successful ``kora__append_event``
+        invocation timestamp.
+
+        Source for the ``last_successful_write`` subsignal — chain
+        writes are the canonical evidence Kora is making observable
+        progress against the substrate.
+        """
+        return self._last_successful_append_event_at
+
+    @property
+    def last_successful_refresh_claim_at(self) -> Optional[datetime]:
+        """KR-P2-L ST1 — last successful ``kora__refresh_claim``
+        invocation timestamp.
+
+        Source for the ``last_heartbeat`` subsignal — a stale
+        heartbeat means the worker leg has stalled mid-claim.
+        """
+        return self._last_successful_refresh_claim_at
 
     async def start(self) -> None:
         """Open the MCP transport + initialize the client session.
@@ -315,6 +358,15 @@ class IsoKronMCPClient:
                 f"tool returned no structured content "
                 f"(content blocks: {_describe_content(result)!r})",
             )
+        # KR-P2-L ST1 — health-rollup subsignal timestamps. Set AFTER
+        # the success check (failed invokes don't bump these — they
+        # would corrupt the dispatch_reachable signal).
+        now = datetime.now(timezone.utc)
+        self._last_invoke_at = now
+        if tool_name == "kora__append_event":
+            self._last_successful_append_event_at = now
+        elif tool_name == "kora__refresh_claim":
+            self._last_successful_refresh_claim_at = now
         return payload
 
 

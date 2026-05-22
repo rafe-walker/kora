@@ -166,6 +166,23 @@ class ClaimState:
     work_attempt_id: Optional[str]
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveClaim:
+    """KR-P2-L ST1 — the claim currently held by this poller.
+
+    Set by ``_claim_and_work`` immediately after a successful claim;
+    cleared on every exit path (release, lease-lost, hard-stop pause).
+    The ``claim_state`` health subsignal reads this to report
+    ``"active"`` (claim held) vs ``"idle"`` (no claim).
+    """
+
+    ticket_id: str
+    workspace_id: str
+    work_attempt_id: str
+    claim_fence_token: str
+    claimed_at: datetime
+
+
 # Agent-loop invoker signature. The invoker receives
 # (ticket, claim_state, heartbeat) so it can correlate emits with the
 # active ``work_attempt_id`` (ST2 ledger writes) and signal P2-compliant
@@ -304,6 +321,17 @@ class SeaTicketPoller:
         # the durable ``claim_count`` for substrate-side budgeting lives
         # in the ClaimState chain.
         self._last_claim_started_at: Optional[datetime] = None
+
+        # KR-P2-L ST1 — the currently held claim, or None if no claim
+        # is in flight. Set after a successful claim allocation;
+        # cleared on every exit path (release, lease-lost, hard-stop
+        # pre/post pause). Read by the ``claim_state`` health subsignal.
+        self._current_claim: Optional[ActiveClaim] = None
+
+    @property
+    def current_claim(self) -> Optional[ActiveClaim]:
+        """KR-P2-L ST1 — read-only view of the current claim, if any."""
+        return self._current_claim
 
     # ------------------------------------------------------------------
     # Public API
@@ -717,6 +745,40 @@ class SeaTicketPoller:
             )
             return
 
+        # KR-P2-L ST1 — record the held claim for the ``claim_state``
+        # health subsignal. The try/finally below clears it on every
+        # exit path so a stale claim never lingers in the
+        # health rollup.
+        self._current_claim = ActiveClaim(
+            ticket_id=ticket.ticket_id,
+            workspace_id=ticket.workspace_id,
+            work_attempt_id=claim_state.work_attempt_id,
+            claim_fence_token=claim_state.claim_fence_token,
+            claimed_at=datetime.now(timezone.utc),
+        )
+        try:
+            await self._claim_and_work_inner(
+                ticket=ticket,
+                claim_state=claim_state,
+                kora_operation_id=kora_operation_id,
+            )
+        finally:
+            self._current_claim = None
+
+    async def _claim_and_work_inner(
+        self,
+        *,
+        ticket: SeaTicket,
+        claim_state: ClaimState,
+        kora_operation_id: str,
+    ) -> None:
+        """Post-claim work loop — split from ``_claim_and_work`` so
+        the outer method can wrap the held-claim section in a
+        try/finally that clears :attr:`_current_claim`.
+
+        Same control flow as the inline version, just relocated for
+        the cleanup-on-exit invariant. No semantic change.
+        """
         # KR-P2-CLEANUP ST1: claim is fully committed (lease held +
         # ledger row allocated) — transition the operational-state
         # holder READY → ACTIVE. The matching ACTIVE → READY fires on
