@@ -566,23 +566,80 @@ class HealthRollupHolder:
     def current(self) -> HealthRollup:
         """Collect all 8 subsignals fresh + derive overall/plane.
 
-        ST1 derivation is a coarse passthrough — any non-fresh
-        subsignal degrades ``overall`` to ``degraded``; ``control_plane``
-        and ``worker`` default to ``healthy`` until ST3 ships the
-        proper subsignal-grouped derivation per R4.1 §9.7.
+        Uses :mod:`agent.health_rollup_derivation` to map subsignals
+        onto the three top-level enums:
+
+          - ``overall`` — full rollup including operational primary
+            state (STOPPED short-circuits to ``stopped``)
+          - ``control_plane`` — dispatch + auth + escalation watcher
+          - ``worker`` — claim + heartbeat + credit_burn + breaker +
+            last_write
         """
         now = _now()
         subsignals = self._collect_all_subsignals(now=now)
-        overall = self._derive_overall_v1(subsignals)
+
+        primary_state, stopped_trigger = self._snapshot_operational_state()
+
+        from agent.health_rollup_derivation import (
+            derive_control_plane_health,
+            derive_overall_status,
+            derive_worker_health,
+        )
+
+        overall, stopped_reason = derive_overall_status(
+            subsignals,
+            primary_state=primary_state,
+            stopped_trigger=stopped_trigger,
+        )
         return HealthRollup(
             overall=overall,
-            # ST3 replaces these with subsignal-grouped derivation.
-            control_plane=HealthStatus.HEALTHY,
-            worker=HealthStatus.HEALTHY,
-            stopped_reason=None,
+            control_plane=derive_control_plane_health(subsignals),
+            worker=derive_worker_health(subsignals),
+            stopped_reason=stopped_reason,
             subsignals=subsignals,
             collected_at=now,
         )
+
+    @staticmethod
+    def _snapshot_operational_state() -> tuple[Any, Optional[str]]:
+        """Return ``(PrimaryState, stopped_trigger)`` or ``(None, None)``.
+
+        Fail-soft: if the operational holder isn't initialized
+        (early-boot windows / agent-session-only contexts), returns
+        ``(None, None)`` so the derivation falls back to subsignal-
+        only rollup.
+        """
+        try:
+            from agent.operational_state_holder import get_holder
+
+            holder = get_holder()
+        except Exception:
+            logger.debug(
+                "[health_rollup] get_holder import raised", exc_info=True
+            )
+            return None, None
+        if holder is None:
+            return None, None
+        try:
+            primary_state = holder.current.primary_state
+        except Exception:
+            logger.debug(
+                "[health_rollup] holder.current raised", exc_info=True
+            )
+            return None, None
+        # ``stopped_trigger``: read the most recent transition trigger
+        # from the holder's history ring. Fail-soft if history isn't
+        # available.
+        stopped_trigger: Optional[str] = None
+        try:
+            history = holder.history(limit=1)
+            if history:
+                stopped_trigger = history[-1].get("trigger")
+        except Exception:
+            logger.debug(
+                "[health_rollup] holder.history raised", exc_info=True
+            )
+        return primary_state, stopped_trigger
 
     def _collect_all_subsignals(
         self, *, now: datetime
@@ -708,18 +765,6 @@ class HealthRollupHolder:
                 exc_info=True,
             )
             return None
-
-    @staticmethod
-    def _derive_overall_v1(subsignals: dict[str, Subsignal]) -> HealthStatus:
-        """ST1 placeholder derivation — coarse passthrough.
-
-        ST3 replaces with R4.1 §9.7's subsignal-grouped algorithm.
-        """
-        for signal in subsignals.values():
-            if signal.status is not SubsignalStatus.FRESH:
-                return HealthStatus.DEGRADED
-        return HealthStatus.HEALTHY
-
 
 # ---------------------------------------------------------------------------
 # Singleton + accessors

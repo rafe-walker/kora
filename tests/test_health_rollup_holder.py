@@ -350,15 +350,21 @@ def test_escalation_watcher_always_missing_until_substrate_ack():
 def test_holder_current_returns_all_8_subsignals_with_no_deps():
     """Uninitialized cost holder + no active provider + no poller +
     no credentials → all subsignals MISSING (except claim_state which
-    reports idle), overall = degraded."""
+    reports idle + escalation_watcher_liveness which is pending
+    substrate ack), overall = degraded.
+
+    ST3 derivation: both planes have MISSING subsignals (no
+    DEGRADED), so each plane = degraded; overall = degraded
+    (escalation_watcher's pending-ack MISSING is excluded from
+    rollup per R4.1 §9.7 §4 fallback)."""
     holder = HealthRollupHolder()
     rollup = holder.current()
     assert set(rollup.subsignals.keys()) == set(ALL_SUBSIGNAL_NAMES)
-    # All 8 names present (R4.1 §9.7 contract).
     assert rollup.overall is HealthStatus.DEGRADED
-    # Control plane / worker placeholder for ST1
-    assert rollup.control_plane is HealthStatus.HEALTHY
-    assert rollup.worker is HealthStatus.HEALTHY
+    # ST3 plane derivation: control + worker both degraded due to
+    # MISSING subsignals; no DEGRADED → no outage; STALE/MISSING → degraded.
+    assert rollup.control_plane is HealthStatus.DEGRADED
+    assert rollup.worker is HealthStatus.DEGRADED
     assert rollup.stopped_reason is None
 
 
