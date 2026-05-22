@@ -243,3 +243,184 @@ async def write_kora_known_epoch(
         written,
     )
     return written
+
+
+# ---------------------------------------------------------------------------
+# DR-panel summary aggregator (KR-P2-DR-FLIP)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import List
+
+
+@dataclass(frozen=True, slots=True)
+class DRStateSummary:
+    """Aggregated DR/epoch state for the operator-facing /api/dr-state.
+
+    All fields are projection-ready for the FE shape. epoch_history is
+    intentionally empty in v1 — no ``kora_known_epoch_history`` table
+    exists yet, so there's no audit-trail source to project from. When
+    a future bucket adds the history table (or a derived view from
+    ``kora.dr.observed`` events + boot-success markers), this list
+    populates without an FE change.
+    """
+
+    substrate_epoch: int
+    kora_known_epoch: Optional[int]
+    match_status: str  # clean | mismatch_detected | pending_runbook | unknown
+    kora_paused_substrate: bool
+    last_check_at: str  # ISO-8601 (request time)
+    recent_dr_events: List[dict] = field(default_factory=list)
+    epoch_history: List[dict] = field(default_factory=list)
+
+
+def _derive_match_status(
+    substrate_epoch: int,
+    kora_known_epoch: Optional[int],
+    kora_paused_substrate: bool,
+) -> str:
+    """Resolve the four-state match enum from the two epoch values + holder state.
+
+    Truth table (R4.1 §9.8):
+        kora_known == None              → unknown (Kora hasn't booted yet)
+        kora_known == substrate_epoch
+          + holder PAUSED{substrate}    → pending_runbook (epochs match,
+                                          but the holder is still in the
+                                          paused state — operator needs
+                                          to issue kora_control reset to
+                                          clear the PAUSED edge)
+          + holder NOT PAUSED           → clean
+        kora_known < substrate_epoch    → mismatch_detected (gate 3b would
+                                          catch this on next boot; the
+                                          DR-panel surfaces it now)
+        kora_known > substrate_epoch    → unknown (substrate is monotonic
+                                          post-PITR; this combination is
+                                          unreachable in practice — guard
+                                          treats it as a sentinel)
+    """
+    if kora_known_epoch is None:
+        return "unknown"
+    if kora_known_epoch == substrate_epoch:
+        return "pending_runbook" if kora_paused_substrate else "clean"
+    if kora_known_epoch < substrate_epoch:
+        return "mismatch_detected"
+    return "unknown"
+
+
+def _check_kora_paused_substrate() -> bool:
+    """True iff the OperationalState holder reports PAUSED{substrate}.
+
+    Reads via the holder singleton (``agent.operational_state_holder.get_holder``).
+    Returns False when the holder isn't initialised (CI / dev runs
+    without the boot-time wire-in) — the caller treats that as
+    "no PAUSED edge", which is the right default.
+    """
+    try:
+        from agent.operational_state_holder import get_holder
+        from agent.operational_state import DegradationReason, PrimaryState
+
+        holder = get_holder()
+        if holder is None:
+            return False
+        state = holder.current()
+        return (
+            state.primary_state is PrimaryState.PAUSED
+            and DegradationReason.SUBSTRATE in state.degradation_reasons
+        )
+    except Exception:
+        # Defensive: any import / attribute / enum mismatch falls through
+        # as "not paused". The DR panel is a diagnostic surface, not a
+        # safety surface — the runtime holder is the authoritative state
+        # for actual PAUSED enforcement.
+        logger.exception("[kora.dr_panel] holder PAUSED check failed")
+        return False
+
+
+def _project_dr_event(row: Any) -> dict:
+    """Project a :class:`DRObservedEventRow` into the API shape.
+
+    Pulls ``from_epoch`` / ``to_epoch`` / ``discarded_*`` / ``cleared_*``
+    from the event payload. Missing fields surface as ``None`` so the
+    FE renders "—" instead of crashing on a pre-contract event.
+    """
+    payload = row.payload if isinstance(row.payload, dict) else {}
+
+    def _int_field(name: str) -> int:
+        value = payload.get(name)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    return {
+        "event_type": "kora.dr.observed",
+        "occurred_at": row.occurred_at,
+        "from_epoch": _int_field("from_epoch"),
+        "to_epoch": _int_field("to_epoch"),
+        "discarded_operation_ids": _int_field("discarded_operation_ids"),
+        "discarded_ledger_rows": _int_field("discarded_ledger_rows"),
+        "cleared_at": payload.get("cleared_at"),
+        "cleared_by": payload.get("cleared_by"),
+    }
+
+
+async def get_dr_state_summary(
+    memory_provider: Any,
+    workspace_id: str,
+    *,
+    dr_event_limit: int = 10,
+) -> DRStateSummary:
+    """Aggregate DR/epoch state for the operator-facing /api/dr-state.
+
+    Reads (in order):
+      1. substrate_epoch via :func:`read_substrate_epoch`
+      2. kora_known_epoch via :func:`read_kora_known_epoch`
+      3. holder.current() for the PAUSED{substrate} flag
+      4. recent ``kora.dr.observed`` events via
+         :func:`read_dr_observed_events`
+
+    The 4 reads run sequentially because they hit the same pool; the
+    panel is manual-reload only so per-request latency budget is
+    generous.
+
+    Raises:
+        IsoKronConnectionError: ``memory_provider._connection`` is None
+            (provider not started). Caller's try/except wraps this
+            into the stub-fallback + ``error`` field response branch
+            so the operator sees the cause rather than a 500.
+        RuntimeError: substrate accessor returned no row (singleton
+            missing — unreachable in practice; the seed INSERT is in
+            the migration).
+        Exception: asyncpg / network failure — propagated.
+    """
+    from .events import read_dr_observed_events
+
+    connection = getattr(memory_provider, "_connection", None)
+    if connection is None:
+        raise RuntimeError(
+            "memory_provider._connection is None — provider not started"
+        )
+    pool = connection.get_pg_pool()
+
+    substrate_epoch = await read_substrate_epoch(pool)
+    kora_known_epoch = await read_kora_known_epoch(pool)
+    kora_paused_substrate = _check_kora_paused_substrate()
+    dr_event_rows = await read_dr_observed_events(
+        workspace_id, pool, limit=dr_event_limit
+    )
+
+    match_status = _derive_match_status(
+        substrate_epoch, kora_known_epoch, kora_paused_substrate
+    )
+    last_check_at = (
+        datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+    recent_dr_events = [_project_dr_event(row) for row in dr_event_rows]
+
+    return DRStateSummary(
+        substrate_epoch=substrate_epoch,
+        kora_known_epoch=kora_known_epoch,
+        match_status=match_status,
+        kora_paused_substrate=kora_paused_substrate,
+        last_check_at=last_check_at,
+        recent_dr_events=recent_dr_events,
+        epoch_history=[],
+    )

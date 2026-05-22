@@ -3961,7 +3961,7 @@ async def get_health_rollup():
 
 
 # ---------------------------------------------------------------------------
-# Disaster recovery / substrate epoch (KR-P2-DR-PANEL)
+# Disaster recovery / substrate epoch (KR-P2-DR-PANEL → KR-P2-DR-FLIP)
 # ---------------------------------------------------------------------------
 #
 # R4.1 §9.8: when a PITR happens, the substrate_epoch bumps; gate 3b
@@ -3970,72 +3970,98 @@ async def get_health_rollup():
 # clear. This endpoint surfaces:
 #
 #   * current epoch state (substrate_epoch vs kora_known_epoch + match)
-#   * epoch_history (every boot/dr/operator-bump that advanced kora's
-#     known epoch — auditable timeline)
-#   * recent_dr_events (kora.dr.observed payloads with discard counts
-#     and operator-cleared timestamps)
+#   * epoch_history (intentionally empty in v1 — no kora_known_epoch
+#     history table exists; populates when substrate-team ships a
+#     history view, no FE change needed)
+#   * recent_dr_events (kora.dr.observed payloads from event_log,
+#     last 10)
 #   * runbook_pending — derived flag the FE uses to render the red
 #     top-of-page DR alert
 #
-# v1 stub: hardcoded clean state (epoch 12, match, not paused) so the
-# default render is quiet — the DR alert is suppressed when nothing is
-# wrong, matching the operational reality that this panel lives
-# silently until DR fires. Flips to real read via KR-P2-M's
-# ``DREpochState.current()`` + ``.recent_dr_events()`` accessors.
+# KR-P2-DR-FLIP (this commit) flips the body from stub to live read.
+# Two-branch shape: live path drops the stub flag; uninit/failure
+# returns the stub fallback shape with stub:true + error field so
+# the operator sees the underlying cause rather than a 500. Mirrors
+# the KR-P2-CLEANUP ST2/3/4 pattern CC#3 just used for SEA / CONTROL
+# / BOOT.
 #
 # Read-only: the post-PITR substrate_epoch bump is an OS-level
 # operator action (Fly secret + flyctl restart). This panel SURFACES
 # the need; it does not execute the runbook.
 
 
+_DR_STATE_FALLBACK: Dict[str, Any] = {
+    "current": {
+        "substrate_epoch": 0,
+        "kora_known_epoch": None,
+        "match_status": "unknown",
+        "last_check_at": "1970-01-01T00:00:00Z",
+        "kora_paused_substrate": False,
+    },
+    "epoch_history": [],
+    "recent_dr_events": [],
+    "runbook_pending": False,
+}
+
+
 @app.get("/api/dr-state")
 async def get_dr_state():
     """Return Kora's DR / substrate-epoch state.
 
-    v1 stub. Replace body with ``DREpochState.current()`` projection +
-    ``.recent_dr_events()`` query once KR-P2-M lands.
+    Live read via ``get_dr_state_summary`` (KR-P2-DR-FLIP). When the
+    IsoKron provider isn't registered, the workspace_id can't be
+    resolved, or the substrate read fails, returns the same shape with
+    ``stub: True`` + an ``error`` field so the FE keeps rendering and
+    the operator sees why the live read failed.
 
     Enum reference:
       match_status   ∈ {clean, mismatch_detected, pending_runbook, unknown}
-      epoch source   ∈ {boot-success, dr-recovery, operator-bump}
       event_type     == "kora.dr.observed"
     """
+    try:
+        from plugins.memory.isokron import get_last_active_provider
+        from plugins.memory.isokron.dr_epoch import get_dr_state_summary
+
+        provider = get_last_active_provider()
+        if provider is None:
+            return {
+                **_DR_STATE_FALLBACK,
+                "stub": True,
+                "error": "IsoKronMemoryProvider not initialised",
+            }
+        ws = provider._resolve_workspace_id()
+        if ws is None:
+            return {
+                **_DR_STATE_FALLBACK,
+                "stub": True,
+                "error": "no workspace_id resolvable",
+            }
+        summary = await get_dr_state_summary(provider, ws)
+    except Exception as exc:
+        _log.exception("[kora.dr_panel] live read failed")
+        return {
+            **_DR_STATE_FALLBACK,
+            "stub": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    runbook_pending = summary.kora_paused_substrate or summary.match_status in {
+        "mismatch_detected",
+        "pending_runbook",
+    }
+
     return {
         "current": {
-            "substrate_epoch": 12,
-            "kora_known_epoch": 12,
-            "match_status": "clean",
-            "last_check_at": "2026-05-21T23:00:00Z",
-            "kora_paused_substrate": False,
+            "substrate_epoch": summary.substrate_epoch,
+            "kora_known_epoch": summary.kora_known_epoch,
+            "match_status": summary.match_status,
+            "last_check_at": summary.last_check_at,
+            "kora_paused_substrate": summary.kora_paused_substrate,
         },
-        "epoch_history": [
-            {
-                "epoch": 12,
-                "observed_at": "2026-05-15T14:00:00Z",
-                "kora_known_at": "2026-05-15T14:00:08Z",
-                "source": "boot-success",
-            },
-            {
-                "epoch": 11,
-                "observed_at": "2026-04-30T08:30:00Z",
-                "kora_known_at": "2026-04-30T08:30:05Z",
-                "source": "boot-success",
-            },
-        ],
-        "recent_dr_events": [
-            {
-                "event_type": "kora.dr.observed",
-                "occurred_at": "2026-04-30T08:25:00Z",
-                "from_epoch": 10,
-                "to_epoch": 11,
-                "discarded_operation_ids": 3,
-                "discarded_ledger_rows": 7,
-                "cleared_at": "2026-04-30T08:29:00Z",
-                "cleared_by": "operator@stormhaven",
-            },
-        ],
-        "runbook_pending": False,
-        "stub": True,
+        "epoch_history": list(summary.epoch_history),
+        "recent_dr_events": list(summary.recent_dr_events),
+        "runbook_pending": runbook_pending,
+        "stub": False,
     }
 
 

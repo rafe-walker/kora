@@ -138,6 +138,104 @@ def _project_event(row: dict[str, Any]) -> RecentChainEvent:
     )
 
 
+# ---------------------------------------------------------------------------
+# DR-observed event read (KR-P2-DR-FLIP)
+# ---------------------------------------------------------------------------
+# read_recent_kora_events filters LIKE 'kora.%' and returns truncated
+# payload TEXT. The DR panel needs structured JSON to project
+# from_epoch / to_epoch / discarded_* / cleared_* fields, so this
+# sibling helper restricts to event_type = 'kora.dr.observed' and
+# returns the parsed JSON payload alongside the event metadata.
+
+SELECT_DR_OBSERVED_EVENTS_SQL = """
+    SELECT
+      el.event_id::text  AS event_id,
+      el.occurred_at     AS occurred_at,
+      el.payload         AS payload
+    FROM hivex_foundation.event_log el
+    JOIN hivex_foundation.tenant t ON t.tenant_id = el.tenant_id
+    WHERE t.clerk_org_id = $1
+      AND el.event_type = 'kora.dr.observed'
+    ORDER BY el.occurred_at DESC
+    LIMIT $2
+"""
+
+DEFAULT_DR_OBSERVED_LIMIT = 10
+"""Default limit per bucket §4 — last 10 events sufficient for v1."""
+
+
+@dataclass(frozen=True, slots=True)
+class DRObservedEventRow:
+    """One ``kora.dr.observed`` event with structured payload.
+
+    Used by KR-P2-DR-FLIP's :func:`get_dr_state_summary` to project
+    the DR-panel ``recent_dr_events`` array. Payload is the raw
+    dict from the event_log row's ``jsonb`` column — caller picks
+    out the documented fields and synthesises missing ones (e.g. a
+    DR event predating the from/to-epoch contract would surface
+    those as ``None``).
+    """
+
+    event_id: str
+    occurred_at: str  # ISO-8601
+    payload: dict[str, Any]
+
+
+async def read_dr_observed_events(
+    workspace_id: str,
+    pool: Any,
+    *,
+    limit: int = DEFAULT_DR_OBSERVED_LIMIT,
+) -> list[DRObservedEventRow]:
+    """Read recent ``kora.dr.observed`` events for the workspace.
+
+    Same tenant-resolution JOIN as :func:`read_recent_kora_events`
+    (the substrate-team established pattern); restricted to the
+    DR-observed event_type so the DR panel doesn't waste a 50-event
+    fetch on unrelated chain events just to filter post-hoc.
+    """
+    import json as _json
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            SELECT_DR_OBSERVED_EVENTS_SQL, workspace_id, limit
+        )
+
+    out: list[DRObservedEventRow] = []
+    for row in rows:
+        occurred_at = row["occurred_at"]
+        occurred_iso = (
+            occurred_at.isoformat()
+            if hasattr(occurred_at, "isoformat")
+            else str(occurred_at)
+        )
+        raw_payload = row["payload"]
+        # asyncpg can return jsonb as either dict (if codec installed)
+        # or str (if not); handle both for defensiveness.
+        if isinstance(raw_payload, str):
+            try:
+                payload = _json.loads(raw_payload)
+            except (ValueError, TypeError):
+                payload = {}
+        elif isinstance(raw_payload, dict):
+            payload = raw_payload
+        else:
+            payload = {}
+        out.append(
+            DRObservedEventRow(
+                event_id=row["event_id"],
+                occurred_at=occurred_iso,
+                payload=payload,
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Recent-kora-events read (pre-existing — ST4 system_prompt_block)
+# ---------------------------------------------------------------------------
+
+
 async def read_recent_kora_events(
     workspace_id: str,
     pool: Any,
