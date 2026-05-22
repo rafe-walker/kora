@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Archive,
   ArrowRight,
+  BookOpenCheck,
   CheckCircle2,
   DollarSign,
   HeartPulse,
@@ -14,7 +15,9 @@ import {
   OctagonAlert,
   PauseCircle,
   PowerSquare,
+  Radio,
   RefreshCw,
+  Scroll,
   ShieldAlert,
   ShieldCheck,
   Waves,
@@ -30,6 +33,9 @@ import { useToast } from "@/hooks/useToast";
 import { api, diagBundleHref } from "@/lib/api";
 import type {
   BootStatusResponse,
+  CapabilitiesResponse,
+  ChainEventsResponse,
+  CharterResponse,
   CostStateResponse,
   DRStateResponse,
   HealthRollupResponse,
@@ -37,6 +43,7 @@ import type {
   KoraAssignedSeaTicketsResponse,
   KoraControlObservedStateResponse,
   OperationalStateResponse,
+  RunbooksManifest,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -45,6 +52,7 @@ type LoadStatus<T> =
   | { state: "error"; error: string };
 
 interface DashboardData {
+  // v1 row 1 (DASHBOARD #63 4d1bc11)
   health: LoadStatus<HealthRollupResponse>;
   operational: LoadStatus<OperationalStateResponse>;
   cost: LoadStatus<CostStateResponse>;
@@ -52,6 +60,11 @@ interface DashboardData {
   control: LoadStatus<KoraControlObservedStateResponse>;
   boot: LoadStatus<BootStatusResponse>;
   dr: LoadStatus<DRStateResponse>;
+  // v2 row 2 — newer surfaces (KR-P2-DASHBOARD-V2)
+  capabilities: LoadStatus<CapabilitiesResponse>;
+  charter: LoadStatus<CharterResponse>;
+  recentEvents: LoadStatus<ChainEventsResponse>;
+  runbooks: LoadStatus<RunbooksManifest>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -62,6 +75,10 @@ const INITIAL_DATA: DashboardData = {
   control: { state: "loading" },
   boot: { state: "loading" },
   dr: { state: "loading" },
+  capabilities: { state: "loading" },
+  charter: { state: "loading" },
+  recentEvents: { state: "loading" },
+  runbooks: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -354,6 +371,128 @@ function DRCardBody({ data }: { data: DRStateResponse }) {
   );
 }
 
+// ── Row-2 card body renderers (KR-P2-DASHBOARD-V2) ──────────────────────
+
+function CapabilitiesCardBody({ data }: { data: CapabilitiesResponse }) {
+  const { total_tools, total_caps, unmapped_count } = data;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xl font-semibold">
+        {total_tools}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          tools / {total_caps} cap_* groups
+        </span>
+      </div>
+      {unmapped_count > 0 ? (
+        <Badge tone="warning">
+          {unmapped_count} group{unmapped_count === 1 ? "" : "s"} escalating
+        </Badge>
+      ) : (
+        <Badge tone="success">all caps mapped</Badge>
+      )}
+    </div>
+  );
+}
+
+function CharterCardBody({ data }: { data: CharterResponse }) {
+  if (data.active === null) {
+    return (
+      <div className="text-sm text-muted-foreground">
+        No active Constitution loaded
+      </div>
+    );
+  }
+  const a = data.active;
+  const revShort = a.revision_id ? truncateMiddle(a.revision_id, 8) : "—";
+  const hashShort = a.rules_hash ? truncateMiddle(a.rules_hash, 8) : "—";
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5">
+        <code
+          className="text-xs font-mono bg-muted/40 px-1.5 py-0.5 rounded border border-border"
+          title={a.revision_id ?? ""}
+        >
+          {revShort}
+        </code>
+        {!a.rules_available && (
+          <Badge tone="warning">rules pending</Badge>
+        )}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        rules_hash: <code className="text-xs">{hashShort}</code>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        loaded {formatRelative(a.loaded_at)}
+      </div>
+    </div>
+  );
+}
+
+function RecentEventsCardBody({ data }: { data: ChainEventsResponse }) {
+  const events = data.events.slice(0, 5);
+  if (events.length === 0) {
+    return (
+      <div className="text-sm text-muted-foreground">No recent events</div>
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-1 text-xs">
+      {events.map((e) => (
+        <li key={e.event_id} className="flex items-baseline gap-2">
+          <span className="text-muted-foreground shrink-0 w-12 truncate">
+            {formatRelative(e.occurred_at)}
+          </span>
+          <code className="font-mono truncate" title={e.event_type}>
+            {e.event_type.replace(/^kora\./, "")}
+          </code>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RunbooksCardBody({ data }: { data: RunbooksManifest }) {
+  const total = data.runbooks.length;
+  const available = data.runbooks.filter((r) => r.available).length;
+  const pending = total - available;
+  // Most-recently-modified available runbook (best proxy for "what's
+  // currently maintained"). When no runbooks are available, omit.
+  const mostRecent = [...data.runbooks]
+    .filter((r) => r.available && r.last_modified)
+    .sort((a, b) =>
+      (b.last_modified ?? "").localeCompare(a.last_modified ?? ""),
+    )[0];
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xl font-semibold">
+        {available}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          available
+        </span>
+        {pending > 0 && (
+          <span className="text-xs text-muted-foreground font-normal ml-1.5">
+            · {pending} pending
+          </span>
+        )}
+      </div>
+      {mostRecent ? (
+        <div className="text-xs text-muted-foreground truncate" title={mostRecent.title}>
+          latest: {mostRecent.title} ({formatRelative(mostRecent.last_modified)})
+        </div>
+      ) : (
+        <div className="text-xs text-muted-foreground">
+          no available runbooks yet
+        </div>
+      )}
+    </div>
+  );
+}
+
+function truncateMiddle(value: string, head: number): string {
+  if (value.length <= head + 4) return value;
+  return `${value.slice(0, head)}…${value.slice(-4)}`;
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -431,8 +570,14 @@ function HealthHero({ status, onRetry }: HealthHeroProps) {
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
-function isStubbed(s: LoadStatus<{ stub?: boolean }>): boolean {
-  return s.state === "ready" && s.data.stub === true;
+function isStubbed(s: LoadStatus<unknown>): boolean {
+  // Capabilities + Runbooks responses don't carry a stub field
+  // (always-live by design). Safely read via property check rather
+  // than narrowing the LoadStatus type — the dashboard mixes
+  // responses with and without the flag.
+  if (s.state !== "ready") return false;
+  const data = s.data as { stub?: unknown };
+  return data.stub === true;
 }
 
 export default function DashboardPage() {
@@ -473,6 +618,7 @@ export default function DashboardPage() {
       if (isManual) setRefreshing(true);
       // Promise.allSettled so one slow/broken endpoint doesn't stall the rest.
       await Promise.allSettled([
+        // Row 1 — v1 surfaces
         loadOne("health", () => api.getHealthRollup()),
         loadOne("operational", () => api.getOperationalState()),
         loadOne("cost", () => api.getCostState()),
@@ -480,6 +626,11 @@ export default function DashboardPage() {
         loadOne("control", () => api.getKoraControlObservedState()),
         loadOne("boot", () => api.getBootStatus()),
         loadOne("dr", () => api.getDRState()),
+        // Row 2 — KR-P2-DASHBOARD-V2 surfaces
+        loadOne("capabilities", () => api.getCapabilities()),
+        loadOne("charter", () => api.getCharter()),
+        loadOne("recentEvents", () => api.getChainEvents({ limit: 5 })),
+        loadOne("runbooks", () => api.getRunbooks()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -493,14 +644,34 @@ export default function DashboardPage() {
     void loadAll(false);
   }, [loadAll]);
 
-  const anyStubbed =
-    isStubbed(data.health) ||
-    isStubbed(data.operational) ||
-    isStubbed(data.cost) ||
-    isStubbed(data.sea) ||
-    isStubbed(data.control) ||
-    isStubbed(data.boot) ||
-    isStubbed(data.dr);
+  // All sources the dashboard fetches. Used for the anyStubbed banner
+  // + the footer's live/stubbed aggregate count. capabilities + runbooks
+  // responses don't carry a stub flag (always-live by design) — their
+  // ready states count toward "live"; loading/error don't count.
+  const ALL_SOURCES = [
+    data.health,
+    data.operational,
+    data.cost,
+    data.sea,
+    data.control,
+    data.boot,
+    data.dr,
+    data.capabilities,
+    data.charter,
+    data.recentEvents,
+    data.runbooks,
+  ];
+
+  const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
+
+  // Footer aggregate: a source counts as "live" when it returned ready
+  // with stub:false (or no stub flag at all — caps/runbooks always
+  // count as live when ready). "stubbed" requires ready + stub:true.
+  // Loading/error sources are excluded from both counts.
+  const liveCount = ALL_SOURCES.filter(
+    (s) => s.state === "ready" && !isStubbed(s),
+  ).length;
+  const stubbedCount = ALL_SOURCES.filter((s) => isStubbed(s)).length;
 
   return (
     <div className="flex flex-col gap-6">
@@ -625,6 +796,65 @@ export default function DashboardPage() {
         </DashboardCard>
       </div>
 
+      {/* ── Row 2: newer surfaces (KR-P2-DASHBOARD-V2) ───────────────── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <DashboardCard
+          title="Capabilities"
+          icon={ShieldCheck}
+          to="/capabilities"
+          status={data.capabilities}
+          stubbed={isStubbed(data.capabilities)}
+          onRetry={() =>
+            void loadOne("capabilities", () => api.getCapabilities())
+          }
+        >
+          {data.capabilities.state === "ready" && (
+            <CapabilitiesCardBody data={data.capabilities.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Charter"
+          icon={Scroll}
+          to="/charter"
+          status={data.charter}
+          stubbed={isStubbed(data.charter)}
+          onRetry={() => void loadOne("charter", () => api.getCharter())}
+        >
+          {data.charter.state === "ready" && (
+            <CharterCardBody data={data.charter.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Recent events"
+          icon={Radio}
+          to="/chain-events"
+          status={data.recentEvents}
+          stubbed={isStubbed(data.recentEvents)}
+          onRetry={() =>
+            void loadOne("recentEvents", () => api.getChainEvents({ limit: 5 }))
+          }
+        >
+          {data.recentEvents.state === "ready" && (
+            <RecentEventsCardBody data={data.recentEvents.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Runbooks"
+          icon={BookOpenCheck}
+          to="/runbooks"
+          status={data.runbooks}
+          stubbed={isStubbed(data.runbooks)}
+          onRetry={() => void loadOne("runbooks", () => api.getRunbooks())}
+        >
+          {data.runbooks.state === "ready" && (
+            <RunbooksCardBody data={data.runbooks.data} />
+          )}
+        </DashboardCard>
+      </div>
+
       {/* ── Bottom strip: links to other (non-admin-panel) pages ─────── */}
       <div className="flex flex-wrap gap-3 text-xs text-muted-foreground pt-4 border-t">
         <Link to="/sessions" className="hover:text-foreground underline-offset-2 hover:underline">
@@ -666,6 +896,16 @@ export default function DashboardPage() {
         <span className="flex items-center gap-1.5">
           <Hourglass className="h-3 w-3" />
           {refreshing ? "refreshing…" : "manual refresh"}
+        </span>
+      </div>
+
+      {/* ── v2 footer: live/stub aggregate across all dashboard sources ── */}
+      <div className="text-center text-[11px] text-muted-foreground pt-2">
+        Kora — Dashboard v2.{" "}
+        <span className="text-success">{liveCount} live source{liveCount === 1 ? "" : "s"}</span>
+        {" / "}
+        <span className={stubbedCount > 0 ? "text-warning" : "text-muted-foreground"}>
+          {stubbedCount} stubbed source{stubbedCount === 1 ? "" : "s"}
         </span>
       </div>
     </div>
