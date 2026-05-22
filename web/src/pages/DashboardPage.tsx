@@ -9,6 +9,7 @@ import {
   BookOpenCheck,
   CheckCircle2,
   DollarSign,
+  Cable,
   Heart,
   HeartPulse,
   Hourglass,
@@ -45,6 +46,7 @@ import type {
   HeartbeatStatus,
   KoraAssignedSeaTicketsResponse,
   KoraControlObservedStateResponse,
+  MCPClientsListResponse,
   OperationalStateResponse,
   RunbooksManifest,
 } from "@/lib/api";
@@ -70,6 +72,8 @@ interface DashboardData {
   runbooks: LoadStatus<RunbooksManifest>;
   // KR-HB-PANEL — backend service heartbeat (stub)
   heartbeat: LoadStatus<HeartbeatServicesResponse>;
+  // KR-MCP-3 — installed external MCP clients (stub)
+  mcpClients: LoadStatus<MCPClientsListResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -85,6 +89,7 @@ const INITIAL_DATA: DashboardData = {
   recentEvents: { state: "loading" },
   runbooks: { state: "loading" },
   heartbeat: { state: "loading" },
+  mcpClients: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -548,6 +553,41 @@ function HeartbeatCardBody({ data }: { data: HeartbeatServicesResponse }) {
   );
 }
 
+function MCPClientsCardBody({ data }: { data: MCPClientsListResponse }) {
+  // Aggregate per-status counts for the dashboard tile. Matches the
+  // panel's summary strip + the bucket §3(c) headline shape
+  // ("2 MCPs configured / 0 connected / 0 errors"). Token presence
+  // intentionally NOT surfaced here — the panel detail view shows
+  // the per-client presence/absence indicator; dashboard scans for
+  // "is anything wrong with the MCP fleet" at the status level.
+  const total = data.clients.length;
+  const connected = data.clients.filter((c) => c.status === "connected").length;
+  const errors = data.clients.filter(
+    (c) => c.status === "error" || c.status === "unhealthy",
+  ).length;
+  const headlineClass = errors > 0 ? "text-destructive" : "text-foreground";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {total}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          MCP{total === 1 ? "" : "s"} configured
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        <Badge tone={connected > 0 ? "success" : "outline"}>
+          {connected} connected
+        </Badge>
+        {errors > 0 && (
+          <Badge tone="destructive">
+            {errors} error{errors === 1 ? "" : "s"}
+          </Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -688,6 +728,8 @@ export default function DashboardPage() {
         loadOne("runbooks", () => api.getRunbooks()),
         // KR-HB-PANEL
         loadOne("heartbeat", () => api.getHeartbeatServices()),
+        // KR-MCP-3
+        loadOne("mcpClients", () => api.getMCPClients()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -718,6 +760,7 @@ export default function DashboardPage() {
     data.recentEvents,
     data.runbooks,
     data.heartbeat,
+    data.mcpClients,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -855,7 +898,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Row 2: newer surfaces (KR-P2-DASHBOARD-V2 + KR-HB-PANEL) ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         <DashboardCard
           title="Capabilities"
           icon={ShieldCheck}
@@ -924,6 +967,21 @@ export default function DashboardPage() {
         >
           {data.heartbeat.state === "ready" && (
             <HeartbeatCardBody data={data.heartbeat.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="MCP Clients"
+          icon={Cable}
+          to="/mcp-clients"
+          status={data.mcpClients}
+          stubbed={isStubbed(data.mcpClients)}
+          onRetry={() =>
+            void loadOne("mcpClients", () => api.getMCPClients())
+          }
+        >
+          {data.mcpClients.state === "ready" && (
+            <MCPClientsCardBody data={data.mcpClients.data} />
           )}
         </DashboardCard>
       </div>
