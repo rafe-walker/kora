@@ -54,6 +54,7 @@ import {
   UserCircle,
   Users,
   Waves,
+  Workflow,
   Wrench,
   X,
   Zap,
@@ -85,6 +86,7 @@ import HealthRollupPage from "@/pages/HealthRollupPage";
 import HeartbeatPanel from "@/pages/HeartbeatPanel";
 import MCPClientsPanel from "@/pages/MCPClientsPanel";
 import WebhookEventsPanel from "@/pages/WebhookEventsPanel";
+import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -141,6 +143,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/heartbeat": HeartbeatPanel,
   "/mcp-clients": MCPClientsPanel,
   "/webhook-events": WebhookEventsPanel,
+  "/agent-activity": AgentActivityPanel,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -208,6 +211,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "webhookEvents",
     label: "Webhook Events",
     icon: Inbox,
+  },
+  {
+    path: "/agent-activity",
+    labelKey: "agentActivity",
+    label: "Agent Activity",
+    icon: Workflow,
   },
   {
     path: "/mcp-clients",
