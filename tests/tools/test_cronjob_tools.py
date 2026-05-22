@@ -167,7 +167,7 @@ class TestUnifiedCronjobTool:
                 prompt="Check server status",
                 schedule="every 1h",
                 name="Server Check",
-            )
+            work_class="local_only")
         )
         assert created["success"] is True
 
@@ -200,7 +200,7 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["schedule"] == "every 60m"
 
     def test_pause_and_resume(self):
-        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h", work_class="local_only"))
         job_id = created["job_id"]
 
         paused = json.loads(cronjob(action="pause", job_id=job_id))
@@ -212,7 +212,7 @@ class TestUnifiedCronjobTool:
         assert resumed["job"]["state"] == "scheduled"
 
     def test_update_schedule_recomputes_display(self):
-        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h", work_class="local_only"))
         job_id = created["job_id"]
 
         updated = json.loads(
@@ -231,7 +231,7 @@ class TestUnifiedCronjobTool:
                 model="anthropic/claude-sonnet-4",
                 provider="custom",
                 base_url="http://127.0.0.1:4000/v1",
-            )
+            work_class="local_only")
         )
         job_id = created["job_id"]
 
@@ -257,7 +257,7 @@ class TestUnifiedCronjobTool:
                 prompt="Check the configured feeds and summarize anything new.",
                 schedule="every 1h",
                 name="Morning feeds",
-            )
+            work_class="local_only")
         )
         assert result["success"] is True
         assert result["skill"] == "blogwatcher"
@@ -273,7 +273,7 @@ class TestUnifiedCronjobTool:
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
                 name="Combo job",
-            )
+            work_class="local_only")
         )
         assert result["success"] is True
         assert result["skills"] == ["blogwatcher", "maps"]
@@ -288,7 +288,7 @@ class TestUnifiedCronjobTool:
                 skills=["blogwatcher", "maps"],
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
-            )
+            work_class="local_only")
         )
         assert result["success"] is True
         assert result["name"] == "Use both skills and combine the result."
@@ -300,7 +300,7 @@ class TestUnifiedCronjobTool:
                 skills=["blogwatcher", "maps"],
                 prompt="Use both skills and combine the result.",
                 schedule="every 1h",
-            )
+            work_class="local_only")
         )
         updated = json.loads(
             cronjob(action="update", job_id=created["job_id"], skills=[])
@@ -326,7 +326,7 @@ class TestUnifiedCronjobTool:
                 prompt="Daily briefing",
                 schedule="every 1h",
                 deliver=["telegram"],
-            )
+            work_class="local_only")
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
@@ -342,7 +342,7 @@ class TestUnifiedCronjobTool:
                 prompt="Daily briefing",
                 schedule="every 1h",
                 deliver=["telegram", "discord"],
-            )
+            work_class="local_only")
         )
         assert created["success"] is True
         stored = get_job(created["job_id"])
@@ -353,7 +353,7 @@ class TestUnifiedCronjobTool:
         from cron.jobs import get_job
 
         created = json.loads(
-            cronjob(action="create", prompt="x", schedule="every 1h")
+            cronjob(action="create", prompt="x", schedule="every 1h", work_class="local_only")
         )
         updated = json.loads(
             cronjob(

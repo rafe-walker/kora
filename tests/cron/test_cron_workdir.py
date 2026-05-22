@@ -149,7 +149,7 @@ class TestCronjobToolWorkdir:
                 prompt="hi",
                 schedule="every 1h",
                 workdir=str(tmp_cron_dir),
-            )
+            work_class="local_only")
         )
         assert result["success"] is True
         assert result["job"]["workdir"] == str(tmp_cron_dir.resolve())
@@ -162,7 +162,7 @@ class TestCronjobToolWorkdir:
                 action="create",
                 prompt="hi",
                 schedule="every 1h",
-            )
+            work_class="local_only")
         )
         assert result["success"] is True
         # _format_job omits the field when unset — reduces noise in agent output.
@@ -177,7 +177,7 @@ class TestCronjobToolWorkdir:
                 prompt="hi",
                 schedule="every 1h",
                 workdir=str(tmp_cron_dir),
-            )
+            work_class="local_only")
         )
         job_id = created["job_id"]
 

@@ -265,15 +265,27 @@ def _make_provider_with_capturing_mcp() -> tuple[Any, list[dict[str, Any]]]:
     mcp_client = MagicMock()
     mcp_client.invoke = fake_invoke
 
-    # Build a synchronous IO-loop stub that just runs the coro on the
-    # current asyncio loop and wraps the result in a
-    # concurrent.futures.Future (what asyncio.wrap_future expects).
+    # Build a worker-thread IO-loop stub that mimics production
+    # IsoKronConnection._submit_async: runs the coro on a fresh
+    # thread + loop, returns a concurrent.futures.Future. See the
+    # tests/test_sea_ticket_poller.py:_FakeConnection note for the
+    # root-cause + fix-shape on the prior get_event_loop pattern.
     import concurrent.futures
+    import threading
 
     def submit_coro(coro):
-        result = asyncio.get_event_loop().run_until_complete(coro)
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        fut.set_result(result)
+
+        def _runner():
+            new_loop = asyncio.new_event_loop()
+            try:
+                fut.set_result(new_loop.run_until_complete(coro))
+            except BaseException as exc:
+                fut.set_exception(exc)
+            finally:
+                new_loop.close()
+
+        threading.Thread(target=_runner, daemon=True).start()
         return fut
 
     connection = MagicMock()
@@ -345,17 +357,24 @@ async def test_emit_raises_on_substrate_failure():
     mcp_client.invoke = failing_invoke
 
     import concurrent.futures
+    import threading
 
     def submit_coro(coro):
-        try:
-            result = asyncio.get_event_loop().run_until_complete(coro)
-            fut: concurrent.futures.Future = concurrent.futures.Future()
-            fut.set_result(result)
-            return fut
-        except Exception as exc:
-            fut2: concurrent.futures.Future = concurrent.futures.Future()
-            fut2.set_exception(exc)
-            return fut2
+        # See tests/test_sea_ticket_poller.py:_FakeConnection for the
+        # root-cause + fix-shape note. Same bug, same fix.
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _runner():
+            new_loop = asyncio.new_event_loop()
+            try:
+                fut.set_result(new_loop.run_until_complete(coro))
+            except BaseException as exc:
+                fut.set_exception(exc)
+            finally:
+                new_loop.close()
+
+        threading.Thread(target=_runner, daemon=True).start()
+        return fut
 
     connection = MagicMock()
     connection.get_mcp_client.return_value = mcp_client

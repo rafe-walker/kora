@@ -121,7 +121,7 @@ class TestCronjobToolProfile:
                 prompt="hi",
                 schedule="every 1h",
                 profile="Support",
-            )
+            work_class="local_only")
         )
         assert created["success"] is True
         assert created["job"]["profile"] == "support"
@@ -138,7 +138,7 @@ class TestCronjobToolProfile:
                 prompt="hi",
                 schedule="every 1h",
                 profile="Support",
-            )
+            work_class="local_only")
         )
         updated = json.loads(
             cronjob(action="update", job_id=created["job_id"], profile="")

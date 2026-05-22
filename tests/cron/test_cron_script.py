@@ -228,7 +228,7 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-        ))
+        work_class="local_only"))
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
 
@@ -240,7 +240,7 @@ class TestCronjobToolScript:
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-        ))
+        work_class="local_only"))
         job_id = create_result["job_id"]
 
         update_result = json.loads(cronjob(
@@ -260,7 +260,7 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="some_script.py",
-        ))
+        work_class="local_only"))
         job_id = create_result["job_id"]
 
         update_result = json.loads(cronjob(
@@ -280,7 +280,7 @@ class TestCronjobToolScript:
             schedule="every 1h",
             prompt="Monitor things",
             script="data_collector.py",
-        )
+        work_class="local_only")
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
@@ -408,7 +408,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="/home/user/evil.py",
-        ))
+        work_class="local_only"))
         assert result["success"] is False
         assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
 
@@ -421,7 +421,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="~/monitor.py",
-        ))
+        work_class="local_only"))
         assert result["success"] is False
         assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
 
@@ -434,7 +434,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="../../etc/passwd",
-        ))
+        work_class="local_only"))
         assert result["success"] is False
         assert "escapes" in result["error"].lower() or "traversal" in result["error"].lower()
 
@@ -447,7 +447,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-        ))
+        work_class="local_only"))
         assert result["success"] is True
         assert result["job"]["script"] == "monitor.py"
 
@@ -459,7 +459,7 @@ class TestCronjobToolScriptValidation:
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-        ))
+        work_class="local_only"))
         job_id = create_result["job_id"]
 
         update_result = json.loads(cronjob(
@@ -480,7 +480,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="monitor.py",
-        ))
+        work_class="local_only"))
         job_id = create_result["job_id"]
 
         update_result = json.loads(cronjob(
@@ -500,7 +500,7 @@ class TestCronjobToolScriptValidation:
             schedule="every 1h",
             prompt="Monitor things",
             script="C:\\Users\\evil\\script.py",
-        ))
+        work_class="local_only"))
         assert result["success"] is False
 
 

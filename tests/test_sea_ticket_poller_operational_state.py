@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import threading
 import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -87,6 +88,11 @@ class _FakeConn:
 
 
 class _FakeConnection:
+    """See ``tests/test_sea_ticket_poller.py:_FakeConnection`` for the
+    full root-cause + fix-shape note on ``_submit_async``. Same bug,
+    same fix: run the coro on a fresh worker thread + loop so the
+    test's caller-loop and the coro's runner-loop are independent."""
+
     def __init__(self, pool: _FakePool) -> None:
         self._pool = pool
 
@@ -94,9 +100,18 @@ class _FakeConnection:
         return self._pool
 
     def _submit_async(self, coro):
-        result = asyncio.get_event_loop().run_until_complete(coro)
         fut: concurrent.futures.Future = concurrent.futures.Future()
-        fut.set_result(result)
+
+        def _runner():
+            new_loop = asyncio.new_event_loop()
+            try:
+                fut.set_result(new_loop.run_until_complete(coro))
+            except BaseException as exc:
+                fut.set_exception(exc)
+            finally:
+                new_loop.close()
+
+        threading.Thread(target=_runner, daemon=True).start()
         return fut
 
 
