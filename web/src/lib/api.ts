@@ -1271,6 +1271,10 @@ export interface DRStateResponse {
   recent_dr_events: DRObservedEvent[];
   runbook_pending: boolean;
   stub: boolean;
+  // Present only when stub:true comes from the live-read failure
+  // branch (KR-P2-DR-FLIP): surfaces "why" so debugging from the FE
+  // toast or the network panel doesn't require a server-log dig.
+  error?: string;
 }
 
 // Charter / Constitution viewer (KR-P2-CHARTER-PANEL).
