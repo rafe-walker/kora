@@ -87,6 +87,17 @@ DAEMON_STATUS_TOOL: Dict[str, Any] = {
 
 TOOLS: list = [DAEMON_STATUS_TOOL]
 
+# KR-MCP-RUNTIME-SURFACE ST1 — extend with the 5 read-only tools.
+# Imported lazily inside this list-extension so the import side-effect
+# happens at module-load time but doesn't ripple to test fixtures that
+# need to patch the dispatch table.
+from kora_cli.listeners.mcp_tools import (  # noqa: E402
+    TOOL_DESCRIPTORS as _ST1_DESCRIPTORS,
+    TOOL_DISPATCH as _ST1_DISPATCH,
+)
+
+TOOLS.extend(_ST1_DESCRIPTORS)
+
 
 def _execute_daemon_status() -> Dict[str, Any]:
     """Body for ``kora__daemon_status``. Returns the JSON dict."""
@@ -178,6 +189,7 @@ async def post_jsonrpc(request: Request) -> Dict[str, Any]:
 
     if method == "tools/call":
         tool_name = params.get("name")
+        tool_args = params.get("arguments") or {}
         if tool_name == "kora__daemon_status":
             return _jsonrpc_result(
                 req_id,
@@ -186,6 +198,31 @@ async def post_jsonrpc(request: Request) -> Dict[str, Any]:
                         {
                             "type": "text",
                             "text": _execute_daemon_status_text(),
+                        }
+                    ]
+                },
+            )
+        # KR-MCP-RUNTIME-SURFACE ST1 — route into the mcp_tools dispatch
+        # table for the read-only tools. Each dispatcher returns a
+        # Pydantic model; we serialize via model_dump_json for the
+        # content[].text field.
+        if tool_name in _ST1_DISPATCH:
+            try:
+                model = await _ST1_DISPATCH[tool_name](tool_args)
+            except Exception as exc:
+                logger.exception(
+                    "[mcp] tool %s raised %r", tool_name, exc
+                )
+                return _jsonrpc_error(
+                    req_id, -32603, f"tool error: {type(exc).__name__}"
+                )
+            return _jsonrpc_result(
+                req_id,
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": model.model_dump_json(),
                         }
                     ]
                 },
