@@ -6,8 +6,10 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  CircleDashed,
   Cloud,
   HelpCircle,
+  Hourglass,
   RefreshCw,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -24,10 +26,24 @@ import type {
   HeartbeatStatus,
 } from "@/lib/api";
 
-const STATUS_TONE: Record<HeartbeatStatus, "success" | "warning" | "destructive"> = {
+const STATUS_TONE: Record<
+  HeartbeatStatus,
+  "success" | "warning" | "destructive" | "outline"
+> = {
   healthy: "success",
   degraded: "warning",
   unhealthy: "destructive",
+  // KR-FEAT-HEARTBEAT ST2: "unknown" = probe hasn't completed a
+  // roundtrip yet (cold-start, auth-missing, or in-flight).
+  // Muted outline so it reads as "pending" not "broken".
+  unknown: "outline",
+};
+
+const STATUS_LABEL: Record<HeartbeatStatus, string> = {
+  healthy: "healthy",
+  degraded: "degraded",
+  unhealthy: "unhealthy",
+  unknown: "probe pending",
 };
 
 function StatusIcon({ status }: { status: HeartbeatStatus }) {
@@ -38,18 +54,20 @@ function StatusIcon({ status }: { status: HeartbeatStatus }) {
       return <AlertTriangle className="h-4 w-4 text-warning" />;
     case "unhealthy":
       return <AlertOctagon className="h-4 w-4 text-destructive" />;
+    case "unknown":
+      return <CircleDashed className="h-4 w-4 text-muted-foreground" />;
   }
 }
 
-function formatTimestamp(iso: string): string {
+function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString();
 }
 
-function formatRelative(iso: string): string {
-  if (!iso) return "";
+function formatRelative(iso: string | null): string {
+  if (!iso) return "never checked";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const deltaMs = d.getTime() - Date.now();
@@ -110,9 +128,13 @@ function ServiceRow({ service, expanded, onToggle }: ServiceRowProps) {
           <span className="font-medium uppercase tracking-wide">
             {service.name}
           </span>
-          <Badge tone={STATUS_TONE[service.status]}>{service.status}</Badge>
+          <Badge tone={STATUS_TONE[service.status]}>
+            {STATUS_LABEL[service.status]}
+          </Badge>
           <span className="text-xs text-muted-foreground ml-auto">
-            {service.latency_ms} ms · last checked{" "}
+            {service.latency_ms !== null
+              ? `${service.latency_ms} ms · `
+              : "— · "}
             {formatRelative(service.last_check_at)}
           </span>
         </button>
@@ -136,8 +158,24 @@ function ServiceRow({ service, expanded, onToggle }: ServiceRowProps) {
               )}
             </dl>
             <div className="text-xs text-muted-foreground pt-1">
-              <code>last_check_at</code>: {formatTimestamp(service.last_check_at)}
+              <code>last_check_at</code>:{" "}
+              {formatTimestamp(service.last_check_at)}
             </div>
+            {/* KR-FEAT-HEARTBEAT ST2 error field. Plain-text
+                rendering (React default escaping) — same
+                MCP-clients pattern as #117. Sanitized at the
+                backend (per api.ts type comment) but FE still
+                must not interpret as HTML. */}
+            {service.error !== null && (
+              <div className="flex gap-2 text-xs pt-1">
+                <span className="text-muted-foreground min-w-[140px]">
+                  error
+                </span>
+                <pre className="font-mono text-destructive whitespace-pre-wrap break-all flex-1 m-0">
+                  {service.error}
+                </pre>
+              </div>
+            )}
           </div>
         )}
       </CardContent>
@@ -198,6 +236,7 @@ export default function HeartbeatPanel() {
         healthy: data.services.filter((s) => s.status === "healthy").length,
         degraded: data.services.filter((s) => s.status === "degraded").length,
         unhealthy: data.services.filter((s) => s.status === "unhealthy").length,
+        unknown: data.services.filter((s) => s.status === "unknown").length,
       }
     : null;
 
@@ -271,6 +310,12 @@ export default function HeartbeatPanel() {
                     <AlertOctagon className="h-3.5 w-3.5 text-destructive" />
                     {counts.unhealthy} unhealthy
                   </span>
+                  {counts.unknown > 0 && (
+                    <span className="flex items-center gap-1.5 text-xs">
+                      <CircleDashed className="h-3.5 w-3.5 text-muted-foreground" />
+                      {counts.unknown} probe pending
+                    </span>
+                  )}
                 </>
               )}
               <span className="text-xs text-muted-foreground ml-auto">
@@ -279,6 +324,26 @@ export default function HeartbeatPanel() {
               </span>
             </CardContent>
           </Card>
+
+          {/* KR-FEAT-HEARTBEAT ST2: cache_warming banner. The
+              daemon just started and the first probe cycle hasn't
+              completed — the empty/sparse services list isn't a
+              "real" outage signal. */}
+          {data.cache_warming && (
+            <Card className="border-primary/30 bg-primary/5">
+              <CardContent className="py-3 flex items-start gap-3 text-sm">
+                <Hourglass className="h-4 w-4 mt-0.5 text-primary" />
+                <div>
+                  <div className="font-medium">Probes warming up…</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    Heartbeat scheduler started recently; the first
+                    probe cycle hasn't completed yet. Service health
+                    will populate once probes return.
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* ── Services list ──────────────────────────────────── */}
           {data.services.length === 0 ? (

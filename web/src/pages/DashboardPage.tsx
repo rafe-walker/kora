@@ -529,27 +529,32 @@ function truncateMiddle(value: string, head: number): string {
 }
 
 function HeartbeatCardBody({ data }: { data: HeartbeatServicesResponse }) {
-  // Aggregate per-status counts. "5 services / 1 degraded / 0 unhealthy"
-  // (the spec §3(c) example) matches what the panel itself shows in its
-  // summary strip, kept consistent so the dashboard card + panel agree.
+  // Aggregate per-status counts. Matches the panel's summary strip
+  // so the dashboard card + panel agree. KR-FEAT-HEARTBEAT ST2
+  // added the "unknown" arm (probe pending; cold-start, auth-missing,
+  // or in-flight) — it's bucketed separately so the operator can
+  // distinguish "scheduler not done yet" from "service down".
   const total = data.services.length;
   const counts: Record<HeartbeatStatus, number> = {
     healthy: 0,
     degraded: 0,
     unhealthy: 0,
+    unknown: 0,
   };
   for (const s of data.services) counts[s.status]++;
   // Worst-status tone drives the headline number colour: unhealthy >
-  // degraded > healthy. operator scans the dashboard for "is anything
-  // wrong" and this surfaces it without making them squint at chips.
+  // degraded > healthy. "unknown" is intentionally NOT a worst-
+  // status driver (it's pending, not failing) — cache_warming
+  // suppresses any pseudo-outage signal when the daemon just booted.
   const worst =
     counts.unhealthy > 0
       ? "unhealthy"
       : counts.degraded > 0
         ? "degraded"
         : "healthy";
-  const headlineClass =
-    worst === "unhealthy"
+  const headlineClass = data.cache_warming
+    ? "text-muted-foreground"
+    : worst === "unhealthy"
       ? "text-destructive"
       : worst === "degraded"
         ? "text-warning"
@@ -560,6 +565,7 @@ function HeartbeatCardBody({ data }: { data: HeartbeatServicesResponse }) {
         {total}
         <span className="text-xs text-muted-foreground font-normal ml-1.5">
           service{total === 1 ? "" : "s"}
+          {data.cache_warming ? " · warming" : ""}
         </span>
       </div>
       <div className="flex flex-wrap gap-1.5 text-xs">
@@ -571,6 +577,9 @@ function HeartbeatCardBody({ data }: { data: HeartbeatServicesResponse }) {
         )}
         {counts.unhealthy > 0 && (
           <Badge tone="destructive">{counts.unhealthy} unhealthy</Badge>
+        )}
+        {counts.unknown > 0 && (
+          <Badge tone="outline">{counts.unknown} pending</Badge>
         )}
       </div>
     </div>
