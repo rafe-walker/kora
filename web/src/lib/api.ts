@@ -1390,3 +1390,15 @@ export interface RunbookEntry {
 export interface RunbooksManifest {
   runbooks: RunbookEntry[];
 }
+
+// Diagnostic bundle download URL (KR-P2-DIAG-BUNDLE).
+// Browser handles the zip download directly via <a href download>;
+// no JS fetcher needed — the response is a binary stream with
+// Content-Disposition: attachment. Exposed via a helper so the
+// HERMES_BASE_PATH (URL-prefix reverse-proxy mount) is applied
+// the same way fetchJSON applies it for /api/* fetches.
+export const DIAG_BUNDLE_URL = "/api/diag-bundle";
+
+export function diagBundleHref(): string {
+  return `${HERMES_BASE_PATH}${DIAG_BUNDLE_URL}`;
+}
