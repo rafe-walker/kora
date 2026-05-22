@@ -524,6 +524,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    work_class: Any = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -618,6 +619,16 @@ def create_job(
             "there is nothing for the job to run."
         )
 
+    # KR-P2-D ST1: normalize work_class. The internal helper defaults to
+    # LOCAL_ONLY for back-compat with test fixtures + non-operator callers.
+    # Operator-facing surfaces (cronjob MCP tool, cron_create CLI,
+    # _handle_create_job web) pre-validate and pass an explicit enum value.
+    from agent.cron_work_class import CronWorkClass, coerce_work_class
+
+    normalized_work_class = coerce_work_class(
+        work_class, operator_facing=False, surface="cron.jobs.create_job"
+    )
+
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
         context_from = [context_from.strip()] if context_from.strip() else None
@@ -662,6 +673,10 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        # KR-P2-D ST1: persisted work-class declaration. Required at every
+        # operator-facing registration surface; defaults to LOCAL_ONLY at
+        # the internal helper layer (test fixtures, internal callers).
+        "work_class": normalized_work_class.value,
     }
 
     jobs = load_jobs()

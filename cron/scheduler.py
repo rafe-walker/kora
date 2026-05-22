@@ -1141,12 +1141,54 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    # ---------------------------------------------------------------
+    # KR-P2-D ST1: dispatch by declared work_class.
+    # ---------------------------------------------------------------
+    # The job dict was annotated with ``work_class`` at create-time
+    # (cron/jobs.py:create_job). Jobs persisted before ST1 lacked that
+    # field — fall back to LOCAL_ONLY + log a one-time INFO so the
+    # operator can grep and audit them.
+    #
+    # LOCAL_ONLY + OUTBOUND_MSG fall through to the existing scheduler
+    # flow. SUBSTRATE_HEARTBEAT + SUBSTRATE_MUTATION raise
+    # CronSubstratePathNotYetImplemented — those branches are blocked
+    # on substrate-team work (see agent/cron_work_class.py for the
+    # specific blockers per class). When ST3/ST4 land, the raises
+    # become the real emit / Sea_Ticket-authoring flows.
+    from agent.cron_work_class import (
+        CronWorkClass,
+        DispatchDecision,
+        coerce_work_class,
+        dispatch_for_work_class,
+        raise_substrate_blocked,
+    )
+
+    _raw_work_class = job.get("work_class")
+    if _raw_work_class is None:
+        logger.info(
+            "[cron.work_class] job_id=%s missing work_class field "
+            "(stored before KR-P2-D ST1?); defaulting to local_only. "
+            "Audit + re-create the job to declare explicitly.",
+            job_id,
+        )
+    _resolved_work_class = coerce_work_class(
+        _raw_work_class, operator_facing=False, surface="cron.scheduler"
+    )
+    _decision = dispatch_for_work_class(
+        _resolved_work_class, job_id=job_id
+    )
+    if _decision is DispatchDecision.BLOCKED_PENDING_SUBSTRATE:
+        # Raises CronSubstratePathNotYetImplemented; the run_job wrapper
+        # catches at the outer scheduler tick and records the job as
+        # failed with the substrate-blocked message.
+        raise_substrate_blocked(_resolved_work_class, job_id=job_id)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
