@@ -67,6 +67,12 @@ dependencies = [
   # (which is a silent killer on Windows — see CONTRIBUTING.md) and
   # `os.killpg` (which doesn't exist on Windows).
   "psutil==7.2.2",
+  # Async SMTP client for KR-FEAT-EMAIL Purelymail outbound.
+  # Runtime-critical (not an extra) — the daemon's outbound email
+  # capability ships with the gateway plane. Same lesson as task #265
+  # (slowapi was wrongly under [web] extra while the webhooks listener
+  # imported it unconditionally).
+  "aiosmtplib==4.0.1",
 ]
 
 [project.urls]
