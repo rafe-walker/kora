@@ -139,6 +139,25 @@ async def build_and_start_sea_ticket_poller(
 
     poller = SeaTicketPoller(**kwargs)
     task = asyncio.create_task(poller.run_forever())
+
+    # KR-P2-L ST1: register the now-running poller as the process-wide
+    # active poller so the health-rollup holder + future cross-cutting
+    # readers (cockpit BFF, admin endpoints) can query its
+    # ``current_claim`` without import-time coupling.
+    try:
+        from plugins.memory.isokron.active_poller import set_active_poller
+
+        set_active_poller(poller)
+    except Exception:
+        # Best-effort — if the active-poller singleton import fails,
+        # the poller still starts; the health-rollup just sees
+        # claim_state as "missing".
+        logger.exception(
+            "[sea_ticket_poller_lifecycle] could not register active "
+            "poller; health-rollup claim_state subsignal will fall "
+            "back to missing."
+        )
+
     logger.info(
         "[sea_ticket_poller_lifecycle] SeaTicketPoller started as a "
         "background task (session_id=%s)",
