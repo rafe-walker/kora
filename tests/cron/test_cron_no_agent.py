@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture
@@ -49,7 +50,7 @@ def test_create_job_no_agent_requires_script(hermes_env):
     from cron.jobs import create_job
 
     with pytest.raises(ValueError, match="no_agent=True requires a script"):
-        create_job(prompt=None, schedule="every 5m", no_agent=True)
+        create_job(prompt=None, schedule="every 5m", no_agent=True, work_class=CronWorkClass.LOCAL_ONLY)
 
 
 def test_create_job_no_agent_stores_field(hermes_env):
@@ -64,7 +65,7 @@ def test_create_job_no_agent_stores_field(hermes_env):
         script="watchdog.sh",
         no_agent=True,
         deliver="local",
-    )
+    work_class=CronWorkClass.LOCAL_ONLY)
     assert job["no_agent"] is True
     assert job["script"] == "watchdog.sh"
     # Prompt can be empty/None for no_agent jobs.
@@ -74,7 +75,7 @@ def test_create_job_no_agent_stores_field(hermes_env):
 def test_create_job_default_is_not_no_agent(hermes_env):
     from cron.jobs import create_job
 
-    job = create_job(prompt="say hi", schedule="every 5m", deliver="local")
+    job = create_job(prompt="say hi", schedule="every 5m", deliver="local", work_class=CronWorkClass.LOCAL_ONLY)
     assert job.get("no_agent") is False
 
 
@@ -83,7 +84,7 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 
     script_path = hermes_env / "scripts" / "w.sh"
     script_path.write_text("echo hi\n")
-    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
+    job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local", work_class=CronWorkClass.LOCAL_ONLY)
 
     update_job(job["id"], {"no_agent": False})
     reloaded = get_job(job["id"])
@@ -203,7 +204,7 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
-    )
+    , work_class=CronWorkClass.LOCAL_ONLY)
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert error is None
@@ -221,7 +222,7 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
 
     job = create_job(
         prompt=None, schedule="every 5m", script="quiet.sh", no_agent=True, deliver="local"
-    )
+    , work_class=CronWorkClass.LOCAL_ONLY)
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert error is None
@@ -238,7 +239,7 @@ def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
 
     job = create_job(
         prompt=None, schedule="every 5m", script="gated.sh", no_agent=True, deliver="local"
-    )
+    , work_class=CronWorkClass.LOCAL_ONLY)
     success, doc, final_response, error = run_job(job)
     assert success is True
     assert final_response == SILENT_MARKER
@@ -254,7 +255,7 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
 
     job = create_job(
         prompt=None, schedule="every 5m", script="broken.sh", no_agent=True, deliver="local"
-    )
+    , work_class=CronWorkClass.LOCAL_ONLY)
     success, doc, final_response, error = run_job(job)
     assert success is False
     assert error is not None
@@ -271,7 +272,7 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"
-    )
+    , work_class=CronWorkClass.LOCAL_ONLY)
 
     with patch("run_agent.AIAgent") as ai_mock:
         from cron.scheduler import run_job

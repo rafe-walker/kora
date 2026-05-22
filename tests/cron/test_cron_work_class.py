@@ -182,12 +182,16 @@ def test_create_job_stores_work_class(_isolate_jobs_state):
     assert job["work_class"] == "outbound_msg"
 
 
-def test_create_job_defaults_internal_caller_to_local_only(_isolate_jobs_state):
-    """Internal callers (work_class omitted) get LOCAL_ONLY default."""
+def test_create_job_raises_when_work_class_omitted(_isolate_jobs_state):
+    """KR-P2-D ST2: fail-CLOSED at the lowest layer. ST1's internal
+    LOCAL_ONLY default has been removed — every caller (including
+    test fixtures + internal helpers) must declare explicitly."""
     from cron.jobs import create_job
 
-    job = create_job(prompt="tick", schedule="30m")
-    assert job["work_class"] == "local_only"
+    with pytest.raises(CronWorkClassError) as exc_info:
+        create_job(prompt="tick", schedule="30m")
+    assert "cron.jobs.create_job" in str(exc_info.value)
+    assert "work_class is required" in str(exc_info.value)
 
 
 def test_create_job_accepts_string_value(_isolate_jobs_state):

@@ -25,6 +25,7 @@ from cron.jobs import (
     get_due_jobs,
     save_job_output,
 )
+from agent.cron_work_class import CronWorkClass
 
 
 # =========================================================================
@@ -191,7 +192,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
-        job = create_job(prompt="Check server status", schedule="30m")
+        job = create_job(prompt="Check server status", schedule="30m", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["id"]
         assert job["prompt"] == "Check server status"
         assert job["enabled"] is True
@@ -202,8 +203,8 @@ class TestJobCRUD:
         assert fetched["prompt"] == "Check server status"
 
     def test_list_jobs(self, tmp_cron_dir):
-        create_job(prompt="Job 1", schedule="every 1h")
-        create_job(prompt="Job 2", schedule="every 2h")
+        create_job(prompt="Job 1", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        create_job(prompt="Job 2", schedule="every 2h", work_class=CronWorkClass.LOCAL_ONLY)
         jobs = list_jobs()
         assert len(jobs) == 2
 
@@ -228,7 +229,7 @@ class TestJobCRUD:
         assert jobs[0]["state"] == "scheduled"
 
     def test_remove_job(self, tmp_cron_dir):
-        job = create_job(prompt="Temp job", schedule="30m")
+        job = create_job(prompt="Temp job", schedule="30m", work_class=CronWorkClass.LOCAL_ONLY)
         assert remove_job(job["id"]) is True
         assert get_job(job["id"]) is None
 
@@ -236,28 +237,28 @@ class TestJobCRUD:
         assert remove_job("nonexistent") is False
 
     def test_auto_repeat_for_once(self, tmp_cron_dir):
-        job = create_job(prompt="One-shot", schedule="1h")
+        job = create_job(prompt="One-shot", schedule="1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["repeat"]["times"] == 1
 
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
-        job = create_job(prompt="Recurring", schedule="every 1h")
+        job = create_job(prompt="Recurring", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["repeat"]["times"] is None
 
     def test_default_delivery_origin(self, tmp_cron_dir):
         job = create_job(
             prompt="Test", schedule="30m",
             origin={"platform": "telegram", "chat_id": "123"},
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         assert job["deliver"] == "origin"
 
     def test_default_delivery_local_no_origin(self, tmp_cron_dir):
-        job = create_job(prompt="Test", schedule="30m")
+        job = create_job(prompt="Test", schedule="30m", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["deliver"] == "local"
 
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
-        job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")
+        job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["name"] == "Old Name"
         updated = update_job(job["id"], {"name": "New Name"})
         assert updated is not None
@@ -272,7 +273,7 @@ class TestUpdateJob:
         assert fetched["name"] == "New Name"
 
     def test_update_schedule(self, tmp_cron_dir):
-        job = create_job(prompt="Daily report", schedule="every 1h")
+        job = create_job(prompt="Daily report", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["schedule"]["kind"] == "interval"
         assert job["schedule"]["minutes"] == 60
         old_next_run = job["next_run_at"]
@@ -289,7 +290,7 @@ class TestUpdateJob:
         assert fetched["schedule_display"] == "every 120m"
 
     def test_update_enable_disable(self, tmp_cron_dir):
-        job = create_job(prompt="Toggle me", schedule="every 1h")
+        job = create_job(prompt="Toggle me", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["enabled"] is True
         updated = update_job(job["id"], {"enabled": False})
         assert updated["enabled"] is False
@@ -303,7 +304,7 @@ class TestUpdateJob:
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):
-        job = create_job(prompt="Pause me", schedule="every 1h")
+        job = create_job(prompt="Pause me", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         paused = pause_job(job["id"], reason="user paused")
         assert paused is not None
         assert paused["enabled"] is False
@@ -311,7 +312,7 @@ class TestPauseResumeJob:
         assert paused["paused_reason"] == "user paused"
 
     def test_resume_reenables_job(self, tmp_cron_dir):
-        job = create_job(prompt="Resume me", schedule="every 1h")
+        job = create_job(prompt="Resume me", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         pause_job(job["id"], reason="user paused")
         resumed = resume_job(job["id"])
         assert resumed is not None
@@ -327,26 +328,26 @@ class TestResolveJobRef:
     def test_resolve_by_exact_id(self, tmp_cron_dir):
         from cron.jobs import resolve_job_ref
 
-        job = create_job(prompt="A", schedule="1h", name="alpha")
+        job = create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         assert resolve_job_ref(job["id"])["id"] == job["id"]
 
     def test_resolve_by_name(self, tmp_cron_dir):
         from cron.jobs import resolve_job_ref
 
-        job = create_job(prompt="A", schedule="1h", name="alpha")
+        job = create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         assert resolve_job_ref("alpha")["id"] == job["id"]
 
     def test_resolve_by_name_case_insensitive(self, tmp_cron_dir):
         from cron.jobs import resolve_job_ref
 
-        job = create_job(prompt="A", schedule="1h", name="MyJob")
+        job = create_job(prompt="A", schedule="1h", name="MyJob", work_class=CronWorkClass.LOCAL_ONLY)
         assert resolve_job_ref("myjob")["id"] == job["id"]
         assert resolve_job_ref("MYJOB")["id"] == job["id"]
 
     def test_resolve_returns_none_when_not_found(self, tmp_cron_dir):
         from cron.jobs import resolve_job_ref
 
-        create_job(prompt="A", schedule="1h", name="alpha")
+        create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         assert resolve_job_ref("does-not-exist") is None
         assert resolve_job_ref("") is None
 
@@ -354,9 +355,9 @@ class TestResolveJobRef:
         """If a job's name happens to equal another job's ID, ID match wins."""
         from cron.jobs import resolve_job_ref
 
-        j1 = create_job(prompt="A", schedule="1h")
+        j1 = create_job(prompt="A", schedule="1h", work_class=CronWorkClass.LOCAL_ONLY)
         # Create a second job whose name is j1's ID
-        j2 = create_job(prompt="B", schedule="1h", name=j1["id"])
+        j2 = create_job(prompt="B", schedule="1h", name=j1["id"], work_class=CronWorkClass.LOCAL_ONLY)
         # Looking up j1["id"] must return j1, not the colliding-name job j2
         assert resolve_job_ref(j1["id"])["id"] == j1["id"]
         assert resolve_job_ref(j1["id"])["id"] != j2["id"]
@@ -365,8 +366,8 @@ class TestResolveJobRef:
         """Two jobs sharing a name → refuse to pick, surface both IDs."""
         from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
-        j1 = create_job(prompt="A", schedule="1h", name="dup")
-        j2 = create_job(prompt="B", schedule="1h", name="dup")
+        j1 = create_job(prompt="A", schedule="1h", name="dup", work_class=CronWorkClass.LOCAL_ONLY)
+        j2 = create_job(prompt="B", schedule="1h", name="dup", work_class=CronWorkClass.LOCAL_ONLY)
         with pytest.raises(AmbiguousJobReference) as exc_info:
             resolve_job_ref("dup")
         ids = {m["id"] for m in exc_info.value.matches}
@@ -378,20 +379,20 @@ class TestResolveJobRef:
     def test_trigger_by_name(self, tmp_cron_dir):
         from cron.jobs import trigger_job
 
-        job = create_job(prompt="A", schedule="1h", name="alpha")
+        job = create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         result = trigger_job("alpha")
         assert result is not None
         assert result["id"] == job["id"]
 
     def test_pause_by_name(self, tmp_cron_dir):
-        job = create_job(prompt="A", schedule="1h", name="alpha")
+        job = create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         result = pause_job("alpha", reason="manual")
         assert result is not None
         assert result["id"] == job["id"]
         assert result["state"] == "paused"
 
     def test_remove_by_name(self, tmp_cron_dir):
-        job = create_job(prompt="A", schedule="1h", name="alpha")
+        job = create_job(prompt="A", schedule="1h", name="alpha", work_class=CronWorkClass.LOCAL_ONLY)
         assert remove_job("alpha") is True
         assert get_job(job["id"]) is None
 
@@ -399,8 +400,8 @@ class TestResolveJobRef:
         """pause/resume/trigger/remove must refuse to act on an ambiguous name."""
         from cron.jobs import AmbiguousJobReference, trigger_job
 
-        create_job(prompt="A", schedule="1h", name="dup")
-        create_job(prompt="B", schedule="1h", name="dup")
+        create_job(prompt="A", schedule="1h", name="dup", work_class=CronWorkClass.LOCAL_ONLY)
+        create_job(prompt="B", schedule="1h", name="dup", work_class=CronWorkClass.LOCAL_ONLY)
         for fn in (pause_job, resume_job, trigger_job):
             with pytest.raises(AmbiguousJobReference):
                 fn("dup")
@@ -410,14 +411,14 @@ class TestResolveJobRef:
 
 class TestMarkJobRun:
     def test_increments_completed(self, tmp_cron_dir):
-        job = create_job(prompt="Test", schedule="every 1h")
+        job = create_job(prompt="Test", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=True)
         updated = get_job(job["id"])
         assert updated["repeat"]["completed"] == 1
         assert updated["last_status"] == "ok"
 
     def test_repeat_limit_removes_job(self, tmp_cron_dir):
-        job = create_job(prompt="Once", schedule="30m", repeat=1)
+        job = create_job(prompt="Once", schedule="30m", repeat=1, work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=True)
         # Job should be removed after hitting repeat limit
         assert get_job(job["id"]) is None
@@ -425,7 +426,7 @@ class TestMarkJobRun:
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
         # LLMs often pass repeat=-1 to mean "infinite/forever".
         # The job must NOT be deleted after runs when repeat <= 0.
-        job = create_job(prompt="Forever", schedule="every 1h", repeat=-1)
+        job = create_job(prompt="Forever", schedule="every 1h", repeat=-1, work_class=CronWorkClass.LOCAL_ONLY)
         # -1 should be normalised to None (infinite) at create time
         assert job["repeat"]["times"] is None
         # Running it multiple times should never delete it
@@ -435,13 +436,13 @@ class TestMarkJobRun:
 
     def test_repeat_zero_is_infinite(self, tmp_cron_dir):
         # repeat=0 should also be treated as None (infinite), not "run zero times".
-        job = create_job(prompt="ZeroRepeat", schedule="every 1h", repeat=0)
+        job = create_job(prompt="ZeroRepeat", schedule="every 1h", repeat=0, work_class=CronWorkClass.LOCAL_ONLY)
         assert job["repeat"]["times"] is None
         mark_job_run(job["id"], success=True)
         assert get_job(job["id"]) is not None
 
     def test_error_status(self, tmp_cron_dir):
-        job = create_job(prompt="Fail", schedule="every 1h")
+        job = create_job(prompt="Fail", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=False, error="timeout")
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
@@ -449,7 +450,7 @@ class TestMarkJobRun:
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — both tracked independently."""
-        job = create_job(prompt="Report", schedule="every 1h")
+        job = create_job(prompt="Report", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
         updated = get_job(job["id"])
         assert updated["last_status"] == "ok"
@@ -458,7 +459,7 @@ class TestMarkJobRun:
 
     def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
         """Successful delivery clears the previous delivery error."""
-        job = create_job(prompt="Report", schedule="every 1h")
+        job = create_job(prompt="Report", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=True, delivery_error="network timeout")
         updated = get_job(job["id"])
         assert updated["last_delivery_error"] == "network timeout"
@@ -469,7 +470,7 @@ class TestMarkJobRun:
 
     def test_both_agent_and_delivery_error(self, tmp_cron_dir):
         """Agent fails AND delivery fails — both errors recorded."""
-        job = create_job(prompt="Report", schedule="every 1h")
+        job = create_job(prompt="Report", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         mark_job_run(job["id"], success=False, error="model timeout",
                      delivery_error="platform 'discord' not enabled")
         updated = get_job(job["id"])
@@ -487,7 +488,7 @@ class TestMarkJobRun:
         silently flipping to enabled=false, state=completed.
         """
         pytest.importorskip("croniter")  # need it to create the job
-        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["schedule"]["kind"] == "cron"
 
         # Simulate the runtime env having lost croniter between job creation
@@ -512,7 +513,7 @@ class TestMarkJobRun:
         """Defensive sibling of the cron test — any recurring schedule that
         somehow yields next_run_at=None must stay enabled with state=error.
         """
-        job = create_job(prompt="Recurring", schedule="every 1h")
+        job = create_job(prompt="Recurring", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["schedule"]["kind"] == "interval"
 
         # Force compute_next_run to return None for this call — simulates
@@ -565,7 +566,7 @@ class TestAdvanceNextRun:
 
     def test_advances_interval_job(self, tmp_cron_dir):
         """Interval jobs should have next_run_at bumped to the next future occurrence."""
-        job = create_job(prompt="Recurring check", schedule="every 1h")
+        job = create_job(prompt="Recurring check", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         # Force next_run_at to 5 minutes ago (i.e. the job is due)
         jobs = load_jobs()
         old_next = (datetime.now() - timedelta(minutes=5)).isoformat()
@@ -583,7 +584,7 @@ class TestAdvanceNextRun:
     def test_advances_cron_job(self, tmp_cron_dir):
         """Cron-expression jobs should have next_run_at bumped to the next occurrence."""
         pytest.importorskip("croniter")
-        job = create_job(prompt="Daily wakeup", schedule="15 6 * * *")
+        job = create_job(prompt="Daily wakeup", schedule="15 6 * * *", work_class=CronWorkClass.LOCAL_ONLY)
         # Force next_run_at to 30 minutes ago
         jobs = load_jobs()
         old_next = (datetime.now() - timedelta(minutes=30)).isoformat()
@@ -600,7 +601,7 @@ class TestAdvanceNextRun:
 
     def test_skips_oneshot_job(self, tmp_cron_dir):
         """One-shot jobs should NOT be advanced — they need to retry on restart."""
-        job = create_job(prompt="Run once", schedule="30m")
+        job = create_job(prompt="Run once", schedule="30m", work_class=CronWorkClass.LOCAL_ONLY)
         original_next = get_job(job["id"])["next_run_at"]
 
         result = advance_next_run(job["id"])
@@ -615,7 +616,7 @@ class TestAdvanceNextRun:
 
     def test_already_future_stays_future(self, tmp_cron_dir):
         """If next_run_at is already in the future, advance keeps it in the future (no harm)."""
-        job = create_job(prompt="Future job", schedule="every 1h")
+        job = create_job(prompt="Future job", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         # next_run_at is already set to ~1h from now by create_job
         advance_next_run(job["id"])
         # Regardless of return value, the job should still be in the future
@@ -626,7 +627,7 @@ class TestAdvanceNextRun:
 
     def test_crash_safety_scenario(self, tmp_cron_dir):
         """Simulate the crash-loop scenario: after advance, the job should NOT be due."""
-        job = create_job(prompt="Crash test", schedule="every 1h")
+        job = create_job(prompt="Crash test", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         # Force next_run_at to 5 minutes ago (job is due)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
@@ -650,7 +651,7 @@ class TestGetDueJobs:
 
         For an hourly job, grace = 30 min (half the period, clamped to [120s, 2h]).
         """
-        job = create_job(prompt="Due now", schedule="every 1h")
+        job = create_job(prompt="Due now", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         # Force next_run_at to 10 minutes ago (within the 30-min grace for hourly)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=10)).isoformat()
@@ -665,7 +666,7 @@ class TestGetDueJobs:
 
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
         """
-        job = create_job(prompt="Stale", schedule="every 1h")
+        job = create_job(prompt="Stale", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
@@ -680,12 +681,12 @@ class TestGetDueJobs:
         assert next_dt > _hermes_now()
 
     def test_future_not_returned(self, tmp_cron_dir):
-        create_job(prompt="Not yet", schedule="every 1h")
+        create_job(prompt="Not yet", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         due = get_due_jobs()
         assert len(due) == 0
 
     def test_disabled_not_returned(self, tmp_cron_dir):
-        job = create_job(prompt="Disabled", schedule="every 1h")
+        job = create_job(prompt="Disabled", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         jobs = load_jobs()
         jobs[0]["enabled"] = False
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
@@ -826,28 +827,28 @@ class TestGetDueJobs:
 
 class TestEnabledToolsets:
     def test_enabled_toolsets_stored(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"], work_class=CronWorkClass.LOCAL_ONLY)
         assert job["enabled_toolsets"] == ["web", "terminal"]
 
     def test_enabled_toolsets_persisted(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "file"])
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "file"], work_class=CronWorkClass.LOCAL_ONLY)
         fetched = get_job(job["id"])
         assert fetched["enabled_toolsets"] == ["web", "file"]
 
     def test_enabled_toolsets_none_when_omitted(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h")
+        job = create_job(prompt="monitor", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["enabled_toolsets"] is None
 
     def test_enabled_toolsets_empty_list_normalizes_to_none(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=[])
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=[], work_class=CronWorkClass.LOCAL_ONLY)
         assert job["enabled_toolsets"] is None
 
     def test_enabled_toolsets_whitespace_entries_stripped(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", " ", "file"])
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", " ", "file"], work_class=CronWorkClass.LOCAL_ONLY)
         assert job["enabled_toolsets"] == ["web", "file"]
 
     def test_enabled_toolsets_updated_via_update_job(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h")
+        job = create_job(prompt="monitor", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         update_job(job["id"], {"enabled_toolsets": ["web", "delegation"]})
         fetched = get_job(job["id"])
         assert fetched["enabled_toolsets"] == ["web", "delegation"]
@@ -865,9 +866,9 @@ class TestMarkJobRunConcurrency:
     def test_three_concurrent_mark_job_run_no_overwrites(self, tmp_cron_dir):
         """Run mark_job_run() for 3 jobs in parallel threads; all must land correctly."""
         # Create 3 distinct recurring jobs
-        job_a = create_job(prompt="Job A", schedule="every 1h")
-        job_b = create_job(prompt="Job B", schedule="every 1h")
-        job_c = create_job(prompt="Job C", schedule="every 1h")
+        job_a = create_job(prompt="Job A", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_b = create_job(prompt="Job B", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_c = create_job(prompt="Job C", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
 
         errors: list = []
 
@@ -919,7 +920,7 @@ class TestMarkJobRunConcurrency:
         confirming no thread's write was silently dropped.
         """
         n = 10
-        jobs = [create_job(prompt=f"Stress job {i}", schedule="every 1h") for i in range(n)]
+        jobs = [create_job(prompt=f"Stress job {i}", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY) for i in range(n)]
         errors: list = []
 
         def run_mark(job_id: str):

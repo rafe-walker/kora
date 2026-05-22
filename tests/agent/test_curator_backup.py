@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture
@@ -411,7 +412,7 @@ def test_rollback_restores_cron_skill_links(backup_env):
 
     cj = _reload_cron_jobs(home)
     cj.create_job(name="weekly", prompt="p", schedule="every 7d",
-                  skills=["alpha", "beta"])
+                  skills=["alpha", "beta"], work_class=CronWorkClass.LOCAL_ONLY)
 
     snap = cb.snapshot_skills(reason="pre-curator-run")
     assert snap is not None

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -32,12 +33,12 @@ class TestJobContextFromField:
     def test_create_job_with_context_from_string(self, cron_env):
         from cron.jobs import create_job, get_job
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize findings",
             schedule="every 2h",
             context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         assert job_b["context_from"] == [job_a["id"]]
         loaded = get_job(job_b["id"])
@@ -46,32 +47,32 @@ class TestJobContextFromField:
     def test_create_job_with_context_from_list(self, cron_env):
         from cron.jobs import create_job, get_job
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
-        job_b = create_job(prompt="Find weather", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_b = create_job(prompt="Find weather", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_c = create_job(
             prompt="Summarize everything",
             schedule="every 2h",
             context_from=[job_a["id"], job_b["id"]],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         assert job_c["context_from"] == [job_a["id"], job_b["id"]]
 
     def test_create_job_without_context_from(self, cron_env):
         from cron.jobs import create_job
 
-        job = create_job(prompt="Hello", schedule="every 1h")
+        job = create_job(prompt="Hello", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("context_from") is None
 
     def test_context_from_empty_string_normalized_to_none(self, cron_env):
         from cron.jobs import create_job
 
-        job = create_job(prompt="Hello", schedule="every 1h", context_from="")
+        job = create_job(prompt="Hello", schedule="every 1h", context_from="", work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("context_from") is None
 
     def test_context_from_empty_list_normalized_to_none(self, cron_env):
         from cron.jobs import create_job
 
-        job = create_job(prompt="Hello", schedule="every 1h", context_from=[])
+        job = create_job(prompt="Hello", schedule="every 1h", context_from=[], work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("context_from") is None
 
 
@@ -82,7 +83,7 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
 
         # Записываем output для job_a
         output_dir = OUTPUT_DIR / job_a["id"]
@@ -95,7 +96,7 @@ class TestBuildJobPromptContextFrom:
             prompt="Summarize the news",
             schedule="every 2h",
             context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         prompt = _build_job_prompt(job_b)
         assert "Today's top story: AI is everywhere." in prompt
@@ -106,7 +107,7 @@ class TestBuildJobPromptContextFrom:
         from cron.scheduler import _build_job_prompt
         import time
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         output_dir = OUTPUT_DIR / job_a["id"]
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,7 +119,7 @@ class TestBuildJobPromptContextFrom:
 
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"]
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
         prompt = _build_job_prompt(job_b)
         assert "New output" in prompt
         assert "Old output" not in prompt
@@ -127,10 +128,10 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job
         from cron.scheduler import _build_job_prompt
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"]
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
 
         # job_a never ran — output dir does not exist
         # expect silent skip: no placeholder injected, base prompt intact
@@ -143,8 +144,8 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
-        job_b = create_job(prompt="Find weather", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_b = create_job(prompt="Find weather", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
 
         for job, content in [(job_a, "News: AI boom"), (job_b, "Weather: Sunny")]:
             out_dir = OUTPUT_DIR / job["id"]
@@ -155,7 +156,7 @@ class TestBuildJobPromptContextFrom:
             prompt="Daily briefing",
             schedule="every 2h",
             context_from=[job_a["id"], job_b["id"]],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         prompt = _build_job_prompt(job_c)
         assert "News: AI boom" in prompt
         assert "Weather: Sunny" in prompt
@@ -165,7 +166,7 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
 
-        job_a = create_job(prompt="Find data", schedule="every 1h")
+        job_a = create_job(prompt="Find data", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "2026-04-22_10-00-00.md").write_text("Context data", encoding="utf-8")
@@ -174,7 +175,7 @@ class TestBuildJobPromptContextFrom:
             prompt="Process the data above",
             schedule="every 2h",
             context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         prompt = _build_job_prompt(job_b)
         context_pos = prompt.find("Context data")
         prompt_pos = prompt.find("Process the data above")
@@ -185,7 +186,7 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
 
-        job_a = create_job(prompt="Find data", schedule="every 1h")
+        job_a = create_job(prompt="Find data", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
         big_output = "x" * 10000
@@ -193,7 +194,7 @@ class TestBuildJobPromptContextFrom:
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
         prompt = _build_job_prompt(job_b)
         assert "truncated" in prompt
         assert "x" * 10000 not in prompt
@@ -204,14 +205,14 @@ class TestBuildJobPromptContextFrom:
         from cron.scheduler import _build_job_prompt
         from unittest.mock import patch
 
-        job_a = create_job(prompt="Find data", schedule="every 1h")
+        job_a = create_job(prompt="Find data", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "2026-04-22_10-00-00.md").write_text("Some output", encoding="utf-8")
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
 
         # Simulate file deleted between glob() and read_text()
         original_read = Path.read_text
@@ -232,14 +233,14 @@ class TestBuildJobPromptContextFrom:
         from cron.scheduler import _build_job_prompt
         from unittest.mock import patch
 
-        job_a = create_job(prompt="Find data", schedule="every 1h")
+        job_a = create_job(prompt="Find data", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "2026-04-22_10-00-00.md").write_text("Some output", encoding="utf-8")
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
-        )
+        , work_class=CronWorkClass.LOCAL_ONLY)
 
         # Simulate permission error on read
         original_read = Path.read_text
@@ -259,7 +260,7 @@ class TestBuildJobPromptContextFrom:
         from cron.jobs import create_job
         from cron.scheduler import _build_job_prompt
 
-        job = create_job(prompt="Process", schedule="every 2h")
+        job = create_job(prompt="Process", schedule="every 2h", work_class=CronWorkClass.LOCAL_ONLY)
         # Manually inject invalid context_from (simulating tampered jobs.json)
         job["context_from"] = ["../../../etc/passwd"]
         prompt = _build_job_prompt(job)
@@ -281,8 +282,8 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
-        job_b = create_job(prompt="Summarize", schedule="every 2h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_b = create_job(prompt="Summarize", schedule="every 2h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job_b.get("context_from") is None
 
         result = json.loads(cronjob(
@@ -300,11 +301,11 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
-        job_a2 = create_job(prompt="Find weather", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
+        job_a2 = create_job(prompt="Find weather", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         assert job_b["context_from"] == [job_a["id"]]
 
         result = json.loads(cronjob(
@@ -320,10 +321,10 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         assert get_job(job_b["id"])["context_from"] == [job_a["id"]]
 
         result = json.loads(cronjob(
@@ -339,10 +340,10 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         result = json.loads(cronjob(
             action="update",
@@ -357,7 +358,7 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_b = create_job(prompt="Summarize", schedule="every 2h")
+        job_b = create_job(prompt="Summarize", schedule="every 2h", work_class=CronWorkClass.LOCAL_ONLY)
 
         result = json.loads(cronjob(
             action="update",
@@ -373,10 +374,10 @@ class TestUpdateContextFrom:
         from tools.cronjob_tools import cronjob
         import json
 
-        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a = create_job(prompt="Find news", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         job_b = create_job(
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         # Update an unrelated field
         result = json.loads(cronjob(

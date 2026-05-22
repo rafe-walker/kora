@@ -6,6 +6,7 @@ import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
 from kora_cli.cron import cron_command
+from agent.cron_work_class import CronWorkClass
 
 
 @pytest.fixture()
@@ -18,7 +19,7 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
-        job = create_job(prompt="Check server status", schedule="every 1h")
+        job = create_job(prompt="Check server status", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
 
         cron_command(Namespace(cron_command="pause", job_id=job["id"]))
         paused = get_job(job["id"])
@@ -42,7 +43,7 @@ class TestCronCommandLifecycle:
             prompt="Combine skill outputs",
             schedule="every 1h",
             skill="blogwatcher",
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
 
         cron_command(
             Namespace(

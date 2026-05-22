@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from agent.cron_work_class import CronWorkClass
 
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -51,7 +52,7 @@ class TestJobScriptField:
             prompt="Analyze the data",
             schedule="every 30m",
             script="/path/to/monitor.py",
-        )
+        work_class=CronWorkClass.LOCAL_ONLY)
         assert job["script"] == "/path/to/monitor.py"
 
         loaded = get_job(job["id"])
@@ -60,19 +61,19 @@ class TestJobScriptField:
     def test_create_job_without_script(self, cron_env):
         from cron.jobs import create_job
 
-        job = create_job(prompt="Hello", schedule="every 1h")
+        job = create_job(prompt="Hello", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("script") is None
 
     def test_create_job_empty_script_normalized_to_none(self, cron_env):
         from cron.jobs import create_job
 
-        job = create_job(prompt="Hello", schedule="every 1h", script="  ")
+        job = create_job(prompt="Hello", schedule="every 1h", script="  ", work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("script") is None
 
     def test_update_job_add_script(self, cron_env):
         from cron.jobs import create_job, update_job
 
-        job = create_job(prompt="Hello", schedule="every 1h")
+        job = create_job(prompt="Hello", schedule="every 1h", work_class=CronWorkClass.LOCAL_ONLY)
         assert job.get("script") is None
 
         updated = update_job(job["id"], {"script": "/new/script.py"})
@@ -81,7 +82,7 @@ class TestJobScriptField:
     def test_update_job_clear_script(self, cron_env):
         from cron.jobs import create_job, update_job
 
-        job = create_job(prompt="Hello", schedule="every 1h", script="/some/script.py")
+        job = create_job(prompt="Hello", schedule="every 1h", script="/some/script.py", work_class=CronWorkClass.LOCAL_ONLY)
         assert job["script"] == "/some/script.py"
 
         updated = update_job(job["id"], {"script": None})
