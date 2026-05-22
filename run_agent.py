@@ -2867,7 +2867,26 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        return self._anthropic_client.messages.create(**api_kwargs)
+        response = self._anthropic_client.messages.create(**api_kwargs)
+
+        # KR-P2-K ST2 — secondary rate-limit signal (best-effort).
+        # Only direct-Anthropic responses carry anthropic-ratelimit-*
+        # headers; this is one of the two surfaces that does. The
+        # primary signal (per-call $-burn) lands via the
+        # conversation_loop chokepoint after this returns.
+        try:
+            from agent.cost_ladder_wire import (
+                record_rate_limit_pulse_from_response,
+            )
+            record_rate_limit_pulse_from_response(response)
+        except Exception as _cl_exc:
+            logger.debug(
+                "[kora.cost_ladder] _anthropic_messages_create "
+                "rate-limit-pulse capture failed: %r",
+                _cl_exc,
+            )
+
+        return response
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.

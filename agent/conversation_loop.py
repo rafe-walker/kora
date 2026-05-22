@@ -1588,6 +1588,32 @@ def run_conversation(
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
+                    # KR-P2-K ST2 — feed the cost-ladder estimator
+                    # singleton. Fail-soft: any failure path logs DEBUG
+                    # and returns; the inference response handler must
+                    # never crash because of cost-ladder accounting.
+                    # The chokepoint here catches BOTH the direct-
+                    # Anthropic path (api_mode="anthropic_messages")
+                    # AND the OpenAI-compat path; both flow through
+                    # this normalize_usage block.
+                    try:
+                        from agent.cost_ladder_wire import (
+                            record_inference_from_response,
+                        )
+                        record_inference_from_response(
+                            response,
+                            model=agent.model,
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                        )
+                    except Exception as _cl_exc:
+                        logger.debug(
+                            "[kora.cost_ladder] conversation_loop chokepoint "
+                            "feed failed: %r",
+                            _cl_exc,
+                        )
+
                     # Persist token counts to session DB for /insights.
                     # Do this for every platform with a session_id so non-CLI
                     # sessions (gateway, cron, delegated runs) cannot lose
