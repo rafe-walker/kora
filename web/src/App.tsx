@@ -32,6 +32,7 @@ import {
   HeartPulse,
   Inbox,
   KeyRound,
+  Mail,
   LayoutDashboard,
   Menu,
   MessageCircle,
@@ -89,6 +90,7 @@ import MCPClientsPanel from "@/pages/MCPClientsPanel";
 import WebhookEventsPanel from "@/pages/WebhookEventsPanel";
 import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import SlackDMPanel from "@/pages/SlackDMPanel";
+import EmailPanel from "@/pages/EmailPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -147,6 +149,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/webhook-events": WebhookEventsPanel,
   "/agent-activity": AgentActivityPanel,
   "/slack-dm": SlackDMPanel,
+  "/email": EmailPanel,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -226,6 +229,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "slackDM",
     label: "Slack DM",
     icon: MessageCircle,
+  },
+  {
+    path: "/email",
+    labelKey: "email",
+    label: "Email",
+    icon: Mail,
   },
   {
     path: "/mcp-clients",

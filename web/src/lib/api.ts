@@ -128,6 +128,8 @@ export const api = {
     fetchJSON<AgentActivityResponse>("/api/agent-activity/recent"),
   getRecentSlackDM: () =>
     fetchJSON<SlackDMResponse>("/api/slack-dm/recent"),
+  getRecentEmail: () =>
+    fetchJSON<EmailResponse>("/api/email/recent"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1609,5 +1611,57 @@ export interface SlackDMResponse {
   generated_at: string;
   total_recent_24h: number;
   by_direction_24h: Record<SlackDMDirection, number>;
+  by_status_24h: Record<string, number>;
+}
+
+// Email inbox/outbox lens (KR-EMAIL-PANEL).
+// 4-layer SECURITY CONTRACT (extending the established pattern with
+// an email-specific token sweep):
+//   1. from_label / to_label are LABELS (joshua / kora /
+//      unknown_sender) — NEVER raw email addresses. Backend tests
+//      enforce; FE renders verbatim.
+//   2. message_id is a STUB label in v1; real Purelymail IDs must
+//      be hashed/truncated when CC#1 flips real data (PII-adjacent).
+//   3. body_text_truncated_400 is rendered as PLAIN TEXT — React's
+//      default child escaping defangs HTML/markdown/script. FE
+//      must NEVER use dangerouslySetInnerHTML for the body. Real
+//      HTML rendering happens in the Purelymail web client, NOT
+//      here. has_html is metadata only.
+//   4. Walk-the-whole-payload guard for Purelymail token shapes +
+//      HMAC secret shapes (32/64-char hex) + bearer token shapes —
+//      pinned by the backend tests.
+export type EmailDirection = "inbound" | "outbound";
+
+export type EmailHandledStatus =
+  | "received"
+  | "sent_ok"
+  | "sent_failed"
+  | "filtered_non_allowlist"
+  | "filtered_wrong_recipient"
+  | "dropped_paused"
+  | "handler_error";
+
+export interface EmailMessage {
+  id: string;
+  direction: EmailDirection;
+  timestamp: string;
+  message_id: string; // STUB label in v1; hashed/truncated in real
+  from_label: string; // label only — never a raw email address
+  to_label: string; // label only — never a raw email address
+  subject: string;
+  body_text_truncated_400: string; // plain-text only; capped at API
+  has_html: boolean; // metadata; FE never renders the HTML body
+  attachments_count: number;
+  handled_status: EmailHandledStatus;
+  spoofing_warning?: boolean; // inbound: DMARC/SPF red flag
+  in_reply_to?: string; // outbound: references inbound message_id
+}
+
+export interface EmailResponse {
+  messages: EmailMessage[];
+  stub: boolean;
+  generated_at: string;
+  total_recent_24h: number;
+  by_direction_24h: Record<EmailDirection, number>;
   by_status_24h: Record<string, number>;
 }
