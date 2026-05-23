@@ -5916,84 +5916,44 @@ async def list_recent_reasoning(limit: int = 50):
 async def list_current_alerts():
     """Return currently-active operator-attention alerts.
 
-    v1 stub — pinned shape so the deferred alert-collector backend
-    can swap the body without touching the FE.
+    KR-ALERTS-PANEL-FLIP swaps the v1 stub (PR #134) for a real
+    aggregator that pulls from 5 sources: OperationalStateHolder +
+    cost-ladder holder + HealthRollup + audit JSONL +
+    heartbeat-probe snapshots. See
+    ``kora_cli/alerts/aggregator.py`` for the rule taxonomy +
+    fail-soft contract.
 
-    Per-alert fields:
-      id                  — opaque id
-      severity            — "critical" | "warning" | "info"
-      category            — alert category (drives the icon mapping);
-                            cost_ladder | operational_state |
-                            webhook_dead_letter | agent_capability_denied
-                            | reasoning_halted | service_unhealthy |
-                            boot_gate_failure
-      title               — short headline (single line, bold)
-      detail              — secondary explanation (rendered as text)
-      source_panel        — short id of the originating panel
-      source_panel_route  — FE route to navigate to; uses the flat
-                            ``/<panel>`` convention established by
-                            every prior panel in this branch
-                            (not the bucket-spec's ``/admin/<panel>``)
-      first_seen_at       — ISO-8601 when this alert first fired
+    Per-alert fields (matches FE ``Alert`` in ``web/src/lib/api.ts``):
+      id, severity, category, title, detail, source_panel,
+      source_panel_route, first_seen_at.
+
+    Behaviour:
+      * Any per-source failure (holder uninitialized, JSONL
+        unreadable, probe import error, etc.) is caught inside
+        the aggregator + that source's rules drop silently; other
+        rules still emit. Operator NEVER sees a 500.
+      * stub: false always — the endpoint reads live state even
+        when no alerts are active (empty list, stub:false).
+      * Sort: severity rank (critical → warning → info), then by
+        alert id for stable intra-tier ordering.
     """
+    from kora_cli.alerts import compute_active_alerts
+
+    alerts = compute_active_alerts()
+    by_severity: Dict[str, int] = {"critical": 0, "warning": 0, "info": 0}
+    for a in alerts:
+        by_severity[a.severity] = by_severity.get(a.severity, 0) + 1
+
+    from datetime import datetime, timezone
+
     return {
-        "alerts": [
-            {
-                "id": "stub-1",
-                "severity": "warning",
-                "category": "cost_ladder",
-                "title": "Budget at 78% of monthly cap",
-                "detail": (
-                    "Reasoning model downshifted opus → sonnet "
-                    "at warn_75 rung"
-                ),
-                "source_panel": "cost",
-                "source_panel_route": "/cost-state",
-                "first_seen_at": "2026-05-22T17:48:00Z",
-            },
-            {
-                "id": "stub-2",
-                "severity": "critical",
-                "category": "operational_state",
-                "title": "Operator paused Kora 12 min ago",
-                "detail": (
-                    "Slack DM handler dropping messages; reasoning "
-                    "engine refusing calls"
-                ),
-                "source_panel": "ops",
-                "source_panel_route": "/operational-state",
-                "first_seen_at": "2026-05-22T17:48:00Z",
-            },
-            {
-                "id": "stub-3",
-                "severity": "warning",
-                "category": "webhook_dead_letter",
-                "title": "8 webhook dead-letters in last 24h",
-                "detail": (
-                    "Threshold 5 exceeded; check signing-secret match"
-                ),
-                "source_panel": "webhook_events",
-                "source_panel_route": "/webhook-events",
-                "first_seen_at": "2026-05-22T13:00:00Z",
-            },
-            {
-                "id": "stub-4",
-                "severity": "info",
-                "category": "agent_capability_denied",
-                "title": "12 capability_denied responses in 24h",
-                "detail": (
-                    "Unconfigured caller actor_kinds — review "
-                    "mcp_callers.yaml"
-                ),
-                "source_panel": "agent_activity",
-                "source_panel_route": "/agent-activity",
-                "first_seen_at": "2026-05-22T08:00:00Z",
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_active": 4,
-        "by_severity": {"critical": 1, "warning": 2, "info": 1},
+        "alerts": [a.to_dict() for a in alerts],
+        "stub": False,
+        "generated_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "total_active": len(alerts),
+        "by_severity": by_severity,
     }
 
 
