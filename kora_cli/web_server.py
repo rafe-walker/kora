@@ -5090,79 +5090,222 @@ async def list_recent_agent_activity():
 #      at the API edge, not in the operator's browser.
 
 
+# KR-SLACK-DM-PANEL-FLIP constants.
+_SLACK_DM_LOG_FILENAME = "slack_dm_log.jsonl"
+_SLACK_DM_DEFAULT_LIMIT = 50
+_SLACK_DM_MAX_LIMIT = 200
+# Channel-mask shape: first 4 + last 4 chars; backend exposes the
+# field, the small follow-on bucket KR-SLACK-DM-PANEL-CHANNEL-MASK
+# handles FE rendering (kept decoupled to keep this PR small).
+_CHANNEL_MASK_HEAD = 4
+_CHANNEL_MASK_TAIL = 4
+
+
+def _mask_channel_id(channel_id: str) -> str:
+    """First 4 + last 4 chars + literal ellipsis. Short channel IDs
+    (≤ head+tail+1) pass through unchanged — masking a shorter string
+    would expose more of it via implication than just returning it."""
+    if len(channel_id) <= _CHANNEL_MASK_HEAD + _CHANNEL_MASK_TAIL + 1:
+        return channel_id
+    return f"{channel_id[:_CHANNEL_MASK_HEAD]}…{channel_id[-_CHANNEL_MASK_TAIL:]}"
+
+
+def _project_slack_dm_entry(
+    entry: Dict[str, Any],
+    lineno: int,
+    expected_joshua: str,
+) -> Optional[Dict[str, Any]]:
+    """Project a single JSONL entry to the FE's SlackDMMessage shape.
+
+    Returns None when the entry can't be classified as inbound or
+    outbound (defensive — malformed entries skip rather than crash).
+
+    Direction discrimination follows the actual writer shape in
+    ``kora_cli/handlers/slack_dm_handler.py:302-310`` (inbound — has
+    ``received_at``/``handled_status``) vs ``slack_dm_handler.py:775-805``
+    (outbound — has ``sent_at``/``send_status``). The bucket spec's
+    K-DG block mentioned a ``direction: outbound`` key but the actual
+    writer does NOT include one; we discriminate on the keys that DO
+    exist.
+
+    SECURITY: ``user_id_label`` is a label only (joshua / kora_bot /
+    unknown_user) — never the raw U... Slack user ID. Resolution
+    mirrors the handler's own check at ``slack_dm_handler.py:241``
+    against ``KORA_SLACK_JOSHUA_USER_ID``.
+    """
+    channel_id_raw = entry.get("channel_id", "") or ""
+
+    if "received_at" in entry and "handled_status" in entry:
+        # Inbound
+        user_id = entry.get("user_id") or ""
+        if expected_joshua and user_id == expected_joshua:
+            label = "joshua"
+        else:
+            # Non-Joshua inbound: label as unknown_user even if the
+            # raw user_id is present in the JSONL; we never echo it.
+            label = "unknown_user"
+        return {
+            "id": f"line-{lineno}",
+            "direction": "inbound",
+            "timestamp": entry.get("received_at", ""),
+            "channel_id": channel_id_raw,
+            "channel_id_truncated": _mask_channel_id(channel_id_raw),
+            "thread_ts": entry.get("thread_ts"),
+            "user_id_label": label,
+            "text": entry.get("text", ""),
+            "handled_status": entry.get("handled_status", ""),
+        }
+
+    if "sent_at" in entry and "send_status" in entry:
+        # Outbound — always Kora's bot identity. send_status is
+        # "ok" / "failed"; FE expects "sent_ok" / "sent_failed".
+        send_status = entry.get("send_status", "")
+        return {
+            "id": f"line-{lineno}",
+            "direction": "outbound",
+            "timestamp": entry.get("sent_at", ""),
+            "channel_id": channel_id_raw,
+            "channel_id_truncated": _mask_channel_id(channel_id_raw),
+            "thread_ts": entry.get("thread_ts"),
+            "user_id_label": "kora_bot",
+            "text": entry.get("text", ""),
+            "handled_status": f"sent_{send_status}",
+        }
+
+    return None
+
+
 @app.get("/api/slack-dm/recent")
-async def list_recent_slack_dm():
+async def list_recent_slack_dm(limit: int = _SLACK_DM_DEFAULT_LIMIT):
     """Return recent Kora ↔ Joshua DM messages for the operator lens.
 
-    v1 stub — pinned shape so CC#3's KR-FEAT-SLACK-DM ST2 can swap
-    the body without touching the FE.
+    Reads ``${KORA_HOME}/slack_dm_log.jsonl`` (written by
+    ``kora_cli/handlers/slack_dm_handler.py`` per PR #119/#122) and
+    projects each entry to the FE's ``SlackDMMessage`` shape.
 
-    Per-message fields:
-      id              — opaque id
-      direction       — "inbound" | "outbound"
-      timestamp       — ISO-8601
-      channel_id      — STUB label (D_STUB1 etc) in v1; real IDs
-                        must be hashed/truncated when flipped
-      thread_ts       — Slack thread parent ts (or null)
-      user_id_label   — LABEL only (joshua / kora_bot / unknown_user);
-                        never the raw U... Slack user ID
-      text            — message body (FE renders as plain text)
-      handled_status  — received | sent_ok | sent_failed |
-                        filtered_non_joshua | filtered_bot |
-                        filtered_subtype | handler_error | dropped_paused
+    Query params:
+      ``limit`` — number of newest entries to return; default 50,
+                  capped at 200 to bound large-file reads.
+
+    Per-message fields (matches FE TS interface from PR #120):
+      id                    — derived line-{N} id, stable within file
+      direction             — "inbound" | "outbound"
+      timestamp             — ISO-8601 (from received_at or sent_at)
+      channel_id            — raw channel ID (D... for DM channels)
+      channel_id_truncated  — masked form (head…tail) for the
+                              upcoming FE channel-mask bucket; FE
+                              consumers ignore this field today
+      thread_ts             — Slack thread parent ts (or null)
+      user_id_label         — LABEL only (joshua / kora_bot /
+                              unknown_user); NEVER the raw U... ID
+      text                  — message body (FE renders plain text)
+      handled_status        — received / filtered_non_joshua /
+                              filtered_bot / filtered_subtype /
+                              handler_error / dropped_paused
+                              (inbound) OR sent_ok / sent_failed
+                              (outbound; derived from send_status)
+
+    SECURITY (4-layer contract preserved from PR #120):
+      1. user_id_label is a derived LABEL; raw user_id never reaches
+         the wire. Tests sweep payload for U[A-Z0-9]{8,} shape.
+      2. channel_id starts with "D" (Slack DM channel) — backend
+         test asserts. channel_id_truncated companion field lets
+         the FE follow-on render a masked view.
+      3. text rendered as PLAIN TEXT by FE (React default escape +
+         dangerouslySetInnerHTML ban pinned in
+         test_web_server_slack_dm.py).
+      4. Walk-payload guard for xoxb-/xoxp- Slack token shapes.
+
+    Behaviour:
+      * Missing JSONL file → empty list + stub:false (fresh daemon
+        with no DMs yet — empty-state UI; no error).
+      * Malformed JSONL line → logged + skipped; other entries
+        still parsed (defensive against partial-write corruption).
+      * Sort: newest first by timestamp descending.
+      * stub: false always — this endpoint no longer serves stub
+        data, even on empty file (FE's STUB banner stays hidden).
     """
+    from datetime import datetime, timedelta, timezone
+    import json as _json
+    import os as _os
+
+    capped_limit = max(1, min(limit, _SLACK_DM_MAX_LIMIT))
+    log_path = get_kora_home() / _SLACK_DM_LOG_FILENAME
+    expected_joshua = _os.environ.get(
+        "KORA_SLACK_JOSHUA_USER_ID", ""
+    ).strip()
+    now = datetime.now(timezone.utc)
+    generated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff_24h = now - timedelta(hours=24)
+
+    projected: List[Dict[str, Any]] = []
+
+    if log_path.is_file():
+        try:
+            with log_path.open("r", encoding="utf-8") as f:
+                for lineno, raw_line in enumerate(f, start=1):
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        entry = _json.loads(raw_line)
+                    except _json.JSONDecodeError as exc:
+                        _log.warning(
+                            "[kora.slack_dm_panel] line %d malformed JSON, "
+                            "skipped: %r",
+                            lineno,
+                            exc,
+                        )
+                        continue
+                    if not isinstance(entry, dict):
+                        _log.warning(
+                            "[kora.slack_dm_panel] line %d not a JSON object, "
+                            "skipped",
+                            lineno,
+                        )
+                        continue
+                    msg = _project_slack_dm_entry(entry, lineno, expected_joshua)
+                    if msg is not None:
+                        projected.append(msg)
+        except OSError as exc:
+            _log.warning(
+                "[kora.slack_dm_panel] failed to read %s: %r",
+                log_path,
+                exc,
+            )
+
+    # Newest-first sort. ISO-8601 lex order == chronological order
+    # for UTC Z-suffixed timestamps (same shape the writer uses).
+    projected.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+
+    # Aggregate counts use the FULL projected set (not the limited
+    # slice) so the headline numbers reflect the whole 24h window.
+    def _within_24h(ts_str: str) -> bool:
+        if not ts_str:
+            return False
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt >= cutoff_24h
+
+    in_window = [m for m in projected if _within_24h(m["timestamp"])]
+    by_direction: Dict[str, int] = {"inbound": 0, "outbound": 0}
+    by_status: Dict[str, int] = {}
+    for m in in_window:
+        by_direction[m["direction"]] = by_direction.get(m["direction"], 0) + 1
+        status = m["handled_status"]
+        by_status[status] = by_status.get(status, 0) + 1
+
     return {
-        "messages": [
-            {
-                "id": "stub-1",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:55:13Z",
-                "channel_id": "D_STUB1",
-                "thread_ts": None,
-                "user_id_label": "joshua",
-                "text": "Kora, what's the daemon status?",
-                "handled_status": "received",
-            },
-            {
-                "id": "stub-2",
-                "direction": "outbound",
-                "timestamp": "2026-05-22T17:55:14Z",
-                "channel_id": "D_STUB1",
-                "thread_ts": "1779380123.456",
-                "user_id_label": "kora_bot",
-                "text": "Kora received: Kora, what's the daemon status?",
-                "handled_status": "sent_ok",
-            },
-            {
-                "id": "stub-3",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:52:01Z",
-                "channel_id": "D_STUB1",
-                "thread_ts": None,
-                "user_id_label": "joshua",
-                "text": "hey",
-                "handled_status": "received",
-            },
-            {
-                "id": "stub-4",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:48:22Z",
-                "channel_id": "D_STUB2",
-                "thread_ts": None,
-                "user_id_label": "unknown_user",
-                "text": "[filtered: non-Joshua sender]",
-                "handled_status": "filtered_non_joshua",
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_recent_24h": 12,
-        "by_direction_24h": {"inbound": 7, "outbound": 5},
-        "by_status_24h": {
-            "received": 6,
-            "sent_ok": 5,
-            "filtered_non_joshua": 1,
-        },
+        "messages": projected[:capped_limit],
+        "stub": False,
+        "generated_at": generated_at,
+        "total_recent_24h": len(in_window),
+        "by_direction_24h": by_direction,
+        "by_status_24h": by_status,
     }
 
 
