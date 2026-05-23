@@ -50,17 +50,17 @@ Per §1 of the bucket spec + the live grep at HEAD ``054f4086``:
     ``heartbeat_probes/types.py:28``: {healthy, degraded,
     unhealthy, unknown}.
 
-# Forward-compat note: capability_denied
+# capability_denied rule — live as of KR-MCP-AUDIT-ON-DENIAL
 
-The ``capability_denied_24h`` rule is forward-looking: today the
-``mcp.tool_called`` audit emit at
-``kora_cli/listeners/mcp_tools.py:714`` is reached AFTER the
-capability gate (``listeners/mcp.py:181``), so denial responses
-are NOT currently audit-logged. This rule's matcher uses
-``details.result == "capability_denied"`` so when a follow-on
-bucket adds audit-on-denial the rule activates automatically; in
-the meantime it emits zero alerts (no false negatives — the data
-genuinely isn't there).
+The ``capability_denied_24h`` rule consumes JSONL audit rows that
+``listeners/mcp.py:_emit_capability_denied_audit`` writes BEFORE
+returning the -32001 envelope at the cap gate. Discriminator is
+``details.result == "capability_denied"``. The companion path —
+``actor_id_required_for_stop`` from the ``kora__request_stop``
+tool's extra gate — writes
+``details.result == "actor_id_required"`` so it's queryable
+separately (future ``actor_id_required_24h`` rule can grep it
+without conflating two distinct operator-fix surfaces).
 """
 
 from __future__ import annotations
@@ -338,14 +338,16 @@ def _rules_from_webhook_audit() -> List[Alert]:
 
 
 def _rules_from_capability_denied_audit() -> List[Alert]:
-    """Forward-looking — see module docstring's forward-compat note.
+    """Surface a warning when too many cap-gate denials in 24h.
 
-    Today the audit log at ``mcp.tool_called`` only records successful
-    invocations (capability gate at ``listeners/mcp.py:181`` returns
-    BEFORE the audit emit at ``listeners/mcp_tools.py:714``). This
-    rule's matcher is forward-compatible: when a follow-on bucket
-    adds audit-on-denial it'll start firing without an aggregator
-    edit.
+    KR-MCP-AUDIT-ON-DENIAL wired the cap-gate at
+    ``listeners/mcp.py`` to call
+    ``_emit_capability_denied_audit`` BEFORE returning the
+    -32001 envelope, so denial responses now land in the audit
+    JSONL with ``details.result == "capability_denied"``. This
+    rule fires when more than
+    :data:`CAPABILITY_DENIED_24H_THRESHOLD` denials accumulate
+    in the trailing 24h.
     """
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     count = _count_audit_entries_in_window(

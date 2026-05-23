@@ -203,6 +203,119 @@ def _check_cap_gate(
     }
 
 
+# ---------------------------------------------------------------------------
+# KR-MCP-AUDIT-ON-DENIAL — JSONL audit emit for the two denial paths
+# ---------------------------------------------------------------------------
+#
+# Both helpers write to the same ``mcp.tool_called`` seam used by the
+# success-path audit in ``mcp_tools._emit_audit``. They run BEFORE the
+# JSON-RPC error envelope is returned so a denied call leaves a JSONL
+# row even though no executor ran. The ``details.result`` field is the
+# alert-rule discriminator — values match the patterns CC#1's
+# ``capability_denied_24h`` rule (+ future actor_id_required rules)
+# already grep for.
+#
+# Why not call into ``mcp_tools._emit_audit``: that helper takes a
+# ``result`` STRING the executor builds from its own state-change
+# vocabulary (e.g. ``"active->paused"``) and embeds ``args_keys`` from
+# the executor's input. Denial paths don't have either — the request
+# never reached the executor. Keeping a separate helper here avoids
+# pretzeling _emit_audit's contract for two callers with different
+# inputs.
+
+
+def _emit_capability_denied_audit(
+    *, tool_name: Optional[str], caller: Caller
+) -> None:
+    """Write a JSONL audit row for a cap-gate denial.
+
+    Reason text NEVER in the audit (caller-supplied; might leak
+    sensitive context — same posture as the stop-tool's audit
+    omission). Captures only operator-actionable fields: which tool,
+    which caller actor_kind, which capability was required, and the
+    discriminator literal CC#1's alert rule matches on.
+    """
+    # Best-effort emit — never raise from this path. An audit-sink
+    # failure must NOT mask the denial response to the caller.
+    try:
+        from kora_cli.audit import emit_audit
+
+        emit_audit(
+            seam="mcp.tool_called",
+            details={
+                "tool_name": tool_name or "<unknown>",
+                "tool_kind": "mutating",
+                "caller_actor_kind": caller.actor_kind,
+                "caller_actor_id": caller.actor_id,
+                "required_capability": tool_name or "<unknown>",
+                "duration_ms": 0,
+                "tool_status": "not_allowed",
+                "result": "capability_denied",
+            },
+            source="mcp_http",
+        )
+        # Also emit the structured-log line for operator grep — mirrors
+        # the dual-write pattern in mcp_tools._emit_audit.
+        logger.info(
+            "[kora.mcp.tool_denied] tool=%s caller_actor_kind=%s "
+            "result=capability_denied",
+            tool_name,
+            caller.actor_kind,
+        )
+    except Exception:  # pragma: no cover — sink failure must not mask denial
+        logger.exception(
+            "[kora.mcp.tool_denied] emit_audit failed for "
+            "tool=%s caller_actor_kind=%s — denial response still "
+            "returned, but JSONL row missing",
+            tool_name,
+            caller.actor_kind,
+        )
+
+
+def _emit_actor_id_required_audit(
+    *, tool_name: Optional[str], caller: Caller
+) -> None:
+    """Write a JSONL audit row for an actor_id-required denial.
+
+    Distinct ``result`` literal so CC#1's ``capability_denied_24h``
+    alert rule's ``detail_match`` doesn't conflate this with a cap
+    denial — different operator-fix path (the cap IS granted; the
+    actor_id field is missing in mcp_callers.yaml). A future
+    ``actor_id_required_24h`` alert rule can grep this separately.
+    """
+    try:
+        from kora_cli.audit import emit_audit
+
+        emit_audit(
+            seam="mcp.tool_called",
+            details={
+                "tool_name": tool_name or "<unknown>",
+                "tool_kind": "mutating",
+                "caller_actor_kind": caller.actor_kind,
+                "caller_actor_id": caller.actor_id,
+                "required_capability": tool_name or "<unknown>",
+                "duration_ms": 0,
+                "tool_status": "not_allowed",
+                "result": "actor_id_required",
+            },
+            source="mcp_http",
+        )
+        logger.info(
+            "[kora.mcp.tool_denied] tool=%s caller_actor_kind=%s "
+            "result=actor_id_required",
+            tool_name,
+            caller.actor_kind,
+        )
+    except Exception:  # pragma: no cover
+        logger.exception(
+            "[kora.mcp.tool_denied] emit_audit failed for "
+            "tool=%s caller_actor_kind=%s — denial response still "
+            "returned, but JSONL row missing",
+            tool_name,
+            caller.actor_kind,
+        )
+
+
 def _execute_daemon_status() -> Dict[str, Any]:
     """Body for ``kora__daemon_status``. Returns the JSON dict."""
     coord = current_coordinator()
@@ -311,6 +424,15 @@ async def post_jsonrpc(
         # caller's allowed_caps must include the tool name.
         gate_err = _check_cap_gate(req_id, tool_name, caller)
         if gate_err is not None:
+            # KR-MCP-AUDIT-ON-DENIAL — emit a JSONL audit row for the
+            # denial BEFORE returning. The cap-gate is the only gate
+            # that needs this explicit emit; the success-path audit
+            # at mcp_tools._emit_audit runs from inside each executor
+            # AFTER dispatch, so it never sees denied calls. CC#1's
+            # capability_denied_24h alert rule consumes these rows.
+            _emit_capability_denied_audit(
+                tool_name=tool_name, caller=caller
+            )
             return gate_err
 
         if tool_name == "kora__daemon_status":
@@ -376,6 +498,18 @@ async def post_jsonrpc(
                 # caller still lacks the actor_id field needed for
                 # substrate attribution. Operator-fix path is in the
                 # error message.
+                #
+                # KR-MCP-AUDIT-ON-DENIAL — emit symmetrically with the
+                # cap-gate denial so the alerts panel can surface
+                # actor_id-required misconfigurations the same way.
+                # Same seam + same tool_kind; result discriminator is
+                # "actor_id_required" (distinct from
+                # "capability_denied" so the alert rule's
+                # detail_match doesn't conflate the two — they're
+                # different operator-fix paths).
+                _emit_actor_id_required_audit(
+                    tool_name=tool_name, caller=caller
+                )
                 return _jsonrpc_error(
                     req_id,
                     -32001,

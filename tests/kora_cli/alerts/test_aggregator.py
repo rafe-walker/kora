@@ -330,19 +330,46 @@ def test_capability_denied_fires_when_over_threshold(patch_sources):
     assert str(CAPABILITY_DENIED_24H_THRESHOLD + 1) in matching[0].title
 
 
-def test_capability_denied_today_no_alert_since_audit_doesnt_emit_denials(
+def test_capability_denied_today_emits_alert_when_threshold_exceeded(
     patch_sources,
 ):
-    """Forward-compat: today the audit emit at mcp_tools.py:714 runs
-    AFTER the cap-gate, so denial responses aren't logged. Rule
-    emits zero alerts in the current state — documented in the
-    aggregator module docstring."""
+    """KR-MCP-AUDIT-ON-DENIAL — the cap-gate's denial path now writes
+    ``mcp.tool_called`` rows with ``details.result ==
+    "capability_denied"``. With more than
+    :data:`CAPABILITY_DENIED_24H_THRESHOLD` such rows in the
+    trailing 24h, the alert rule fires exactly one warning so the
+    panel can prompt the operator to review mcp_callers.yaml.
+
+    Previously this test pinned the OPPOSITE behavior (forward-compat
+    "no alert because audit doesn't emit denials yet") — that
+    contract closed when audit-on-denial landed. The test is kept
+    under a renamed identity to lock in the new behavior in the
+    same slot so a future regression can't quietly drop the alert."""
     sources, _ = patch_sources
-    # Only "ok" entries — no capability_denied results.
-    entries = [
-        _make_audit_entry("mcp.tool_called", details={"result": "ok"})
-        for _ in range(CAPABILITY_DENIED_24H_THRESHOLD + 50)
-    ]
+    # 11 denials + a mix of OK + actor_id_required entries that should
+    # NOT count against the capability_denied threshold.
+    entries = (
+        [
+            _make_audit_entry(
+                "mcp.tool_called",
+                details={"result": "capability_denied"},
+            )
+            for _ in range(CAPABILITY_DENIED_24H_THRESHOLD + 1)
+        ]
+        + [
+            _make_audit_entry(
+                "mcp.tool_called", details={"result": "ok"}
+            )
+            for _ in range(7)
+        ]
+        + [
+            _make_audit_entry(
+                "mcp.tool_called",
+                details={"result": "actor_id_required"},
+            )
+            for _ in range(5)
+        ]
+    )
 
     def fake_read(seam=None, since=None):
         return entries if seam == "mcp.tool_called" else []
@@ -352,8 +379,15 @@ def test_capability_denied_today_no_alert_since_audit_doesnt_emit_denials(
         side_effect=fake_read,
     ):
         alerts = compute_active_alerts()
-    ids = [a.id for a in alerts]
-    assert "capability_denied_24h" not in ids
+    matching = [a for a in alerts if a.id == "capability_denied_24h"]
+    assert len(matching) == 1, (
+        "expected exactly one capability_denied_24h alert when "
+        "11 denials exceed the threshold of 10"
+    )
+    assert matching[0].severity == "info"
+    # Title surfaces the matched-only count (11 — not the mixed-bag
+    # total of 11 + 7 + 5 = 23).
+    assert str(CAPABILITY_DENIED_24H_THRESHOLD + 1) in matching[0].title
 
 
 def test_reasoning_errors_fires_when_over_threshold(patch_sources):
