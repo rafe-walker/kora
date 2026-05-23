@@ -49,3 +49,12 @@ from kora_cli.listeners import purelymail_client_listener  # noqa: F401
 # short-circuits cleanly). Registered AFTER the SMTP client listener
 # so the symmetric `current_*_client()` accessors line up.
 from kora_cli.listeners import email_inbound_imap_listener  # noqa: F401
+# KR-ALERT-NOTIFY ST1 — alert push-notifier. Registers a periodic
+# heartbeat task that diffs the active alert set + pushes newly-
+# firing alerts to Joshua via Slack DM (critical / warning) or
+# email (info). Fail-soft on client unavailability — alert IDs
+# still enter the dedup set so transient SMTP/Slack failures don't
+# cause spam on the next cycle. Imported AFTER the client listeners
+# + the email inbound listener so the lazy factories resolve to
+# live singletons by the time the first cycle ticks.
+from kora_cli.listeners import alert_notifier_listener  # noqa: F401

@@ -84,6 +84,12 @@ SeamName = Literal[
     "webhook.dead_letter",
     "slack_dm.reply_failed",
     "reasoning.tool_called",
+    # KR-ALERT-NOTIFY — alert push notifications (Slack DM /
+    # email) dispatched by the alert_notifier_listener periodic
+    # task. Each new-fire dispatch emits one entry regardless of
+    # success/failure; failures are visible in the audit panel
+    # alongside the alerts panel.
+    "notification.dispatched",
 ]
 
 SourceName = Literal[
