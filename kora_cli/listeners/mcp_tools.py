@@ -1351,6 +1351,190 @@ for _desc in TOOL_DESCRIPTORS:
     _desc.setdefault("dev_only", False)
 
 
+# ===========================================================================
+# KR-MCP-STOP-CONTROL ST1 — pause/resume wrappers
+# ===========================================================================
+#
+# Two new MCP mutating tools that DELEGATE to the existing
+# `_execute_request_state_transition` impl with predetermined
+# target states. Distinct caps from `kora__request_state_transition`
+# so operator can grant pause/resume without granting full
+# transition power (which can move to STOPPED).
+#
+# No new state-machine code — these are pure convenience wrappers
+# matching the bucket spec's "ST1 wraps existing
+# kora__request_state_transition (no duplicate state-machine code)".
+# ===========================================================================
+
+
+REQUEST_PAUSE_TOOL: Dict[str, Any] = {
+    "name": "kora__request_pause",
+    "description": (
+        "Pause Kora's intake: ACTIVE → PAUSED via OperationalStateHolder. "
+        "Daemon stops processing NEW inbound messages but in-flight work "
+        "continues (matches operator-issued kora_control L1 intent). "
+        "Reversible via kora__request_resume. Caller must have "
+        "kora__request_pause in allowed_caps — separate cap from "
+        "kora__request_state_transition so operator can grant pause/resume "
+        "without granting full transition power."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+REQUEST_RESUME_TOOL: Dict[str, Any] = {
+    "name": "kora__request_resume",
+    "description": (
+        "Resume Kora's intake: PAUSED → READY via "
+        "OperationalStateHolder (the canonical R4.1 §9.1 recovery "
+        "edge — daemon transitions to READY where she's eligible to "
+        "claim work; the next claim cycle moves READY → ACTIVE "
+        "naturally). Pair of kora__request_pause. Caller must have "
+        "kora__request_resume in allowed_caps."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "minLength": 1},
+        },
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+async def _execute_request_pause(
+    *, reason: str, caller: Caller
+) -> StateTransitionResult:
+    """Wrap _execute_request_state_transition with target=paused.
+
+    Reuses the existing impl's validation (TRANSITION_TABLE check,
+    holder lookup, audit emit, ledger semantics). Only difference
+    is the audit's ``tool`` tag — recorded as ``kora__request_pause``
+    so operator log-analysis can distinguish pause/resume calls from
+    direct state-transition calls.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise _ST2_ToolInputError("reason is required (non-empty)")
+
+    from agent.operational_state import PrimaryState
+    from agent.operational_state_holder import get_holder
+
+    holder = get_holder()
+    if holder is None:
+        raise _ST2_ToolInputError(
+            "OperationalStateHolder is not initialized — daemon not "
+            "running with substrate-attached listeners?"
+        )
+
+    from_state = holder.current.primary_state
+    # Pre-check: only valid from ACTIVE. The TRANSITION_TABLE will
+    # also catch this, but a specific -32602 with a clear message
+    # is friendlier than a generic InvalidStateTransitionError.
+    if from_state is not PrimaryState.ACTIVE:
+        raise _ST2_ToolInputError(
+            f"kora__request_pause valid only when current state is "
+            f"active; current is {from_state.value!r}. Use "
+            f"kora__get_operational_state to inspect; "
+            f"kora__request_resume from paused."
+        )
+
+    await holder.transition_to(PrimaryState.PAUSED, trigger=reason)
+
+    _emit_audit(
+        tool="kora__request_pause",
+        caller=caller,
+        args={"reason": reason},
+        result=f"{from_state.value}->paused",
+    )
+
+    return StateTransitionResult(
+        success=True,
+        from_state=from_state.value,
+        to_state="paused",
+        trigger=reason,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _execute_request_resume(
+    *, reason: str, caller: Caller
+) -> StateTransitionResult:
+    """Pair of _execute_request_pause — PAUSED → READY.
+
+    Target is READY, NOT ACTIVE: per R4.1 §9.1 TRANSITION_TABLE
+    the canonical recovery edge from PAUSED is to READY (operator
+    clears via kora_control reset, or in this case via the
+    request_resume MCP tool). The next claim cycle moves the holder
+    READY → ACTIVE naturally; the resume tool's intent is "she's
+    eligible to work again," not "she's holding a claim again."
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise _ST2_ToolInputError("reason is required (non-empty)")
+
+    from agent.operational_state import PrimaryState
+    from agent.operational_state_holder import get_holder
+
+    holder = get_holder()
+    if holder is None:
+        raise _ST2_ToolInputError(
+            "OperationalStateHolder is not initialized — daemon not "
+            "running with substrate-attached listeners?"
+        )
+
+    from_state = holder.current.primary_state
+    if from_state is not PrimaryState.PAUSED:
+        raise _ST2_ToolInputError(
+            f"kora__request_resume valid only when current state is "
+            f"paused; current is {from_state.value!r}. Use "
+            f"kora__request_pause from active."
+        )
+
+    await holder.transition_to(PrimaryState.READY, trigger=reason)
+
+    _emit_audit(
+        tool="kora__request_resume",
+        caller=caller,
+        args={"reason": reason},
+        result=f"{from_state.value}->ready",
+    )
+
+    return StateTransitionResult(
+        success=True,
+        from_state=from_state.value,
+        to_state="ready",
+        trigger=reason,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _dispatch_request_pause(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_request_pause(
+        reason=params.get("reason", ""), caller=caller
+    )
+
+
+async def _dispatch_request_resume(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_request_resume(
+        reason=params.get("reason", ""), caller=caller
+    )
+
+
 ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
@@ -1358,6 +1542,9 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     # KR-MCP-SEND-TOOLS additions
     SEND_SLACK_DM_TOOL,
     SEND_EMAIL_TOOL,
+    # KR-MCP-STOP-CONTROL ST1 additions — pause/resume wrappers
+    REQUEST_PAUSE_TOOL,
+    REQUEST_RESUME_TOOL,
 ]
 
 
@@ -1372,4 +1559,7 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     # KR-MCP-SEND-TOOLS additions
     "kora__send_slack_dm": _dispatch_send_slack_dm,
     "kora__send_email": _dispatch_send_email,
+    # KR-MCP-STOP-CONTROL ST1 additions
+    "kora__request_pause": _dispatch_request_pause,
+    "kora__request_resume": _dispatch_request_resume,
 }
