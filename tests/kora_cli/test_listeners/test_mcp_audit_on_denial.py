@@ -57,6 +57,26 @@ def _reset_caller_cache():
     mcp_caller_auth._reset_cache_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _reset_operational_state_holder():
+    """Reset the module-level ``OperationalStateHolder`` singleton
+    between tests — KR-TEST-STABILITY-XDIST.
+
+    ``test_successful_call_does_not_emit_denial_audit`` installs an
+    ACTIVE holder via direct ``h_mod._HOLDER = ...`` so the pause
+    executor can transition. Without this autouse reset, that
+    holder persists across worker boundaries to subsequent tests in
+    the same xdist worker — surfacing as ``test_email_inbound_
+    handler.py`` flakes where the state-gate sees an unexpected
+    holder.
+    """
+    from agent import operational_state_holder as h_mod
+
+    h_mod._HOLDER = None
+    yield
+    h_mod._HOLDER = None
+
+
 @pytest.fixture
 def empty_caps_token(monkeypatch, tmp_path):
     """Caller authenticated but with NO caps — every mutating tool denies."""

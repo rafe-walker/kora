@@ -106,6 +106,37 @@ def _isolate(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _reset_operational_state_holder():
+    """Self-protective reset of the ``OperationalStateHolder``
+    singleton — KR-TEST-STABILITY-XDIST.
+
+    The handler's state-gate (``_check_state_gate`` in
+    ``email_inbound_handler.py``) calls ``get_holder()`` to decide
+    whether to drop the message as ``filtered_paused`` /
+    ``filtered_stopped``. State-gate tests in this file (lines
+    151-200) ``patch`` the accessor; the other ~30 tests expect
+    the singleton to be ``None`` so ``get_holder()`` returns
+    ``None`` and the handler proceeds.
+
+    Under pytest-xdist, OTHER test files in the same worker may
+    install a non-None holder (e.g.
+    ``test_mcp_tools_stop_control.py`` from KR-MCP-STOP-CONTROL ST1
+    installed PAUSED holders without teardown reset before this
+    bucket landed). A bleed surfaces as flaky
+    ``HANDLED_RECEIVED vs filtered_paused`` assertions.
+
+    This fixture is BELT-AND-SUSPENDERS: the leaking test files
+    now also reset their holders, but a future test author who
+    forgets the teardown won't poison email-handler tests.
+    """
+    from agent import operational_state_holder as h_mod
+
+    h_mod._HOLDER = None
+    yield
+    h_mod._HOLDER = None
+
+
 def _log_path(tmp_path: Path) -> Path:
     return tmp_path / "email_inbound_log.jsonl"
 
