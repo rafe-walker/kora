@@ -1,25 +1,23 @@
-"""Tests for the KR-EMAIL-PANEL stub endpoint.
+"""Tests for the KR-EMAIL-PANEL endpoint (post KR-EMAIL-PANEL-FLIP).
 
-Bucket §3 scenarios:
-  1. GET /api/email/recent returns 200
-  2. Top-level shape (messages + stub:true + generated_at +
-     total_recent_24h + by_direction_24h + by_status_24h)
-  3. 4 representative stub messages present
-  4. Stub spans inbound + outbound + filtered_non_allowlist +
-     inbound-with-attachment so operator's first look surfaces the
-     filtering posture + attachment-count affordance
-  5. Per-entry shape + valid direction + valid handled_status enum
-  6. SECURITY: from_label / to_label are LABELS — no raw email
-     address (foo@bar.tld shape) anywhere in payload
-  7. SECURITY: no Purelymail-token / HMAC-secret / bearer-token
-     shapes anywhere in payload
-  8. SECURITY: message_id v1 stub shape (stub-msg-id-N pattern)
-  9. SECURITY: companion FE pin — EmailPanel.tsx never uses
-     dangerouslySetInnerHTML for message body (comment-stripped grep)
- 10. SECURITY: companion FE pin — Spoofing-warning chip renders
-     for messages with spoofing_warning: true
- 11. by_direction_24h sum reconciles to total_recent_24h
- 12. Cron-regression sanity
+After the flip the endpoint reads from
+``${KORA_HOME}/email_inbound_log.jsonl`` + ``email_outbound_log.jsonl``
+(PR #138 + #124 writers). This module keeps the original PR #121
+shape-pin + 4-layer security-guard tests that apply to BOTH the
+old stub and the new live endpoint:
+
+  * Top-level response shape (now with ``stub: false`` always)
+  * Walk-payload security guards (no raw email addresses outside
+    the message_id carve-out, no Purelymail token hints, no
+    HMAC/Bearer secret shapes)
+  * FE source pins (no dangerouslySetInnerHTML, body rendered as
+    JSX child, spoofing-warning chip present)
+  * by_direction_24h / by_status_24h reconciliation
+  * Cron-regression sanity
+
+JSONL-driven projection tests (per-direction field projection,
+merge-and-sort, limit param, malformed-line tolerance, etc.) live
+in ``test_web_server_email_panel_flip.py``.
 """
 
 import re
@@ -91,8 +89,18 @@ def _strip_ts_comments(src: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
+    """Apply CC#2's #137 fixture-isolation discipline: monkeypatch
+    ``get_kora_home`` in all 3 module namespaces. The endpoint
+    imports it via ``from kora_cli.config import get_kora_home``
+    which creates a copy in ``kora_cli.web_server`` — patching the
+    upstream alone won't redirect the live call site."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KORA_HOME", str(tmp_path))
+    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
     monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "kora_cli.web_server.get_kora_home", lambda: tmp_path
+    )
     monkeypatch.setattr(
         "kora_cli.config.get_config_path", lambda: tmp_path / "config.yaml"
     )
@@ -118,6 +126,10 @@ async def test_endpoint_returns_200(_isolate_config):
 
 @pytest.mark.asyncio
 async def test_response_shape_has_required_keys(_isolate_config):
+    """Top-level response shape — stays the same post-flip; ``stub``
+    is now always ``False`` (the endpoint reads from JSONL and an
+    empty result is still ``stub: false``, not a re-emergence of
+    the v1 stub list)."""
     from kora_cli import web_server
 
     result = await web_server.list_recent_email()
@@ -134,95 +146,23 @@ async def test_response_shape_has_required_keys(_isolate_config):
     assert isinstance(result["total_recent_24h"], int)
     assert isinstance(result["by_direction_24h"], dict)
     assert isinstance(result["by_status_24h"], dict)
-    assert result["stub"] is True
-
-
-# ---- 3. Expected stub messages --------------------------------------
+    assert result["stub"] is False
 
 
 @pytest.mark.asyncio
-async def test_stub_returns_four_representative_messages(_isolate_config):
-    """Pin the bucket §2(a) canonical 4-message stub list. CC#1's
-    KR-FEAT-EMAIL ST2 will swap the body to read from the JSONL
-    logs, but the shape stays stable so the FE keeps rendering
-    during cut-over."""
+async def test_empty_jsonl_returns_empty_messages_with_stub_false(
+    _isolate_config,
+):
+    """Both JSONLs absent (fresh deploy / empty inbox) → empty list
+    + stub:false. The FE's STUB banner stays hidden in this state."""
     from kora_cli import web_server
 
     result = await web_server.list_recent_email()
-    assert len(result["messages"]) == 4
-    ids = {m["id"] for m in result["messages"]}
-    assert ids == {"stub-1", "stub-2", "stub-3", "stub-4"}
-
-
-@pytest.mark.asyncio
-async def test_stub_spans_inbound_outbound_filtered_and_attachment(_isolate_config):
-    """The 4 stub messages deliberately span inbound + outbound +
-    filtered_non_allowlist + inbound-with-attachment so the
-    operator's first look surfaces the filtering posture and the
-    attachment-count affordance. Pin so a future stub edit can't
-    homogenize away any of these representative cases."""
-    from kora_cli import web_server
-
-    result = await web_server.list_recent_email()
-    directions = {m["direction"] for m in result["messages"]}
-    statuses = {m["handled_status"] for m in result["messages"]}
-    assert directions == {"inbound", "outbound"}
-    assert "filtered_non_allowlist" in statuses
-    assert "received" in statuses
-    assert "sent_ok" in statuses
-    has_attachment = [
-        m for m in result["messages"] if m["attachments_count"] > 0
-    ]
-    assert has_attachment, (
-        "At least one stub message must have attachments_count > 0 to "
-        "exercise the attachment-count affordance"
-    )
-
-
-# ---- 4. Per-entry shape + enums ------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_each_message_has_required_keys_and_valid_enums(_isolate_config):
-    from kora_cli import web_server
-
-    result = await web_server.list_recent_email()
-    required = {
-        "id",
-        "direction",
-        "timestamp",
-        "message_id",
-        "from_label",
-        "to_label",
-        "subject",
-        "body_text_truncated_400",
-        "has_html",
-        "attachments_count",
-        "handled_status",
-    }
-    for msg in result["messages"]:
-        keys = set(msg.keys())
-        missing = required - keys
-        assert not missing, (
-            f"{msg.get('id', '?')}: missing required keys {missing}"
-        )
-        assert msg["direction"] in _VALID_DIRECTION
-        assert msg["handled_status"] in _VALID_STATUS, (
-            f"{msg['id']}: handled_status={msg['handled_status']!r} not in "
-            f"{_VALID_STATUS}"
-        )
-        assert isinstance(msg["timestamp"], str) and msg["timestamp"].endswith("Z")
-        assert isinstance(msg["subject"], str)
-        assert isinstance(msg["body_text_truncated_400"], str)
-        # Bucket-cap: backend pre-truncates body to 400 chars before
-        # sending. FE then truncates further for the collapsed view.
-        assert len(msg["body_text_truncated_400"]) <= 400, (
-            f"{msg['id']}: body_text_truncated_400 length "
-            f"{len(msg['body_text_truncated_400'])} exceeds 400-char cap"
-        )
-        assert isinstance(msg["has_html"], bool)
-        assert isinstance(msg["attachments_count"], int)
-        assert msg["attachments_count"] >= 0
+    assert result["messages"] == []
+    assert result["stub"] is False
+    assert result["total_recent_24h"] == 0
+    assert result["by_direction_24h"] == {"inbound": 0, "outbound": 0}
+    assert result["by_status_24h"] == {}
 
 
 # ---- 5. SECURITY: no raw email addresses anywhere in payload -------
@@ -318,25 +258,24 @@ async def test_no_secret_shapes_in_payload(_isolate_config):
     )
 
 
-# ---- 7. message_id stub shape pinning ------------------------------
-
-
-@pytest.mark.asyncio
-async def test_message_id_uses_stub_label_format(_isolate_config):
-    """Bucket §2(a) layer 2: v1 message_id is a STUB label of shape
-    `stub-msg-id-N`. Real Purelymail message IDs are PII-adjacent
-    and must be hashed/truncated by CC#1 before the flip — this
-    pin ensures the v1 stub uses the placeholder shape and not a
-    real-looking one (which would mask a missing-redaction step)."""
-    from kora_cli import web_server
-
-    result = await web_server.list_recent_email()
-    for msg in result["messages"]:
-        mid = msg["message_id"]
-        assert _MESSAGE_ID_STUB.match(mid), (
-            f"{msg['id']}: message_id={mid!r} doesn't match the v1 "
-            f"stub shape `stub-msg-id-N`"
-        )
+# ---- 7. message_id pass-through (post-flip) ----------------------
+#
+# The v1 stub used a hardcoded `stub-msg-id-N` shape. Post-flip,
+# message_id passes through from the JSONL (RFC 5322 format —
+# typically `<id@<operator-domain>>`). Per the PM-locked
+# message_id carve-out in the bucket spec:
+#
+#   "message_id may contain operator's domain in RFC 5322 format
+#    (e.g. `<id@stormhavenenterprises.com>`). This is technically
+#    PII-adjacent BUT operator's domain is not personal identifi-
+#    cation. Decision: pass message_id through as-is (FE consumers
+#    need it for threading). The walk-payload guard should EXCLUDE
+#    message_id field from the email-regex check (false-positive
+#    otherwise)."
+#
+# The empty-JSONL test path doesn't exercise this; comprehensive
+# message_id projection + carve-out tests live in
+# ``test_web_server_email_panel_flip.py``.
 
 
 # ---- 8. SECURITY: companion FE pins ------------------------------
@@ -404,7 +343,9 @@ def test_panel_renders_spoofing_warning_chip():
 async def test_by_direction_24h_sum_reconciles_to_total(_isolate_config):
     """The 24h direction breakdown must sum to total_recent_24h —
     otherwise the dashboard card's "X emails / Y flagged" headline
-    won't reconcile to the panel's per-direction breakdown."""
+    won't reconcile to the panel's per-direction breakdown. Holds
+    on the empty-JSONL path (both zero) AND on populated paths
+    (see panel-flip tests)."""
     from kora_cli import web_server
 
     result = await web_server.list_recent_email()

@@ -5373,111 +5373,350 @@ async def list_recent_slack_dm(limit: int = _SLACK_DM_DEFAULT_LIMIT):
 #      creds gets caught at the API edge.
 
 
+# KR-EMAIL-PANEL-FLIP constants (PR #138 inbound writer + #124
+# outbound writer feed this endpoint).
+_EMAIL_INBOUND_LOG_FILENAME = "email_inbound_log.jsonl"
+_EMAIL_OUTBOUND_LOG_FILENAME = "email_outbound_log.jsonl"
+_EMAIL_DEFAULT_LIMIT = 50
+_EMAIL_MAX_LIMIT = 200
+_EMAIL_BODY_TRUNCATE_LIMIT = 400
+
+# The handler's HANDLED_* taxonomy in
+# ``kora_cli/handlers/email_inbound_handler.py`` is more granular
+# than the FE's ``EmailHandledStatus`` union in
+# ``web/src/lib/api.ts``. Map down to the FE-allowed values
+# (lossy on purpose — operator-facing status is coarser than the
+# internal handler taxonomy; the JSONL itself remains canonical).
+_INBOUND_STATUS_TO_FE: Dict[str, str] = {
+    "received": "received",
+    "filtered_paused": "dropped_paused",
+    "filtered_stopped": "dropped_paused",
+    "filtered_non_allowlist": "filtered_non_allowlist",
+    "filtered_wrong_recipient": "filtered_wrong_recipient",
+    # filtered_non_joshua collapses into filtered_non_allowlist for
+    # the operator — both are "sender wasn't allowed" from the
+    # panel's perspective; the JSONL extra-field carries the
+    # finer-grained reason for triage.
+    "filtered_non_joshua": "filtered_non_allowlist",
+    "handler_error": "handler_error",
+}
+
+
+def _project_email_inbound(
+    entry: Dict[str, Any],
+    lineno: int,
+    expected_joshua_lc: str,
+    expected_kora_lc: str,
+) -> Optional[Dict[str, Any]]:
+    """Project one inbound JSONL entry to the FE's ``EmailMessage`` shape.
+
+    Inbound entry schema is set by
+    ``kora_cli/handlers/email_inbound_handler.py`` (KR-FEAT-EMAIL-
+    INBOUND-IMAP ST2 / PR #138). Returns ``None`` for entries the
+    handler couldn't fully classify (no message_id / no from /
+    unknown handled_status).
+
+    SECURITY: raw ``entry['from']`` and ``entry['to']`` ARE email
+    addresses — those are NEVER written to the returned dict;
+    instead from_label / to_label resolve to "joshua" / "kora" /
+    "unknown_sender" / "other" via env comparison.
+    """
+    handled_raw = entry.get("handled_status")
+    if not isinstance(handled_raw, str):
+        return None
+    fe_status = _INBOUND_STATUS_TO_FE.get(handled_raw)
+    if fe_status is None:
+        # Unknown handled_status — skip defensively rather than
+        # surfacing an enum value the FE doesn't know how to render.
+        return None
+
+    sender_raw = entry.get("from") or ""
+    sender_lc = sender_raw.strip().lower() if isinstance(sender_raw, str) else ""
+    if expected_joshua_lc and sender_lc == expected_joshua_lc:
+        from_label = "joshua"
+    else:
+        from_label = "unknown_sender"
+
+    recipients = entry.get("to") or []
+    if not isinstance(recipients, list):
+        recipients = []
+    recipients_lc = {
+        str(r).strip().lower() for r in recipients if isinstance(r, str)
+    }
+    if expected_kora_lc and expected_kora_lc in recipients_lc:
+        to_label = "kora"
+    else:
+        to_label = "other"
+
+    body_raw = entry.get("body_text_truncated_2k") or ""
+    if not isinstance(body_raw, str):
+        body_raw = ""
+    body_truncated_400 = body_raw[:_EMAIL_BODY_TRUNCATE_LIMIT]
+
+    has_html_raw = entry.get("has_html")
+    has_html = bool(has_html_raw) if isinstance(has_html_raw, bool) else False
+
+    attachments_raw = entry.get("attachments_count")
+    attachments_count = (
+        int(attachments_raw) if isinstance(attachments_raw, int) else 0
+    )
+
+    # Semantic flip per bucket §2(a): spoofing_warning is what the
+    # FE renders. When the handler skipped the spoofing check
+    # (spoofing_check_skipped=True), there's no warning to raise.
+    # When/if a future bucket adds real envelope-based detection
+    # and finds a mismatch, that entry will have
+    # spoofing_check_skipped=False AND a handled_status of
+    # filtered_spoofing — which collapses to filtered_non_allowlist
+    # in the FE enum, with spoofing_warning=True carrying the signal.
+    spoofing_check_skipped = bool(entry.get("spoofing_check_skipped"))
+    spoofing_warning = not spoofing_check_skipped
+
+    message_id = entry.get("message_id") or f"inbound-no-id-line-{lineno}"
+
+    return {
+        "id": f"inbound-{lineno}",
+        "direction": "inbound",
+        "timestamp": entry.get("received_at", ""),
+        "message_id": message_id,
+        "from_label": from_label,
+        "to_label": to_label,
+        "subject": entry.get("subject", "") or "",
+        "body_text_truncated_400": body_truncated_400,
+        "has_html": has_html,
+        "attachments_count": attachments_count,
+        "handled_status": fe_status,
+        "spoofing_warning": spoofing_warning,
+    }
+
+
+def _project_email_outbound(
+    entry: Dict[str, Any],
+    lineno: int,
+    expected_joshua_lc: str,
+) -> Optional[Dict[str, Any]]:
+    """Project one outbound JSONL entry to the FE's ``EmailMessage`` shape.
+
+    Outbound entry schema is set by
+    ``kora_cli/clients/purelymail_client.py`` (KR-FEAT-EMAIL ST1
+    + KR-MCP-SEND-TOOLS / PRs #124 + #130). Body text is NEVER in
+    the outbound JSONL by design — the FE shows a placeholder.
+
+    ``send_status`` in the JSONL is ``"ok"`` / ``"failed"``; the
+    FE consumes ``"sent_ok"`` / ``"sent_failed"`` — derive here.
+    """
+    send_status = entry.get("send_status")
+    if send_status not in {"ok", "failed"}:
+        return None
+
+    recipients = entry.get("to") or []
+    if not isinstance(recipients, list) or not recipients:
+        return None
+    first_recipient_lc = (
+        str(recipients[0]).strip().lower()
+        if isinstance(recipients[0], str)
+        else ""
+    )
+    if expected_joshua_lc and first_recipient_lc == expected_joshua_lc:
+        to_label = "joshua"
+    else:
+        to_label = "other"
+
+    message_id = entry.get("message_id") or f"outbound-no-id-line-{lineno}"
+
+    return {
+        "id": f"outbound-{lineno}",
+        "direction": "outbound",
+        "timestamp": entry.get("sent_at", ""),
+        "message_id": message_id,
+        "from_label": "kora",
+        "to_label": to_label,
+        "subject": entry.get("subject", "") or "",
+        # Body not logged outbound-side per PR #124's security
+        # contract (subject + recipients only). FE renders this
+        # placeholder; if/when a follow-on bucket adds outbound-
+        # body retention, the FE consumes the field unchanged.
+        "body_text_truncated_400": (
+            "(outbound body not logged for size + privacy)"
+        ),
+        "has_html": False,
+        "attachments_count": 0,
+        "handled_status": f"sent_{send_status}",
+        "in_reply_to": entry.get("in_reply_to") or None,
+    }
+
+
+def _read_email_jsonl_lines(
+    path: Path,
+) -> List[Tuple[int, Dict[str, Any]]]:
+    """Read + parse a JSONL file. Returns ``[(lineno, entry), ...]``.
+
+    Missing file → empty list (the daemon may not have written to
+    one or both files yet). Malformed lines logged + skipped so a
+    partial-write corruption doesn't break the whole panel.
+    """
+    out: List[Tuple[int, Dict[str, Any]]] = []
+    if not path.is_file():
+        return out
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for lineno, raw_line in enumerate(f, start=1):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError as exc:
+                    _log.warning(
+                        "[kora.email_panel] %s line %d malformed JSON, "
+                        "skipped: %r",
+                        path,
+                        lineno,
+                        exc,
+                    )
+                    continue
+                if not isinstance(entry, dict):
+                    _log.warning(
+                        "[kora.email_panel] %s line %d not a JSON object, "
+                        "skipped",
+                        path,
+                        lineno,
+                    )
+                    continue
+                out.append((lineno, entry))
+    except OSError as exc:
+        _log.warning(
+            "[kora.email_panel] failed to read %s: %r",
+            path,
+            exc,
+        )
+    return out
+
+
 @app.get("/api/email/recent")
-async def list_recent_email():
+async def list_recent_email(limit: int = _EMAIL_DEFAULT_LIMIT):
     """Return recent email exchanges for the operator lens.
 
-    v1 stub — pinned shape so CC#1's KR-FEAT-EMAIL ST2 can swap
-    the body without touching the FE.
+    KR-EMAIL-PANEL-FLIP flips this endpoint from the v1 stub to a
+    live read of BOTH email JSONLs:
+      * ``${KORA_HOME}/email_inbound_log.jsonl`` (PR #138 writer)
+      * ``${KORA_HOME}/email_outbound_log.jsonl`` (PR #124 writer)
 
-    Per-message fields:
-      id                          — opaque id
-      direction                   — "inbound" | "outbound"
-      timestamp                   — ISO-8601
-      message_id                  — STUB label in v1; real Purelymail
-                                    IDs hashed/truncated by CC#1
-      from_label / to_label       — LABELS only (joshua / kora /
-                                    unknown_sender); never raw
-                                    "user@host.tld" email addresses
-      subject                     — message subject
-      body_text_truncated_400     — plain-text body, capped to 400
-                                    chars at the API edge
-      has_html                    — bool: original body had HTML
-      attachments_count           — int (>= 0)
-      handled_status              — received | sent_ok | sent_failed |
-                                    filtered_non_allowlist |
-                                    filtered_wrong_recipient |
-                                    dropped_paused | handler_error
-      spoofing_warning            — bool (inbound only): DMARC/SPF
-                                    failure or similar red flag
-      in_reply_to                 — outbound only; references the
-                                    inbound message_id we're replying to
+    Both files may be missing on a fresh deploy — that's fine,
+    the endpoint returns an empty list with ``stub: false``.
+
+    Query params:
+      ``limit`` — number of newest entries to return; default 50,
+                  capped at 200 to bound large-file reads.
+
+    Per-message fields match ``EmailMessage`` in
+    ``web/src/lib/api.ts``. The handler's HANDLED_* taxonomy is
+    coarsened to the FE's ``EmailHandledStatus`` union via
+    ``_INBOUND_STATUS_TO_FE`` — JSONL stays canonical; the panel
+    sees the operator-facing rollup.
+
+    4-layer SECURITY contract (preserved from PR #121 stub):
+      1. from_label / to_label are LABELS (joshua / kora /
+         unknown_sender / other) — never raw email addresses. The
+         walk-payload regex sweep in tests catches drift.
+      2. message_id passes through from the JSONL. RFC 5322
+         message-ids contain the operator's domain (e.g.,
+         ``<id@stormhavenenterprises.com>``) which IS legitimate —
+         FE consumers need it for threading. The walk-payload
+         email-address guard EXCLUDES the message_id field from
+         its sweep to allow this legitimate pattern; everywhere
+         else, no raw addresses.
+      3. body_text_truncated_400 is plain text (truncated from
+         the inbound JSONL's body_text_truncated_2k or the
+         outbound placeholder string). FE renders as JSX child;
+         dangerouslySetInnerHTML banned in EmailPanel.tsx.
+      4. Walk-payload guards for Purelymail-token env-var-name
+         hints + HMAC-secret hex shapes + Bearer/Authorization
+         header shapes catch any future log-entry edit that leaks
+         credential material.
+
+    Behaviour:
+      * Either or both JSONLs missing → empty list + stub:false.
+      * Malformed JSONL line → logged + skipped; other lines
+        still parsed (defensive against partial-write corruption).
+      * Unknown handled_status / send_status → entry skipped
+        (defensive; keeps the FE enum union clean).
+      * Sort: newest first by timestamp descending.
+      * stub: false always.
+      * Aggregate counts (``total_recent_24h`` /
+        ``by_direction_24h`` / ``by_status_24h``) use the FULL
+        projected set within the 24h window — NOT the limited
+        slice — so dashboard headlines reconcile to the panel
+        view.
     """
+    from datetime import datetime, timedelta, timezone
+
+    capped_limit = max(1, min(limit, _EMAIL_MAX_LIMIT))
+
+    home = get_kora_home()
+    inbound_path = home / _EMAIL_INBOUND_LOG_FILENAME
+    outbound_path = home / _EMAIL_OUTBOUND_LOG_FILENAME
+
+    expected_joshua_lc = (
+        os.environ.get("KORA_EMAIL_JOSHUA_ADDRESS", "").strip().lower()
+    )
+    expected_kora_lc = (
+        os.environ.get("KORA_EMAIL_KORA_ADDRESS", "").strip().lower()
+    )
+
+    now = datetime.now(timezone.utc)
+    generated_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff_24h = now - timedelta(hours=24)
+
+    projected: List[Dict[str, Any]] = []
+    for lineno, entry in _read_email_jsonl_lines(inbound_path):
+        msg = _project_email_inbound(
+            entry,
+            lineno,
+            expected_joshua_lc=expected_joshua_lc,
+            expected_kora_lc=expected_kora_lc,
+        )
+        if msg is not None:
+            projected.append(msg)
+    for lineno, entry in _read_email_jsonl_lines(outbound_path):
+        msg = _project_email_outbound(
+            entry,
+            lineno,
+            expected_joshua_lc=expected_joshua_lc,
+        )
+        if msg is not None:
+            projected.append(msg)
+
+    # Newest-first sort. JSONL timestamps are ISO-8601 UTC — lex
+    # order == chronological order for matching formats.
+    projected.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+
+    def _within_24h(ts_str: str) -> bool:
+        if not ts_str:
+            return False
+        try:
+            dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt >= cutoff_24h
+
+    in_window = [m for m in projected if _within_24h(m["timestamp"])]
+    by_direction: Dict[str, int] = {"inbound": 0, "outbound": 0}
+    by_status: Dict[str, int] = {}
+    for m in in_window:
+        by_direction[m["direction"]] = by_direction.get(m["direction"], 0) + 1
+        status = m["handled_status"]
+        by_status[status] = by_status.get(status, 0) + 1
+
     return {
-        "messages": [
-            {
-                "id": "stub-1",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:55:13Z",
-                "message_id": "stub-msg-id-1",
-                "from_label": "joshua",
-                "to_label": "kora",
-                "subject": "Quick status check",
-                "body_text_truncated_400": (
-                    "Hey Kora, can you give me a status update on the daemon?"
-                ),
-                "has_html": False,
-                "attachments_count": 0,
-                "handled_status": "received",
-                "spoofing_warning": False,
-            },
-            {
-                "id": "stub-2",
-                "direction": "outbound",
-                "timestamp": "2026-05-22T17:55:14Z",
-                "message_id": "stub-msg-id-2",
-                "from_label": "kora",
-                "to_label": "joshua",
-                "subject": "Re: Quick status check",
-                "body_text_truncated_400": (
-                    "Kora received: Hey Kora, can you give me a "
-                    "status update on the daemon?"
-                ),
-                "has_html": False,
-                "attachments_count": 0,
-                "handled_status": "sent_ok",
-                "in_reply_to": "stub-msg-id-1",
-            },
-            {
-                "id": "stub-3",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:48:22Z",
-                "message_id": "stub-msg-id-3",
-                "from_label": "unknown_sender",
-                "to_label": "kora",
-                "subject": "[filtered: non-allowlist sender]",
-                "body_text_truncated_400": (
-                    "(body suppressed for non-allowlist sender)"
-                ),
-                "has_html": True,
-                "attachments_count": 0,
-                "handled_status": "filtered_non_allowlist",
-                "spoofing_warning": False,
-            },
-            {
-                "id": "stub-4",
-                "direction": "inbound",
-                "timestamp": "2026-05-22T17:30:11Z",
-                "message_id": "stub-msg-id-4",
-                "from_label": "joshua",
-                "to_label": "kora",
-                "subject": "Test with attachment",
-                "body_text_truncated_400": "Sending you a screenshot",
-                "has_html": True,
-                "attachments_count": 1,
-                "handled_status": "received",
-                "spoofing_warning": False,
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_recent_24h": 18,
-        "by_direction_24h": {"inbound": 11, "outbound": 7},
-        "by_status_24h": {
-            "received": 10,
-            "sent_ok": 7,
-            "filtered_non_allowlist": 1,
-        },
+        "messages": projected[:capped_limit],
+        "stub": False,
+        "generated_at": generated_at,
+        "total_recent_24h": len(in_window),
+        "by_direction_24h": by_direction,
+        "by_status_24h": by_status,
     }
 
 
