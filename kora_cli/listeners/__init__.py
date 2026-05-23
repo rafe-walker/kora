@@ -35,3 +35,11 @@ from kora_cli.listeners import heartbeat_probes_listener  # noqa: F401
 # aborts boot). Module-level `current_reasoning_engine()` accessor
 # mirrors `current_pool()` so SlackDMHandler reads cross-cuttingly.
 from kora_cli.listeners import reasoning_engine_listener  # noqa: F401
+# KR-MCP-SEND-TOOLS — promote SlackClient + PurelymailClient from
+# per-handler lazy construction to daemon-coordinator-managed
+# singletons. Both fail-soft on missing auth env (Slack outbound /
+# email outbound are capabilities, not gates — daemon boots
+# without them). Imported AFTER mcp_consumption so the same lazy-
+# constructed-fallback pattern is established.
+from kora_cli.listeners import slack_client_listener  # noqa: F401
+from kora_cli.listeners import purelymail_client_listener  # noqa: F401

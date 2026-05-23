@@ -664,27 +664,60 @@ class SlackDMHandler:
             )
 
     def _get_or_create_slack_client(self) -> Optional[Any]:
-        """Lazy SlackClient construction.
+        """Get the SlackClient — daemon-coordinator-managed first;
+        lazy-create as fallback.
 
-        Returns the cached client if one is set (test injection or
-        prior successful construction). Otherwise tries to construct
-        one; on ``SlackClientNotConfigured`` returns ``None`` so the
-        caller can record a failed-outbound entry without crashing.
+        Resolution order:
+
+          1. ``self._slack_client`` (test injection or prior cache)
+          2. ``current_slack_client()`` from the daemon listener
+             (KR-MCP-SEND-TOOLS) — present once the daemon boots
+             with ``slack_client`` listener registered
+          3. Lazy-construct a fresh SlackClient (legacy path —
+             keeps standalone-handler tests passing without daemon
+             listeners running)
+
+        The lazy-construct fallback preserves the pre-KR-MCP-SEND-
+        TOOLS contract: a handler instantiated outside the daemon
+        (test fixtures, ad-hoc scripts) still acquires a client.
+        Production daemon paths get the shared listener instance.
+
+        Returns ``None`` if every path fails (KORA_SLACK_BOT_TOKEN
+        unset).
         """
         if self._slack_client is not None:
             return self._slack_client
+
+        # Listener-managed singleton (KR-MCP-SEND-TOOLS).
         try:
-            from kora_cli.clients.slack_client import (
-                SlackClient,
-                SlackClientNotConfigured,
+            from kora_cli.listeners.slack_client_listener import (
+                current_slack_client,
             )
+
+            shared = current_slack_client()
+            if shared is not None:
+                self._slack_client = shared
+                return self._slack_client
+        except Exception as exc:
+            # Import error / accessor blow-up — fall through to
+            # lazy-construct. Don't swallow silently; log so the
+            # operator can correlate.
+            logger.debug(
+                "[kora.slack_dm] current_slack_client lookup failed: %r — "
+                "falling back to lazy construct",
+                exc,
+            )
+
+        # Lazy-construct fallback (legacy / standalone-handler path).
+        try:
+            from kora_cli.clients.slack_client import SlackClient
 
             self._slack_client = SlackClient()
             return self._slack_client
         except Exception as exc:
             # SlackClientNotConfigured is the expected failure when
-            # KORA_SLACK_BOT_TOKEN is unset. Log once + cache None so
-            # subsequent inbound events don't re-attempt.
+            # KORA_SLACK_BOT_TOKEN is unset. Log once + cache None
+            # so subsequent inbound events don't re-attempt.
             logger.warning(
                 "[kora.slack_dm] SlackClient unavailable: %r — "
                 "outbound replies disabled",
@@ -710,6 +743,10 @@ class SlackDMHandler:
         output_tokens: Optional[int] = None,
         reasoning_duration_ms: Optional[int] = None,
         reasoning_error: Optional[str] = None,
+        # KR-MCP-SEND-TOOLS — when a send is driven by an MCP tool
+        # call, the caller's actor_kind appears here for audit
+        # attribution. None (omitted) on handler-driven sends.
+        caller_actor_kind: Optional[str] = None,
     ) -> None:
         """Outbound-side JSONL entry. Distinct schema from inbound
         entries (``sent_at`` instead of ``received_at``) so operator
@@ -726,6 +763,14 @@ class SlackDMHandler:
             ``ResponseResult.error`` (``cost_ladder_halted`` /
             ``sdk_5xx`` / ``engine_unavailable`` / etc.) — None on
             successful reasoning calls
+
+        ``caller_actor_kind`` (KR-MCP-SEND-TOOLS): when a send is
+        driven by an MCP tool call, the caller's actor_kind appears
+        here for audit attribution. ``None`` (omitted) for
+        handler-driven sends (echo replies + reasoning-engine
+        replies from CC#3's KR-FEAT-AI-RESPONSE-LOOP). Backwards-
+        compatible — consumers handle absence; existing entries
+        without the field keep parsing.
         """
         entry: Dict[str, Any] = {
             "sent_at": _now_iso(),
@@ -751,6 +796,8 @@ class SlackDMHandler:
             entry["reasoning_duration_ms"] = int(reasoning_duration_ms)
         if reasoning_error is not None:
             entry["reasoning_error"] = reasoning_error
+        if caller_actor_kind is not None:
+            entry["caller_actor_kind"] = caller_actor_kind
 
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)

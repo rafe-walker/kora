@@ -246,6 +246,7 @@ class PurelymailClient:
         body_html: Optional[str] = None,
         in_reply_to: Optional[str] = None,
         attachments: Optional[list[Attachment]] = None,
+        caller_actor_kind: Optional[str] = None,
     ) -> SendResult:
         """Send one email. Returns a :class:`SendResult` always —
         failures are surfaced via ``status="failed"`` + ``error``
@@ -287,6 +288,7 @@ class PurelymailClient:
             subject=subject,
             in_reply_to=in_reply_to,
             result=result,
+            caller_actor_kind=caller_actor_kind,
         )
 
         return result
@@ -524,12 +526,19 @@ class PurelymailClient:
         subject: str,
         in_reply_to: Optional[str],
         result: SendResult,
+        caller_actor_kind: Optional[str] = None,
     ) -> None:
         """Append one line to the outbound JSONL. Body NEVER logged.
 
         Fail-soft: a log write error must not crash a successful
         send (or mask a failed-send result). Logged at WARN if it
         ever happens.
+
+        ``caller_actor_kind`` (KR-MCP-SEND-TOOLS): when a send is
+        driven by an MCP tool call, the caller's actor_kind appears
+        here for audit attribution. ``None`` for internal/runtime-
+        driven sends (e.g. KR-FEAT-AI-RESPONSE-LOOP email replies).
+        Backwards-compatible — consumers handle absence.
         """
         entry = {
             "sent_at": result.sent_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -542,6 +551,7 @@ class PurelymailClient:
             "smtp_code": result.smtp_code,
             "error": result.error,
             "retry_count": result.retry_count,
+            "caller_actor_kind": caller_actor_kind,
         }
         try:
             log_path = _outbound_log_path()
@@ -571,6 +581,7 @@ async def send_email_internal(
     body_html: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     attachments: Optional[list[Attachment]] = None,
+    caller_actor_kind: Optional[str] = None,
 ) -> SendResult:
     """One-shot send for callers inside Kora's runtime.
 
@@ -580,8 +591,12 @@ async def send_email_internal(
     instantiate the client once and call ``send_email`` per
     message to avoid repeated env reads.
 
-    NOT exposed via ``/mcp`` — that's a separate bucket
-    (``kora__send_email`` MCP tool, follow-on).
+    KR-MCP-SEND-TOOLS update: ``caller_actor_kind`` propagates to
+    the JSONL audit log when the send is driven by an MCP tool
+    call. Daemon-coordinator-managed paths prefer the listener
+    accessor (``current_purelymail_client``) over this one-shot
+    helper to share a single client instance + reduce env-read
+    overhead.
     """
     client = PurelymailClient()
     return await client.send_email(
@@ -592,4 +607,5 @@ async def send_email_internal(
         body_html=body_html,
         in_reply_to=in_reply_to,
         attachments=attachments,
+        caller_actor_kind=caller_actor_kind,
     )
