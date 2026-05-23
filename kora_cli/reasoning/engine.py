@@ -166,6 +166,19 @@ class ResponseResult:
     output_tokens: int
     reasoning_duration_ms: int
     error: Optional[str] = None
+    # KR-FEAT-AGENTIC-REASONING ST1 — tool-use audit trail. List of
+    # tool names Kora actually invoked during this response
+    # (oldest→newest, may contain duplicates if the same tool was
+    # called across iterations). Empty list when the response used
+    # no tools (pure chat-completion path) or when the engine
+    # short-circuited on a refuse-path (paused / cost-halted / etc.).
+    #
+    # Handler surfaces this in the outbound JSONL ``tools_used``
+    # field (KR-FEAT-AGENTIC-REASONING ST2 wires the persistence).
+    # ``field(default_factory=list)`` keeps the dataclass
+    # backwards-compatible — existing ResponseResult construction
+    # without this kwarg still works.
+    tools_used: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
