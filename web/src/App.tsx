@@ -19,6 +19,7 @@ import {
   BarChart3,
   BookOpen,
   BookOpenCheck,
+  Brain,
   Clock,
   Code,
   Cpu,
@@ -91,6 +92,7 @@ import WebhookEventsPanel from "@/pages/WebhookEventsPanel";
 import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import SlackDMPanel from "@/pages/SlackDMPanel";
 import EmailPanel from "@/pages/EmailPanel";
+import ReasoningPanel from "@/pages/ReasoningPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -148,6 +150,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/mcp-clients": MCPClientsPanel,
   "/webhook-events": WebhookEventsPanel,
   "/agent-activity": AgentActivityPanel,
+  "/reasoning": ReasoningPanel,
   "/slack-dm": SlackDMPanel,
   "/email": EmailPanel,
   "/boot-status": BootStatusPage,
@@ -223,6 +226,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "agentActivity",
     label: "Agent Activity",
     icon: Workflow,
+  },
+  {
+    path: "/reasoning",
+    labelKey: "reasoning",
+    label: "Reasoning",
+    icon: Brain,
   },
   {
     path: "/slack-dm",

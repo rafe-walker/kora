@@ -130,6 +130,8 @@ export const api = {
     fetchJSON<SlackDMResponse>("/api/slack-dm/recent"),
   getRecentEmail: () =>
     fetchJSON<EmailResponse>("/api/email/recent"),
+  getRecentReasoning: () =>
+    fetchJSON<ReasoningResponse>("/api/reasoning/recent"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1664,4 +1666,74 @@ export interface EmailResponse {
   total_recent_24h: number;
   by_direction_24h: Record<EmailDirection, number>;
   by_status_24h: Record<string, number>;
+}
+
+// Kora reasoning activity lens (KR-REASONING-PANEL).
+// 4-layer SECURITY CONTRACT (extending the established pattern
+// with reasoning-specific guards):
+//   1. response_text_truncated_200 rendered as PLAIN TEXT — React's
+//      default child escaping defangs any HTML / markdown / script
+//      in Kora's generated text. FE pins via dangerouslySetInnerHTML
+//      grep. Real responses may contain anything the model emits.
+//   2. NO Anthropic-key shapes (sk-ant- prefix) anywhere in payload
+//      — backend test sweeps. There are no token fields on this
+//      type; the walk-payload guard catches a future log-entry edit
+//      that leaks credential material into the operator view.
+//   3. NO PII (email regex / Slack user-ID regex) leaked from the
+//      inbound user's message into response_text_truncated_200 —
+//      backend test sweeps the response field.
+//   4. This TS type enforces shape; no raw_prompt / auth_token /
+//      response_html fields exist on ReasoningCall.
+
+// CostRung.value wire strings per agent/cost_state_holder.py:114-117.
+// The enum class members are uppercase NAMES (NORMAL, WARN_75, etc.)
+// but the wire format / FE pill-color map keys on the lowercase
+// `.value` strings — that's what real CC#3 data will emit.
+export type ReasoningCostRung =
+  | "normal"
+  | "warn_75"
+  | "downshift_90"
+  | "hard_stop_100"
+  | "unknown";
+
+export type ReasoningStatus = "ok" | "failed" | "halted" | "paused";
+
+// Model strings match kora_cli/reasoning/anthropic_engine.py's
+// cost-ladder model selection.
+export type ReasoningModel =
+  | "claude-opus-4-7"
+  | "claude-sonnet-4-6"
+  | "claude-haiku-4-5-20251001";
+
+export interface ReasoningCall {
+  id: string;
+  triggered_by: string; // "slack_dm" only in v1; future: email/mcp/cron
+  started_at: string;
+  duration_ms: number;
+  model_used: ReasoningModel | null; // null when halted (no SDK call)
+  cost_rung_at_call: ReasoningCostRung;
+  input_tokens: number;
+  output_tokens: number;
+  status: ReasoningStatus;
+  // ReasoningEngine error code taxonomy (PR #126):
+  // sdk_auth | sdk_rate_limited | sdk_5xx | sdk_4xx_<code> |
+  // sdk_timeout | sdk_transport | sdk_unknown_<class> |
+  // cost_ladder_halted | operational_state_paused |
+  // response_projection_failed
+  error_code: string | null;
+  // Plain-text response excerpt capped at 200 chars at the API
+  // edge. FE renders verbatim — NEVER via dangerouslySetInnerHTML.
+  response_text_truncated_200: string | null;
+}
+
+export interface ReasoningResponse {
+  calls: ReasoningCall[];
+  stub: boolean;
+  generated_at: string;
+  total_recent_24h: number;
+  // Keys are model strings PLUS "halted_no_model" for the halted
+  // bucket (where model_used is null).
+  by_model_24h: Record<string, number>;
+  by_status_24h: Record<string, number>;
+  tokens_total_24h: { input: number; output: number };
 }
