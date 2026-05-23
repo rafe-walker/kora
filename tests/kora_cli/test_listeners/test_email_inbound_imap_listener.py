@@ -12,10 +12,14 @@ Covers:
   - Shutdown clears singleton + best-effort closes any open handle
   - Unexpected exception during startup → fail-soft (singleton None)
   - run_poll_cycle short-circuits cleanly when no client is registered
-  - run_poll_cycle: connect → fetch_unseen → stub_handle per message → close
+  - run_poll_cycle: connect → fetch_unseen → handle_event per message →
+    mark_seen on should_mark_seen=True → close
   - run_poll_cycle: connect failure → log + skip cycle (no fetch attempted)
   - run_poll_cycle: fetch failure → log + still close
   - run_poll_cycle: per-message handler failure does NOT abort the cycle
+  - run_poll_cycle: HandlerResult.should_mark_seen=False does NOT call
+    mark_seen (handler_error path keeps UNSEEN for next-poll retry)
+  - run_poll_cycle: mark_seen failure logs but does NOT abort cycle
 """
 
 from __future__ import annotations
@@ -220,31 +224,57 @@ async def test_run_poll_cycle_short_circuits_when_no_client():
     await run_poll_cycle()  # must not raise
 
 
+def _make_fake_handler(results_by_uid):
+    """Build a fake EmailInboundHandler whose handle_event returns
+    a preset HandlerResult per imap_uid."""
+    from kora_cli.handlers.email_inbound_handler import HandlerResult
+
+    seen_calls = []
+
+    async def fake_handle(parsed):
+        seen_calls.append(parsed.imap_uid)
+        spec = results_by_uid.get(parsed.imap_uid)
+        if isinstance(spec, Exception):
+            raise spec
+        if spec is None:
+            return HandlerResult(
+                status="received", should_mark_seen=True, should_reply=False
+            )
+        return spec
+
+    fake_handler_instance = MagicMock()
+    fake_handler_instance.handle_event = AsyncMock(side_effect=fake_handle)
+    return fake_handler_instance, seen_calls
+
+
 @pytest.mark.asyncio
-async def test_run_poll_cycle_happy_path_calls_stub_for_each_message():
+async def test_run_poll_cycle_happy_path_handles_each_and_marks_seen():
     fake_client = MagicMock()
     fake_client.connect = AsyncMock()
     fake_client.fetch_unseen = AsyncMock(
         return_value=[_make_parsed(7), _make_parsed(9)]
     )
+    fake_client.mark_seen = AsyncMock()
     fake_client.close = AsyncMock()
 
-    seen = []
-
-    async def fake_stub(parsed):
-        seen.append(parsed.imap_uid)
+    fake_handler, seen_calls = _make_fake_handler({})
 
     with patch.object(
         email_inbound_imap_listener, "_imap_client_singleton", fake_client
-    ), patch.object(
-        email_inbound_imap_listener, "_stub_handle", side_effect=fake_stub
+    ), patch(
+        "kora_cli.handlers.email_inbound_handler.EmailInboundHandler",
+        return_value=fake_handler,
     ):
         await run_poll_cycle()
 
     fake_client.connect.assert_awaited_once()
     fake_client.fetch_unseen.assert_awaited_once()
     fake_client.close.assert_awaited_once()
-    assert seen == [7, 9]
+    assert seen_calls == [7, 9]
+    # Both UIDs marked SEEN (default HandlerResult.should_mark_seen=True).
+    assert fake_client.mark_seen.await_count == 2
+    fake_client.mark_seen.assert_any_await(7)
+    fake_client.mark_seen.assert_any_await(9)
 
 
 @pytest.mark.asyncio
@@ -304,49 +334,117 @@ async def test_run_poll_cycle_no_unseen_messages():
     fake_client = MagicMock()
     fake_client.connect = AsyncMock()
     fake_client.fetch_unseen = AsyncMock(return_value=[])
+    fake_client.mark_seen = AsyncMock()
     fake_client.close = AsyncMock()
 
-    seen = []
-
-    async def fake_stub(parsed):
-        seen.append(parsed.imap_uid)
+    fake_handler, seen_calls = _make_fake_handler({})
 
     with patch.object(
         email_inbound_imap_listener, "_imap_client_singleton", fake_client
-    ), patch.object(
-        email_inbound_imap_listener, "_stub_handle", side_effect=fake_stub
+    ), patch(
+        "kora_cli.handlers.email_inbound_handler.EmailInboundHandler",
+        return_value=fake_handler,
     ):
         await run_poll_cycle()
 
-    assert seen == []
+    assert seen_calls == []
+    fake_client.mark_seen.assert_not_awaited()
     fake_client.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_run_poll_cycle_per_message_handler_failure_does_not_abort():
+async def test_run_poll_cycle_per_message_handler_exception_does_not_abort():
     """Handler raise on uid=7 must not prevent uid=9 from being attempted."""
     fake_client = MagicMock()
     fake_client.connect = AsyncMock()
     fake_client.fetch_unseen = AsyncMock(
         return_value=[_make_parsed(7), _make_parsed(9)]
     )
+    fake_client.mark_seen = AsyncMock()
     fake_client.close = AsyncMock()
 
-    seen = []
-
-    async def fake_stub(parsed):
-        if parsed.imap_uid == 7:
-            raise RuntimeError("handler boom")
-        seen.append(parsed.imap_uid)
+    fake_handler, seen_calls = _make_fake_handler(
+        {7: RuntimeError("handler boom")}
+    )
 
     with patch.object(
         email_inbound_imap_listener, "_imap_client_singleton", fake_client
-    ), patch.object(
-        email_inbound_imap_listener, "_stub_handle", side_effect=fake_stub
+    ), patch(
+        "kora_cli.handlers.email_inbound_handler.EmailInboundHandler",
+        return_value=fake_handler,
     ):
         await run_poll_cycle()
 
-    assert seen == [9]
+    assert seen_calls == [7, 9]
+    # uid=7 exception keeps UNSEEN; uid=9 returned default-OK so marked.
+    fake_client.mark_seen.assert_awaited_once_with(9)
+    fake_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_poll_cycle_should_mark_seen_false_keeps_unseen():
+    """HandlerResult.should_mark_seen=False (e.g. handler_error path)
+    must NOT call mark_seen."""
+    from kora_cli.handlers.email_inbound_handler import HandlerResult
+
+    fake_client = MagicMock()
+    fake_client.connect = AsyncMock()
+    fake_client.fetch_unseen = AsyncMock(return_value=[_make_parsed(11)])
+    fake_client.mark_seen = AsyncMock()
+    fake_client.close = AsyncMock()
+
+    fake_handler, _seen = _make_fake_handler(
+        {
+            11: HandlerResult(
+                status="handler_error",
+                should_mark_seen=False,
+                should_reply=False,
+            )
+        }
+    )
+
+    with patch.object(
+        email_inbound_imap_listener, "_imap_client_singleton", fake_client
+    ), patch(
+        "kora_cli.handlers.email_inbound_handler.EmailInboundHandler",
+        return_value=fake_handler,
+    ):
+        await run_poll_cycle()
+
+    fake_client.mark_seen.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_poll_cycle_mark_seen_failure_does_not_abort():
+    """mark_seen failure on uid=7 must not prevent uid=9 from being processed."""
+    fake_client = MagicMock()
+    fake_client.connect = AsyncMock()
+    fake_client.fetch_unseen = AsyncMock(
+        return_value=[_make_parsed(7), _make_parsed(9)]
+    )
+
+    mark_seen_calls = []
+
+    async def mark_seen_dispatch(uid):
+        mark_seen_calls.append(uid)
+        if uid == 7:
+            raise RuntimeError("STORE failed")
+
+    fake_client.mark_seen = AsyncMock(side_effect=mark_seen_dispatch)
+    fake_client.close = AsyncMock()
+
+    fake_handler, seen_calls = _make_fake_handler({})
+
+    with patch.object(
+        email_inbound_imap_listener, "_imap_client_singleton", fake_client
+    ), patch(
+        "kora_cli.handlers.email_inbound_handler.EmailInboundHandler",
+        return_value=fake_handler,
+    ):
+        await run_poll_cycle()
+
+    assert seen_calls == [7, 9]
+    assert mark_seen_calls == [7, 9]
     fake_client.close.assert_awaited_once()
 
 

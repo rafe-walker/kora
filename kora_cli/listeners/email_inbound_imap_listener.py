@@ -8,11 +8,11 @@ runs once per ``KORA_EMAIL_IMAP_POLL_INTERVAL_SEC`` (default
   2. SEARCH UNSEEN → FETCH each → parse → emit to downstream handler
   3. Close connection
 
-ST1 ships the listener + a STUBBED handler hook that just logs the
-parsed message + emits a chain-event ``kora.email_inbound.poll_found``.
-ST2 wires the real :class:`EmailInboundHandler` (5-step filter
-precedence mirroring the Slack DM handler) in place of the stub
-and threads the ``mark_seen`` call.
+ST2 wires :class:`EmailInboundHandler` in place of ST1's stub.
+The handler returns a :class:`HandlerResult`; this listener calls
+:meth:`PurelymailIMAPClient.mark_seen` for each UID whose result
+sets ``should_mark_seen=True`` — handler errors keep the UID
+UNSEEN for next-poll retry.
 
 # Fail-soft startup
 
@@ -120,16 +120,17 @@ def current_imap_client() -> Optional["object"]:
 
 
 async def run_poll_cycle() -> None:
-    """One poll: connect → fetch unseen → emit per-message → close.
+    """One poll: connect → fetch unseen → handle per-message → close.
 
     Per-cycle failure (transport, parse) is captured + logged —
     never crashes the heartbeat scheduler. The connection is
     rebuilt each cycle so a transient failure resets cleanly
     without long-lived stale-connection retry pathology.
 
-    ST1 STUB: the per-message hook is :func:`_stub_handle` which
-    just LOGs + emits a structured chain-event placeholder. ST2
-    swaps in :class:`EmailInboundHandler.handle_event`.
+    Per-message: invokes :meth:`EmailInboundHandler.handle_event`.
+    When the returned :class:`HandlerResult` sets
+    ``should_mark_seen=True`` we call ``client.mark_seen(uid)``;
+    handler errors leave the UID UNSEEN for next-poll retry.
     """
     client = current_imap_client()
     if client is None:
@@ -139,6 +140,7 @@ async def run_poll_cycle() -> None:
         return
 
     from kora_cli.clients.purelymail_imap_client import PurelymailIMAPError
+    from kora_cli.handlers.email_inbound_handler import EmailInboundHandler
 
     try:
         await client.connect()
@@ -155,6 +157,8 @@ async def run_poll_cycle() -> None:
             exc,
         )
         return
+
+    handler = EmailInboundHandler()
 
     try:
         try:
@@ -178,14 +182,27 @@ async def run_poll_cycle() -> None:
 
         for parsed in unseen:
             try:
-                await _stub_handle(parsed)
+                result = await handler.handle_event(parsed)
             except Exception as exc:
                 logger.warning(
-                    "[kora.email_inbound_imap] stub handler raised %r for "
+                    "[kora.email_inbound_imap] handler raised %r for "
                     "uid=%d — keeping UNSEEN for next-poll retry",
                     exc,
                     parsed.imap_uid,
                 )
+                continue
+
+            if result.should_mark_seen:
+                try:
+                    await client.mark_seen(parsed.imap_uid)
+                except Exception as exc:
+                    logger.warning(
+                        "[kora.email_inbound_imap] mark_seen uid=%d "
+                        "failed: %r — message stays UNSEEN, handler "
+                        "result already logged",
+                        parsed.imap_uid,
+                        exc,
+                    )
     finally:
         try:
             await client.close()
@@ -194,26 +211,6 @@ async def run_poll_cycle() -> None:
                 "[kora.email_inbound_imap] close raised %r — proceeding",
                 exc,
             )
-
-
-async def _stub_handle(parsed) -> None:
-    """ST1 placeholder. Logs + emits structured event; does NOT
-    mark seen (ST2 handler decides).
-
-    Replaced in ST2 by :class:`EmailInboundHandler.handle_event`,
-    which runs the 5-step filter precedence + writes the JSONL
-    log + (optionally) drives a reasoning-engine reply through
-    the outbound :class:`PurelymailClient`.
-    """
-    logger.info(
-        "[kora.email_inbound.poll_found] uid=%d from=%s subject=%r "
-        "has_html=%s attachments=%d",
-        parsed.imap_uid,
-        parsed.from_address,
-        parsed.subject,
-        parsed.has_html,
-        len(parsed.attachments),
-    )
 
 
 # ---------------------------------------------------------------------------

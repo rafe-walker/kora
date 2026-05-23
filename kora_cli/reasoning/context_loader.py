@@ -253,3 +253,220 @@ def _epoch_dt() -> datetime:
     malformed ``received_at`` / ``sent_at``. Sorts to the start of
     history so the bad entry doesn't take precedence over good ones."""
     return datetime.fromtimestamp(0, tz=timezone.utc)
+
+
+# ===========================================================================
+# Email context — KR-FEAT-EMAIL-INBOUND-IMAP ST2
+# ===========================================================================
+
+
+EMAIL_INBOUND_LOG_PATH_ENV = "KORA_EMAIL_INBOUND_LOG_PATH"
+EMAIL_OUTBOUND_LOG_PATH_ENV = "KORA_EMAIL_OUTBOUND_LOG_PATH"
+
+
+def _resolve_email_log_paths() -> tuple[Path, Path]:
+    """Return ``(inbound, outbound)`` JSONL paths, honoring env overrides
+    then falling back to ``KORA_HOME/email_{inbound,outbound}_log.jsonl``."""
+    inbound_override = os.environ.get(EMAIL_INBOUND_LOG_PATH_ENV, "").strip()
+    outbound_override = os.environ.get(EMAIL_OUTBOUND_LOG_PATH_ENV, "").strip()
+    from kora_constants import get_kora_home
+
+    home = get_kora_home()
+    inbound = (
+        Path(inbound_override)
+        if inbound_override
+        else home / "email_inbound_log.jsonl"
+    )
+    outbound = (
+        Path(outbound_override)
+        if outbound_override
+        else home / "email_outbound_log.jsonl"
+    )
+    return inbound, outbound
+
+
+def _email_chain_anchors(
+    message_id: str,
+    in_reply_to: Optional[str],
+    entries: List[Dict[str, Any]],
+) -> set[str]:
+    """Compute the transitive chain-anchor set for the focal email.
+
+    Seeds with the focal ``message_id`` (+ the focal's
+    ``in_reply_to`` when set), then iteratively expands by walking
+    every entry's ``message_id`` ↔ ``in_reply_to`` link until the
+    set stabilizes.
+
+    RFC 5322 message-ids are globally unique so transitive walks
+    are safe — an entry only enters the set if it threads back to
+    the focal via at least one explicit link.
+    """
+    anchors: set[str] = set()
+    if message_id:
+        anchors.add(message_id)
+    if in_reply_to:
+        anchors.add(in_reply_to)
+
+    while True:
+        added = False
+        for entry in entries:
+            msg_id = entry.get("message_id")
+            irt = entry.get("in_reply_to")
+            in_chain = False
+            if isinstance(msg_id, str) and msg_id in anchors:
+                in_chain = True
+            if isinstance(irt, str) and irt in anchors:
+                in_chain = True
+            if not in_chain:
+                continue
+            if isinstance(msg_id, str) and msg_id not in anchors:
+                anchors.add(msg_id)
+                added = True
+            if isinstance(irt, str) and irt not in anchors:
+                anchors.add(irt)
+                added = True
+        if not added:
+            break
+
+    return anchors
+
+
+def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Read + parse a JSONL file. Returns ``[]`` on missing / unreadable
+    files; logs WARN + skips malformed lines."""
+    entries: List[Dict[str, Any]] = []
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return entries
+    except OSError as exc:
+        logger.warning(
+            "[kora.reasoning] context loader: %s unreadable: %r — "
+            "treating as empty",
+            path,
+            exc,
+        )
+        return entries
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "[kora.reasoning] context loader: %s line %d malformed: %r",
+                path,
+                lineno,
+                exc,
+            )
+            continue
+        if isinstance(entry, dict):
+            entries.append(entry)
+    return entries
+
+
+def load_email_context(
+    *,
+    message_id: str,
+    in_reply_to: Optional[str] = None,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    inbound_log_path: Optional[Path] = None,
+    outbound_log_path: Optional[Path] = None,
+) -> ConversationContext:
+    """Load up to ``max_turns`` most-recent email turns in the chain.
+
+    Args:
+      message_id: The focal inbound email's ``Message-ID``. Anchors
+        the chain — entries whose own ``message_id`` is this OR whose
+        ``in_reply_to`` is this are pulled in.
+      in_reply_to: The focal's ``In-Reply-To`` header (parent's
+        message_id). When set, anchors the parent into the chain
+        so a reply email pulls its parent + sibling turns.
+      max_turns: Cap on returned turn count. Default 10.
+      inbound_log_path / outbound_log_path: test overrides.
+
+    Returns:
+      A ConversationContext with up to ``max_turns`` turns
+      (oldest→newest) drawn from BOTH JSONL files. Missing files
+      → empty turns; state strings filled from the same holders
+      the Slack loader uses.
+
+    Chain closure is one-hop — handles the common Joshua↔Kora
+    back-and-forth without the complexity of full transitive walks.
+    Deeper chains slice cleanly if the focal email's parents
+    populate ``in_reply_to`` correctly per RFC 5322.
+    """
+    if not message_id:
+        # Defensive — message_id should always be present; the IMAP
+        # client synthesizes one for incoming mail without a header.
+        return ConversationContext(
+            recent_messages=[],
+            current_operational_state=_current_operational_state_str(),
+            current_cost_ladder_rung=_current_cost_rung_str(),
+        )
+
+    inbound_default, outbound_default = _resolve_email_log_paths()
+    in_path = inbound_log_path or inbound_default
+    out_path = outbound_log_path or outbound_default
+
+    inbound_entries = _read_jsonl(in_path)
+    outbound_entries = _read_jsonl(out_path)
+    anchors = _email_chain_anchors(
+        message_id, in_reply_to, inbound_entries + outbound_entries
+    )
+
+    turns: List[ConversationTurn] = []
+
+    for entry in inbound_entries:
+        if entry.get("handled_status") != "received":
+            continue
+        if not _email_entry_in_chain(entry, anchors):
+            continue
+        at = _parse_iso(entry.get("received_at")) or _epoch_dt()
+        text = str(entry.get("body_text_truncated_2k") or entry.get("text") or "")
+        if text:
+            turns.append(
+                ConversationTurn(direction="inbound", text=text, at=at)
+            )
+
+    for entry in outbound_entries:
+        if entry.get("send_status") != "ok":
+            continue
+        if not _email_entry_in_chain(entry, anchors):
+            continue
+        at = _parse_iso(entry.get("sent_at")) or _epoch_dt()
+        # Outbound entries record ``text`` (the reply body) per the
+        # KR-MCP-SEND-TOOLS shape. PurelymailClient's outbound JSONL
+        # does NOT record body (subject + recipients only per the
+        # outbound-bucket security contract); when we read those
+        # entries we get an empty turn and skip via the truthy check.
+        text = str(entry.get("text") or entry.get("body_text") or "")
+        if text:
+            turns.append(
+                ConversationTurn(direction="outbound", text=text, at=at)
+            )
+
+    turns.sort(key=lambda t: t.at)
+    if len(turns) > max_turns:
+        turns = turns[-max_turns:]
+
+    return ConversationContext(
+        recent_messages=turns,
+        current_operational_state=_current_operational_state_str(),
+        current_cost_ladder_rung=_current_cost_rung_str(),
+    )
+
+
+def _email_entry_in_chain(
+    entry: Dict[str, Any], anchors: set[str]
+) -> bool:
+    """An email JSONL entry is in-chain iff its own ``message_id`` or
+    ``in_reply_to`` is one of the anchors."""
+    msg_id = entry.get("message_id")
+    irt = entry.get("in_reply_to")
+    if isinstance(msg_id, str) and msg_id in anchors:
+        return True
+    if isinstance(irt, str) and irt in anchors:
+        return True
+    return False
