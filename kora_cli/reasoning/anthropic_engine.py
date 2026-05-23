@@ -282,6 +282,14 @@ class AnthropicReasoningEngine:
             )
             tools = []
 
+        # KR-FEAT-AGENTIC-REASONING ST2 — audit identity derived from
+        # the inbound message. ``triggered_by`` matches the source
+        # field; ``caller_session_id`` is source-shaped so structured-
+        # log analysis can correlate tool calls with the inbound
+        # message that caused them.
+        triggered_by = message.source
+        caller_session_id = _derive_caller_session_id(message)
+
         client = await self._ensure_client()
         return await self._tool_use_loop(
             client=client,
@@ -289,6 +297,8 @@ class AnthropicReasoningEngine:
             messages=messages,
             tools=tools,
             started_at=started_at,
+            triggered_by=triggered_by,
+            caller_session_id=caller_session_id,
         )
 
     async def _tool_use_loop(
@@ -299,6 +309,8 @@ class AnthropicReasoningEngine:
         messages: list,
         tools: list,
         started_at: float,
+        triggered_by: str = "unknown",
+        caller_session_id: str = "",
     ) -> ResponseResult:
         """Drive the tool-use roundtrip cascade.
 
@@ -386,7 +398,10 @@ class AnthropicReasoningEngine:
 
             # Execute each tool + build tool_result content blocks.
             tool_result_blocks = await self._execute_tool_calls(
-                tool_use_blocks, tools_used=tools_used
+                tool_use_blocks,
+                tools_used=tools_used,
+                triggered_by=triggered_by,
+                caller_session_id=caller_session_id,
             )
             messages.append(
                 {"role": "user", "content": tool_result_blocks}
@@ -462,25 +477,36 @@ class AnthropicReasoningEngine:
         return blocks
 
     async def _execute_tool_calls(
-        self, tool_use_blocks: list, *, tools_used: list[str]
+        self,
+        tool_use_blocks: list,
+        *,
+        tools_used: list[str],
+        triggered_by: str = "unknown",
+        caller_session_id: str = "",
     ) -> list:
         """Run each tool_use block + return the matching
         ``tool_result`` blocks for the next user turn.
 
+        KR-FEAT-AGENTIC-REASONING ST2 — every call emits a
+        ``[kora.reasoning.tool_called]`` structured-log entry with
+        tool_name / triggered_by / caller_session_id /
+        tool_duration_ms / tool_status (ok/not_allowed/execution_error).
+        Operator finds these via flyctl logs or the REASONING-PANEL.
+
         Failure modes (each becomes a ``tool_result`` with
         ``is_error: true``):
 
-          - Tool not in reasoning allowlist
-          - Tool execution exception (Pydantic validation, substrate
-            read failure, etc.)
+          - Tool not in reasoning allowlist → tool_status="not_allowed"
+          - Tool execution exception → tool_status="execution_error"
           - Tool returned non-serializable result (shouldn't happen
-            with Pydantic models but guarded)
+            with Pydantic models but guarded as execution_error)
 
         Tool exceptions become tool_result errors — they do NOT
         propagate. The engine can recover by letting Claude reason
         about the error in the next iteration.
         """
         import json
+        import time as _time
 
         from kora_cli.reasoning.tool_registry import (
             ReasoningToolNotAllowed,
@@ -492,6 +518,7 @@ class AnthropicReasoningEngine:
             tool_use_id = getattr(block, "id", "")
             tool_name = getattr(block, "name", "")
             tool_input = getattr(block, "input", {}) or {}
+            call_started_at = _time.monotonic()
 
             try:
                 result_model = await execute_reasoning_tool(
@@ -511,12 +538,14 @@ class AnthropicReasoningEngine:
                     }
                 )
                 tools_used.append(tool_name)
-            except ReasoningToolNotAllowed as exc:
-                logger.warning(
-                    "[kora.reasoning] tool_not_allowed name=%s id=%s",
-                    tool_name,
-                    tool_use_id,
+                _emit_tool_called_audit(
+                    tool_name=tool_name,
+                    triggered_by=triggered_by,
+                    caller_session_id=caller_session_id,
+                    tool_duration_ms=_elapsed_ms(call_started_at),
+                    tool_status="ok",
                 )
+            except ReasoningToolNotAllowed:
                 results.append(
                     {
                         "type": "tool_result",
@@ -528,16 +557,16 @@ class AnthropicReasoningEngine:
                         "is_error": True,
                     }
                 )
+                _emit_tool_called_audit(
+                    tool_name=tool_name,
+                    triggered_by=triggered_by,
+                    caller_session_id=caller_session_id,
+                    tool_duration_ms=_elapsed_ms(call_started_at),
+                    tool_status="not_allowed",
+                )
             except Exception as exc:
                 # ANY other exception → tool_result error. Engine
                 # continues; Claude can reason about the failure.
-                logger.warning(
-                    "[kora.reasoning] tool_execution_error name=%s "
-                    "id=%s exc_type=%s",
-                    tool_name,
-                    tool_use_id,
-                    type(exc).__name__,
-                )
                 results.append(
                     {
                         "type": "tool_result",
@@ -547,6 +576,14 @@ class AnthropicReasoningEngine:
                         ),
                         "is_error": True,
                     }
+                )
+                _emit_tool_called_audit(
+                    tool_name=tool_name,
+                    triggered_by=triggered_by,
+                    caller_session_id=caller_session_id,
+                    tool_duration_ms=_elapsed_ms(call_started_at),
+                    tool_status="execution_error",
+                    exc_type=type(exc).__name__,
                 )
         return results
 
@@ -797,3 +834,92 @@ def _resolve_system_prompt_path() -> Path:
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.monotonic() - started_at) * 1000)
+
+
+# ---------------------------------------------------------------------------
+# KR-FEAT-AGENTIC-REASONING ST2 — audit + caller identity
+# ---------------------------------------------------------------------------
+
+
+def _derive_caller_session_id(message: IncomingMessage) -> str:
+    """Build a stable session-id string for audit correlation.
+
+    Per-source shape (chosen so structured-log analysis can join
+    reasoning audit lines back to the inbound JSONL entry that
+    triggered the reasoning):
+
+      - ``slack_dm``: ``"{channel_id}:{event_ts}"`` — matches
+        the inbound JSONL ``channel_id`` + ``event_ts`` pair.
+      - ``email``: ``"email:{message_id}"`` — Purelymail
+        message-id per the inbound webhook payload.
+      - ``mcp``: ``"mcp:{caller_actor_kind}:{tool_name}"`` —
+        identifies which MCP caller triggered which Kora tool.
+      - other / missing metadata: ``"unknown"`` fallback.
+
+    NEVER logs raw token / credential material — only stable
+    public identifiers (channel ids, message ids, actor kinds).
+    """
+    meta = message.metadata or {}
+    if message.source == "slack_dm":
+        channel_id = meta.get("channel_id") or ""
+        event_ts = meta.get("event_ts") or ""
+        if channel_id and event_ts:
+            return f"{channel_id}:{event_ts}"
+        return f"slack_dm:{channel_id or 'unknown'}"
+    if message.source == "email":
+        message_id = meta.get("message_id") or ""
+        return f"email:{message_id or 'unknown'}"
+    if message.source == "mcp":
+        actor_kind = meta.get("caller_actor_kind") or "unknown"
+        tool_name = meta.get("tool_name") or "unknown"
+        return f"mcp:{actor_kind}:{tool_name}"
+    return "unknown"
+
+
+def _emit_tool_called_audit(
+    *,
+    tool_name: str,
+    triggered_by: str,
+    caller_session_id: str,
+    tool_duration_ms: int,
+    tool_status: str,
+    exc_type: Optional[str] = None,
+) -> None:
+    """Stable structured-log audit per reasoning-tool call.
+
+    Stable prefix ``[kora.reasoning.tool_called]`` so operator
+    log analysis (flyctl logs / OPS-PANEL / future
+    REASONING-PANEL) can branch on tool_name / tool_status / etc.
+
+    Same audit-seam precedent as KR-MCP-RUNTIME-SURFACE ST2's
+    ``[kora.mcp.tool_called]`` — substrate-backed audit is the
+    follow-on bucket (substrate-backed conversation memory +
+    audit). When that lands, the runtime extension is a small
+    change in this emitter; the log-line surface is the stable
+    seam.
+
+    NEVER logs tool input/output bodies (those may contain
+    privileged operator data). Names + status codes only.
+    """
+    if exc_type is not None:
+        logger.info(
+            "[kora.reasoning.tool_called] tool=%s triggered_by=%s "
+            "caller_session_id=%s tool_duration_ms=%d tool_status=%s "
+            "exc_type=%s",
+            tool_name,
+            triggered_by,
+            caller_session_id,
+            tool_duration_ms,
+            tool_status,
+            exc_type,
+        )
+    else:
+        logger.info(
+            "[kora.reasoning.tool_called] tool=%s triggered_by=%s "
+            "caller_session_id=%s tool_duration_ms=%d tool_status=%s",
+            tool_name,
+            triggered_by,
+            caller_session_id,
+            tool_duration_ms,
+            tool_status,
+        )
