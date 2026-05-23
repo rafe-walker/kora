@@ -29,3 +29,9 @@ from kora_cli.listeners import mcp_consumption  # noqa: F401
 # construction happens per cycle (stateless across cycles), so
 # startup is a clean no-op + LOG line.
 from kora_cli.listeners import heartbeat_probes_listener  # noqa: F401
+# KR-FEAT-AI-RESPONSE-LOOP ST2 — reasoning engine listener.
+# Constructs the AnthropicReasoningEngine at daemon startup;
+# fail-CLOSED on missing creds / missing system prompt (coordinator
+# aborts boot). Module-level `current_reasoning_engine()` accessor
+# mirrors `current_pool()` so SlackDMHandler reads cross-cuttingly.
+from kora_cli.listeners import reasoning_engine_listener  # noqa: F401
