@@ -115,21 +115,27 @@ class SlackDMHandler:
         self,
         log_path: Optional[Path] = None,
         slack_client: Optional[Any] = None,
+        reasoning_engine: Optional[Any] = None,
     ) -> None:
         """Construct the handler.
 
         Args:
           log_path: Override the JSONL log file path. Production
             callers leave this ``None``; tests inject a tmp_path.
-          slack_client: ST2 — inject a SlackClient for outbound DM
-            replies. Production code leaves this ``None``; the
-            handler lazy-creates a SlackClient on first reply via
-            ``_get_or_create_slack_client``. Tests can inject a mock
-            client OR leave it ``None`` to test the lazy-creation
-            failure modes.
+          slack_client: KR-FEAT-SLACK-DM ST2 — inject a SlackClient
+            for outbound DM replies. Production leaves ``None``;
+            the handler lazy-creates a SlackClient on first reply.
+          reasoning_engine: KR-FEAT-AI-RESPONSE-LOOP ST2 — inject a
+            ReasoningEngine for reply-content generation.
+            Production leaves ``None``; the handler resolves
+            ``kora_cli.listeners.reasoning_engine_listener.current_reasoning_engine()``
+            at reply-time. ``None`` from both injection + accessor
+            → canned fallback (handler stays alive; Joshua isn't
+            crickets).
         """
         self._log_path = log_path or _resolve_log_path()
         self._slack_client: Optional[Any] = slack_client
+        self._reasoning_engine: Optional[Any] = reasoning_engine
 
     async def handle_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a Slack Events payload.
@@ -338,49 +344,103 @@ class SlackDMHandler:
         )
 
     # ------------------------------------------------------------------
-    # ST2 — outbound reply
+    # Outbound reply — reasoning-engine driven (KR-FEAT-AI-RESPONSE-LOOP ST2)
     # ------------------------------------------------------------------
 
-    # Echo format LOCKED per PM ruling. The trailing slice keeps the
-    # reply Slack-renderable even if Joshua pastes a >40k-char message.
-    # Real AI-driven reply generation lands in the KR-FEAT-SLACK-DM-AI
-    # follow-on; until then this confirms the round-trip.
-    _ECHO_TEXT_MAX = 200
+    # Canned fallback text per PM ruling. Sent when the reasoning
+    # engine is unavailable OR returned an error. NOT a re-echo —
+    # Joshua needs to know reasoning didn't work, but not be hit
+    # with a dump of his own message.
+    _CANNED_FALLBACK_TEXT = (
+        "Kora is currently unable to respond; operator notified."
+    )
 
     async def _send_echo_reply(self, payload: Dict[str, Any]) -> None:
-        """Reply to a verified Joshua DM via SlackClient.post_dm.
+        """Reply to a verified Joshua DM.
 
-        Failure modes (each writes one outbound JSONL entry with
-        ``send_status: "failed"`` + a ``[kora.slack_dm.reply_failed]``
-        structured-log emit — never crashes the inbound handler):
+        Method name retained for diff-minimization with KR-FEAT-
+        SLACK-DM ST2 (#122); body swapped from echo construction
+        to reasoning-engine call per KR-FEAT-AI-RESPONSE-LOOP ST2.
 
-          - SlackClient construction fails (missing
-            ``KORA_SLACK_BOT_TOKEN``)
-          - SlackTransportError (transport / retry exhaustion / non-
-            retryable HTTP error)
-          - SlackAPIError (Slack returned 2xx + ``ok: false``)
+        Flow:
+
+          1. Resolve reasoning engine (injection → daemon singleton
+             → None). If None: canned fallback + outbound entry +
+             early return.
+          2. Build conversation context from JSONL (last 10 turns
+             same thread).
+          3. Call ``engine.respond(message, context)``. Result
+             error-set → canned fallback + record reasoning_error
+             in outbound entry. Error-unset → use result.text +
+             record reasoning metadata in outbound entry.
+          4. Send via SlackClient with retry / dead-letter shape
+             from KR-FEAT-SLACK-DM ST2.
+          5. After successful response (NOT canned), call cost-
+             ladder ``record_inference()`` to bill the tokens.
+
+        Failure modes (each writes one outbound JSONL entry +
+        structured log; never crashes the inbound handler):
+
+          - SlackClient unavailable → failed outbound entry,
+            ``failure_reason="slack_client_not_configured"``
+          - SlackTransportError / SlackAPIError → failed outbound
+            entry, stable failure-reason taxonomy from ST2
+          - Reasoning engine unavailable → canned reply sent,
+            outbound ``reasoning_error="engine_unavailable"``
+          - Reasoning engine returned error → canned reply sent,
+            outbound ``reasoning_error=<error code>``
         """
+        from datetime import datetime, timezone
+
         channel_id = _safe_extract(payload, "event", "channel") or ""
         original_text = _safe_extract(payload, "event", "text") or ""
-        # Per the bucket spec: thread under the originating DM via
-        # event.thread_ts (already in-thread) or event.ts (new thread).
+        # Per spec: thread under originating DM via event.thread_ts
+        # (already in-thread) or event.ts (new thread).
         thread_ts = _safe_extract(payload, "event", "thread_ts") or _safe_extract(
             payload, "event", "ts"
         )
-        echo_text = f"Kora received: {original_text[: self._ECHO_TEXT_MAX]}"
 
+        # ---- Reasoning engine acquisition ----
+        engine = self._resolve_reasoning_engine()
+        reasoning_meta: Dict[str, Any] = {
+            "model_used": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "reasoning_duration_ms": None,
+            "reasoning_error": None,
+        }
+
+        if engine is None:
+            # Daemon misconfigured OR running outside-coordinator
+            # test path. Send canned fallback so Joshua isn't met
+            # with silence; record the reason for operator triage.
+            reply_text = self._CANNED_FALLBACK_TEXT
+            reasoning_meta["reasoning_error"] = "engine_unavailable"
+            logger.warning(
+                "[kora.slack_dm.reasoning_skipped] reason=engine_unavailable "
+                "channel=%s — sending canned fallback",
+                channel_id,
+            )
+        else:
+            reply_text, reasoning_meta = await self._call_reasoning_engine(
+                engine=engine,
+                payload=payload,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                original_text=original_text,
+            )
+
+        # ---- Slack outbound ----
         client = self._get_or_create_slack_client()
         if client is None:
-            # SlackClient construction failed — already logged the
-            # reason inside _get_or_create. Surface as a failed
-            # outbound entry.
             self._append_outbound_log_entry(
                 channel_id=channel_id,
                 thread_ts=thread_ts,
-                text=echo_text,
+                text=reply_text,
                 slack_message_ts=None,
                 send_status="failed",
                 failure_reason="slack_client_not_configured",
+                **reasoning_meta,
             )
             self._emit_reply_failed_event(
                 channel_id=channel_id,
@@ -391,21 +451,19 @@ class SlackDMHandler:
         try:
             response = await client.post_dm(
                 channel_id=channel_id,
-                text=echo_text,
+                text=reply_text,
                 thread_ts=thread_ts,
             )
         except Exception as exc:
-            # Includes SlackAPIError + SlackTransportError. Caught
-            # broadly so even an unexpected client-side failure
-            # (e.g. httpx version mismatch) doesn't propagate.
             reason = self._reply_failure_reason(exc)
             self._append_outbound_log_entry(
                 channel_id=channel_id,
                 thread_ts=thread_ts,
-                text=echo_text,
+                text=reply_text,
                 slack_message_ts=None,
                 send_status="failed",
                 failure_reason=reason,
+                **reasoning_meta,
             )
             self._emit_reply_failed_event(
                 channel_id=channel_id, reason=reason
@@ -419,10 +477,191 @@ class SlackDMHandler:
         self._append_outbound_log_entry(
             channel_id=channel_id,
             thread_ts=thread_ts,
-            text=echo_text,
+            text=reply_text,
             slack_message_ts=str(message_ts) if message_ts else None,
             send_status="ok",
+            **reasoning_meta,
         )
+
+        # ---- Cost-ladder write (only on successful, non-canned reply) ----
+        # Bill the tokens against the $200/mo Agent SDK pool. Skip
+        # if the reply was canned (no real inference happened).
+        if reasoning_meta["reasoning_error"] is None:
+            self._record_inference_to_cost_ladder(reasoning_meta)
+
+    # ------------------------------------------------------------------
+    # Reasoning engine helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_reasoning_engine(self) -> Optional[Any]:
+        """Return injected engine, else daemon-singleton, else None."""
+        if self._reasoning_engine is not None:
+            return self._reasoning_engine
+        try:
+            from kora_cli.listeners.reasoning_engine_listener import (
+                current_reasoning_engine,
+            )
+        except Exception:
+            # Listener module didn't import — daemon not active.
+            return None
+        return current_reasoning_engine()
+
+    async def _call_reasoning_engine(
+        self,
+        *,
+        engine: Any,
+        payload: Dict[str, Any],
+        channel_id: str,
+        thread_ts: Optional[str],
+        original_text: str,
+    ) -> tuple[str, Dict[str, Any]]:
+        """Call engine.respond + project result into reply_text +
+        reasoning_meta dict.
+
+        Returns ``(reply_text, reasoning_meta)``. On error the
+        reply_text is the canned fallback; meta carries the error
+        code so the outbound JSONL records it.
+        """
+        from datetime import datetime, timezone
+
+        # Lazy import — keeps non-reasoning test paths fast +
+        # avoids forcing the anthropic SDK import at module-load.
+        from kora_cli.reasoning.context_loader import (
+            load_slack_dm_context,
+        )
+        from kora_cli.reasoning.engine import IncomingMessage
+
+        try:
+            context = load_slack_dm_context(
+                channel_id=channel_id, thread_ts=thread_ts
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.slack_dm.reasoning_skipped] context-load failed: %r "
+                "channel=%s — using empty context",
+                exc,
+                channel_id,
+            )
+            from kora_cli.reasoning.engine import ConversationContext
+
+            context = ConversationContext()
+
+        message = IncomingMessage(
+            text=original_text,
+            source="slack_dm",
+            received_at=datetime.now(timezone.utc),
+            metadata={
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "user_id": _safe_extract(payload, "event", "user"),
+                "event_ts": _safe_extract(payload, "event", "ts"),
+            },
+        )
+
+        try:
+            result = await engine.respond(message, context)
+        except Exception as exc:
+            # An engine that itself raises (not just ResponseResult.error)
+            # is a runtime bug — caught defensively so the handler
+            # stays alive.
+            logger.warning(
+                "[kora.slack_dm.reasoning_skipped] engine.respond raised %r "
+                "channel=%s — canned fallback",
+                exc,
+                channel_id,
+            )
+            return (
+                self._CANNED_FALLBACK_TEXT,
+                {
+                    "model_used": None,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "reasoning_duration_ms": None,
+                    "reasoning_error": f"engine_exception:{type(exc).__name__}",
+                },
+            )
+
+        meta = {
+            "model_used": result.model_used or None,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "reasoning_duration_ms": result.reasoning_duration_ms,
+            "reasoning_error": result.error,
+        }
+
+        if result.error is not None:
+            # Engine refused (paused / cost-halted / SDK failure).
+            # Send canned text so Joshua sees something; record
+            # the error code so operator can triage.
+            logger.warning(
+                "[kora.slack_dm.reasoning_failed] error=%s channel=%s",
+                result.error,
+                channel_id,
+            )
+            return (self._CANNED_FALLBACK_TEXT, meta)
+
+        # Success — engine produced a real response. Defensive
+        # check: empty text from a successful call shouldn't
+        # happen but if it does, fall back to canned so Joshua
+        # doesn't see a blank message.
+        if not result.text.strip():
+            logger.warning(
+                "[kora.slack_dm.reasoning_failed] empty text on success "
+                "model=%s channel=%s — canned fallback",
+                result.model_used,
+                channel_id,
+            )
+            meta["reasoning_error"] = "empty_response_text"
+            return (self._CANNED_FALLBACK_TEXT, meta)
+
+        return (result.text, meta)
+
+    @staticmethod
+    def _record_inference_to_cost_ladder(
+        reasoning_meta: Dict[str, Any],
+    ) -> None:
+        """Bill the reply's tokens to the cost-ladder ($200/mo pool).
+
+        Fail-soft: holder uninitialized → skip (test path / partial
+        daemon boot). record_inference itself is fail-soft per
+        ``agent.cost_state_holder``'s docstring (pricing-lookup miss
+        accumulates 0).
+        """
+        try:
+            from agent.cost_state_holder import get_cost_holder
+            from agent.usage_pricing import CanonicalUsage
+        except Exception as exc:
+            logger.warning(
+                "[kora.slack_dm.cost_ladder_skipped] import failed: %r",
+                exc,
+            )
+            return
+
+        holder = get_cost_holder()
+        if holder is None:
+            return
+
+        model_name = reasoning_meta.get("model_used")
+        input_tokens = reasoning_meta.get("input_tokens") or 0
+        output_tokens = reasoning_meta.get("output_tokens") or 0
+        if not model_name or (input_tokens == 0 and output_tokens == 0):
+            return
+
+        try:
+            holder.record_inference(
+                CanonicalUsage(
+                    input_tokens=int(input_tokens),
+                    output_tokens=int(output_tokens),
+                ),
+                model_name=str(model_name),
+                provider="anthropic",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.slack_dm.cost_ladder_skipped] record_inference "
+                "raised %r — continuing",
+                exc,
+            )
 
     def _get_or_create_slack_client(self) -> Optional[Any]:
         """Lazy SlackClient construction.
@@ -462,10 +701,32 @@ class SlackDMHandler:
         slack_message_ts: Optional[str],
         send_status: str,
         failure_reason: Optional[str] = None,
+        # KR-FEAT-AI-RESPONSE-LOOP ST2 — reasoning metadata. All
+        # optional + backwards-compatible; pre-ST2 outbound entries
+        # don't have these fields and consumers must handle absence
+        # (same JSONL file accumulates both shapes).
+        model_used: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        reasoning_duration_ms: Optional[int] = None,
+        reasoning_error: Optional[str] = None,
     ) -> None:
         """Outbound-side JSONL entry. Distinct schema from inbound
         entries (``sent_at`` instead of ``received_at``) so operator
-        log-analysis can branch on key presence."""
+        log-analysis can branch on key presence.
+
+        ST2 extended fields (all optional, all None on canned-
+        fallback / non-reasoning paths so historical entries stay
+        readable):
+
+          - ``model_used``: e.g. ``"claude-opus-4-7"``
+          - ``input_tokens`` / ``output_tokens``: from SDK usage
+          - ``reasoning_duration_ms``: engine-side wall-clock
+          - ``reasoning_error``: stable error code from
+            ``ResponseResult.error`` (``cost_ladder_halted`` /
+            ``sdk_5xx`` / ``engine_unavailable`` / etc.) — None on
+            successful reasoning calls
+        """
         entry: Dict[str, Any] = {
             "sent_at": _now_iso(),
             "channel_id": channel_id,
@@ -476,6 +737,20 @@ class SlackDMHandler:
         }
         if failure_reason:
             entry["failure_reason"] = failure_reason
+        # Reasoning meta — write fields when set (None is the
+        # placeholder for non-reasoning paths; recording None as a
+        # null in JSONL is fine, but skipping empties keeps the
+        # entry lean).
+        if model_used is not None:
+            entry["model_used"] = model_used
+        if input_tokens is not None:
+            entry["input_tokens"] = int(input_tokens)
+        if output_tokens is not None:
+            entry["output_tokens"] = int(output_tokens)
+        if reasoning_duration_ms is not None:
+            entry["reasoning_duration_ms"] = int(reasoning_duration_ms)
+        if reasoning_error is not None:
+            entry["reasoning_error"] = reasoning_error
 
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)

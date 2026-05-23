@@ -163,15 +163,19 @@ def test_construction_succeeds_with_api_key(monkeypatch, system_prompt_path):
     assert engine._auth_mode == "api_key"
 
 
-def test_api_key_wins_over_oauth_when_both_set(
+def test_oauth_wins_over_api_key_when_both_set(
     monkeypatch, system_prompt_path
 ):
+    """PM ruling 2026-05-22 ST2: OAuth is production (Max plan
+    billing); API key is dev/test fallback. OAuth wins when both
+    are set so the daemon never accidentally bills to the wrong
+    surface in deploys where both happen to be present."""
     monkeypatch.setenv(API_KEY_ENV, "sk-ant-key")
     monkeypatch.setenv(OAUTH_TOKEN_ENV, "sk-ant-oat-token")
     engine = AnthropicReasoningEngine(
         system_prompt_path=system_prompt_path
     )
-    assert engine._auth_mode == "api_key"
+    assert engine._auth_mode == "oauth_token"
 
 
 def test_whitespace_only_credential_is_treated_as_unset(
