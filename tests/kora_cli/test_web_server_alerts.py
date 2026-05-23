@@ -1,27 +1,22 @@
-"""Tests for the KR-ALERTS-PANEL stub endpoint + banner.
+"""Tests for the KR-ALERTS-PANEL endpoint (post KR-ALERTS-PANEL-FLIP).
 
-Bucket §2 scenarios:
-  1. GET /api/alerts/current returns 200
-  2. Top-level shape (alerts + stub:true + generated_at +
-     total_active + by_severity)
-  3. 4 representative stub alerts present
-  4. Stub spans all 3 severity tiers (critical / warning / info)
-     so the operator's first look exercises the severity sort +
-     banner border-tone mapping
-  5. Per-entry shape + valid severity enum + source_panel_route
-     uses the flat ``/<panel>`` FE convention (not /admin/<panel>)
-  6. SECURITY: walk-payload sweeps for token shapes (Anthropic
-     sk-ant-, Slack xox*-, HMAC hex), email PII, raw Slack U-IDs
-  7. SECURITY: companion FE pin — AlertsPanel.tsx never uses
-     dangerouslySetInnerHTML for title/detail
-  8. SECURITY: companion FE pin — AlertsBanner.tsx uses
-     sessionStorage (per-tab dismissal), NOT localStorage
-     (which would persist across sessions and silence alerts
-     wrongly)
-  9. Empty state: AlertsPanel renders positive-reinforcement
-     CheckCircle2 + "Daemon healthy" when alerts.length === 0
- 10. by_severity sum reconciles to total_active
- 11. Cron-regression sanity
+After the flip the endpoint reads from the live aggregator
+(``kora_cli/alerts/aggregator.py``) instead of the v1 stub. This
+module keeps the original PR #134 walk-payload security guards +
+FE source pins that apply to BOTH the old stub and the new live
+endpoint:
+
+  * Top-level response shape (now with ``stub: false`` always)
+  * Walk-payload security guards (no Anthropic/Slack token shapes,
+    no email/Slack-ID PII, no long-hex secret shapes)
+  * FE source pins (no dangerouslySetInnerHTML, title/detail
+    rendered as JSX children, sessionStorage vs localStorage
+    dismissal, empty-state daemon-healthy view)
+  * by_severity / total_active reconciliation
+  * Cron-regression sanity
+
+Rule-trigger tests + per-rule severity verification live in
+``tests/kora_cli/alerts/test_aggregator.py``.
 """
 
 import re
@@ -56,13 +51,41 @@ def _strip_ts_comments(src: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
+    """CC#2 #137 fixture-isolation discipline + reset all aggregator
+    sources to baseline (no-alert) state. The aggregator pulls from
+    5 holders/accessors; without all-5 monkeypatching, parallel
+    pytest-xdist workers can see each other's state."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("KORA_HOME", str(tmp_path))
+    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
     monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "kora_cli.web_server.get_kora_home", lambda: tmp_path
+    )
     monkeypatch.setattr(
         "kora_cli.config.get_config_path", lambda: tmp_path / "config.yaml"
     )
     monkeypatch.setattr(
         "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
+    )
+    # Reset aggregator sources to no-alert baseline so this file's
+    # walk-payload + shape tests don't accidentally trigger rules
+    # (which would change the payload they're sweeping).
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.operational_state_holder.get_holder",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "kora_cli.audit.jsonl_reader.read_audit_entries",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "kora_cli.heartbeat_probes.runner.current_service_snapshots",
+        lambda: {},
     )
     return tmp_path
 
@@ -83,6 +106,8 @@ async def test_endpoint_returns_200(_isolate_config):
 
 @pytest.mark.asyncio
 async def test_response_shape_has_required_keys(_isolate_config):
+    """Top-level shape stays the same post-flip; ``stub`` is now
+    always ``False`` (live aggregator, even when no alerts active)."""
     from kora_cli import web_server
 
     result = await web_server.list_current_alerts()
@@ -97,40 +122,19 @@ async def test_response_shape_has_required_keys(_isolate_config):
     assert isinstance(result["generated_at"], str)
     assert isinstance(result["total_active"], int)
     assert isinstance(result["by_severity"], dict)
-    assert result["stub"] is True
-
-
-# ---- 3. Expected stub alerts ----------------------------------------
+    assert result["stub"] is False
 
 
 @pytest.mark.asyncio
-async def test_stub_returns_four_representative_alerts(_isolate_config):
-    """Pin the bucket §1(a) canonical 4-alert stub list. The deferred
-    real-data collector will swap the body but shape must stay
-    stable so the FE banner + panel render correctly during
-    cut-over."""
+async def test_no_alerts_baseline_returns_empty_list(_isolate_config):
+    """With all aggregator sources patched to no-alert baseline
+    (per the fixture), the response is an empty list + stub:false."""
     from kora_cli import web_server
 
     result = await web_server.list_current_alerts()
-    assert len(result["alerts"]) == 4
-    ids = {a["id"] for a in result["alerts"]}
-    assert ids == {"stub-1", "stub-2", "stub-3", "stub-4"}
-
-
-@pytest.mark.asyncio
-async def test_stub_spans_all_three_severity_tiers(_isolate_config):
-    """The 4 stub alerts deliberately span critical + warning + info
-    so the operator's first look exercises:
-      * severity sort order (critical → warning → info)
-      * banner border-tone mapping (red / yellow / blue)
-      * category icon variety
-    Pin so a future stub edit can't homogenize to one severity tier
-    that would mask the visual differentiation."""
-    from kora_cli import web_server
-
-    result = await web_server.list_current_alerts()
-    severities = {a["severity"] for a in result["alerts"]}
-    assert severities == {"critical", "warning", "info"}
+    assert result["alerts"] == []
+    assert result["total_active"] == 0
+    assert result["by_severity"] == {"critical": 0, "warning": 0, "info": 0}
 
 
 # ---- 4. Per-entry shape + enums + route convention -----------------
