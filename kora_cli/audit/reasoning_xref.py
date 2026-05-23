@@ -64,6 +64,10 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME / KORA_HOME via kora_constants) → ``<KORA_HOME>/slack_dm_log.jsonl``.
 _SLACK_DM_LOG_FILENAME = "slack_dm_log.jsonl"
 
+# Email outbound JSONL path mirrors purelymail_client.py:_outbound_log_path
+# → ``<KORA_HOME>/email_outbound_log.jsonl``. Same env-resolution discipline.
+_EMAIL_OUTBOUND_LOG_FILENAME = "email_outbound_log.jsonl"
+
 # Match window for the fallback timestamp join. ±60s comfortably
 # covers reasoning latency (typical 1-5s, p99 ~30s) plus clock drift.
 _TIMESTAMP_WINDOW = timedelta(seconds=60)
@@ -80,6 +84,17 @@ def _slack_dm_log_path() -> Path:
     from kora_constants import get_kora_home
 
     return get_kora_home() / _SLACK_DM_LOG_FILENAME
+
+
+def _email_outbound_log_path() -> Path:
+    """Re-resolve on every call so monkeypatch in tests works.
+
+    Mirrors :func:`kora_cli.clients.purelymail_client._outbound_log_path`
+    (resolves to ``<KORA_HOME>/email_outbound_log.jsonl``).
+    """
+    from kora_constants import get_kora_home
+
+    return get_kora_home() / _EMAIL_OUTBOUND_LOG_FILENAME
 
 
 def _parse_slack_dm_session_id(
@@ -112,6 +127,27 @@ def _parse_slack_dm_session_id(
     if not channel_id or not event_ts:
         return None
     return channel_id, event_ts
+
+
+def _parse_email_session_id(session_id: Optional[str]) -> Optional[str]:
+    """Parse audit ``caller_session_id`` as ``"email:{message_id}"``.
+
+    Mirrors the engine derivation at
+    ``kora_cli/reasoning/anthropic_engine.py:869-871`` and the
+    handler's :func:`_email_caller_session_id` at
+    ``kora_cli/handlers/email_inbound_handler.py:271-277``.
+
+    Returns the inbound message_id, or ``None`` for:
+      * non-email-shaped session ids (slack_dm / mcp / unknown)
+      * the ``"email:unknown"`` fallback (no real correlation target)
+      * empty string
+    """
+    if not session_id or not session_id.startswith("email:"):
+        return None
+    message_id = session_id[len("email:") :]
+    if not message_id or message_id == "unknown":
+        return None
+    return message_id
 
 
 def _load_outbound_entries(limit: int = 500) -> List[Dict[str, Any]]:
@@ -150,6 +186,54 @@ def _load_outbound_entries(limit: int = 500) -> List[Dict[str, Any]]:
                 # Outbound entries have ``sent_at`` + ``send_status``;
                 # inbound entries have ``received_at`` + ``handled_status``.
                 if "sent_at" in entry and "send_status" in entry:
+                    outbound.append(entry)
+    except OSError as exc:
+        logger.warning(
+            "[kora.reasoning_xref] failed to read %s: %r", log_path, exc
+        )
+        return []
+
+    return outbound[-limit:] if limit > 0 else outbound
+
+
+def _load_email_outbound_entries(limit: int = 500) -> List[Dict[str, Any]]:
+    """Read recent email outbound JSONL entries.
+
+    Shape per ``kora_cli/clients/purelymail_client.py:_append_outbound_log``:
+    every entry has ``sent_at`` + ``message_id`` + ``send_status``;
+    reasoning-driven sends additionally have the 6 KR-EMAIL-OUTBOUND-
+    REASONING-META fields (model_used, input/output_tokens,
+    reasoning_duration_ms, reasoning_error, caller_session_id).
+
+    Tolerates missing file / malformed lines — same discipline as
+    :func:`_load_outbound_entries` for slack_dm.
+    """
+    log_path = _email_outbound_log_path()
+    if not log_path.is_file():
+        return []
+
+    outbound: List[Dict[str, Any]] = []
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for lineno, raw_line in enumerate(f, start=1):
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "[kora.reasoning_xref] email_outbound line %d "
+                        "malformed JSON, skipped: %r",
+                        lineno,
+                        exc,
+                    )
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                # Email outbound has ``sent_at`` + ``message_id``;
+                # discriminate against future log-shape drift.
+                if "sent_at" in entry and "message_id" in entry:
                     outbound.append(entry)
     except OSError as exc:
         logger.warning(
@@ -237,6 +321,67 @@ def _pick_closest_by_sent_at(
             best = e
             best_delta = delta
     return best
+
+
+def _find_xref_for_email_group(
+    inbound_message_id: str,
+    group_latest_emitted_at: datetime,
+    outbound_entries: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pick the email outbound entry that best matches a reasoning group.
+
+    Algorithm (per spec §3):
+      1. PRIMARY: match by ``caller_session_id`` literal equality
+         (audit's ``"email:{inbound_message_id}"`` == outbound's
+         ``caller_session_id``). Available post-PR #146; the
+         deterministic key fixes the correlation when both sides
+         emit the same string.
+      2. SECONDARY: match by ``in_reply_to`` chain — outbound
+         entries whose ``in_reply_to`` equals the inbound's
+         message_id are responses to that inbound regardless of
+         whether the writer set caller_session_id.
+      3. LAST RESORT: closest ``sent_at`` within ``±_TIMESTAMP_WINDOW``
+         of the group's latest ``emitted_at``. Defensive against
+         a writer-side bug that drops both correlation keys.
+
+    Returns None when no candidate matches — caller renders the
+    row with null fields (graceful degradation, same as slack_dm).
+    """
+    target_session_id = f"email:{inbound_message_id}"
+
+    # PRIMARY — caller_session_id literal match.
+    primary_matches = [
+        e for e in outbound_entries
+        if e.get("caller_session_id") == target_session_id
+    ]
+    if primary_matches:
+        return _pick_closest_by_sent_at(
+            primary_matches, group_latest_emitted_at
+        )
+
+    # SECONDARY — in_reply_to chain match.
+    chain_matches = [
+        e for e in outbound_entries
+        if e.get("in_reply_to") == inbound_message_id
+    ]
+    if chain_matches:
+        return _pick_closest_by_sent_at(
+            chain_matches, group_latest_emitted_at
+        )
+
+    # LAST RESORT — timestamp window. Only applies when neither
+    # correlation key matches; defensive against a writer drop.
+    candidate = _pick_closest_by_sent_at(
+        outbound_entries, group_latest_emitted_at
+    )
+    if candidate is None:
+        return None
+    candidate_ts = _parse_iso(candidate.get("sent_at", ""))
+    if candidate_ts is None:
+        return None
+    if abs(candidate_ts - group_latest_emitted_at) > _TIMESTAMP_WINDOW:
+        return None
+    return candidate
 
 
 def _derive_cost_rung(
@@ -328,7 +473,8 @@ def load_reasoning_calls_with_xref(
     from kora_cli.audit.jsonl_sink import AuditEntry  # noqa: F401 — for type-doc
 
     audit_rows = read_audit_entries(seam="reasoning.tool_called")
-    outbound_entries = _load_outbound_entries(limit=500)
+    slack_outbound = _load_outbound_entries(limit=500)
+    email_outbound = _load_email_outbound_entries(limit=500)
 
     capped_limit = max(1, min(limit, 200))
     now = datetime.now(timezone.utc)
@@ -357,24 +503,62 @@ def load_reasoning_calls_with_xref(
             first.details.get("triggered_by") or first.source or "slack_dm"
         )
 
-        # XREF: try to find a matching slack_dm outbound entry.
-        parsed = _parse_slack_dm_session_id(first.caller_session_id)
+        # XREF: slack-first precedence per spec — slack_dm is more
+        # common, so we try it first. Email-fallback when the
+        # session_id doesn't parse as slack_dm shape OR when the
+        # slack_dm match fails. Mutually-exclusive in practice
+        # because audit caller_session_id is source-specific
+        # ("{channel}:{ts}" vs "email:{message_id}"), but the
+        # cascade is correct regardless.
         xref: Optional[Dict[str, Any]] = None
-        if parsed is not None:
-            channel_id, event_ts = parsed
+        # source label tracks which JSONL the xref came from so the
+        # operator can tell at a glance (also drives by-source
+        # aggregation in the endpoint).
+        xref_source: Optional[str] = None
+
+        # Try slack_dm xref first
+        slack_parsed = _parse_slack_dm_session_id(first.caller_session_id)
+        if slack_parsed is not None:
+            channel_id, event_ts = slack_parsed
             xref = _find_xref_for_slack_dm_group(
                 channel_id=channel_id,
                 event_ts=event_ts,
                 group_latest_emitted_at=last.emitted_at,
-                outbound_entries=outbound_entries,
+                outbound_entries=slack_outbound,
             )
+            if xref is not None:
+                xref_source = "slack_dm"
+
+        # Fall through to email xref when slack didn't match.
+        # Cleanly handles email-source audit rows (which fail the
+        # slack parse) AND defensive against future audit rows
+        # tagged with a shape we don't yet recognize.
+        if xref is None:
+            email_parsed = _parse_email_session_id(first.caller_session_id)
+            if email_parsed is not None:
+                xref = _find_xref_for_email_group(
+                    inbound_message_id=email_parsed,
+                    group_latest_emitted_at=last.emitted_at,
+                    outbound_entries=email_outbound,
+                )
+                if xref is not None:
+                    xref_source = "email"
 
         if xref is not None:
             model_used = xref.get("model_used")
             input_tokens = int(xref.get("input_tokens") or 0)
             output_tokens = int(xref.get("output_tokens") or 0)
             reasoning_error_x = xref.get("reasoning_error")
-            response_text = _truncate_response_text(xref.get("text"))
+            # response_text: slack_dm entries carry the body in
+            # ``text``; email entries do NOT (per CC#1's PR #124
+            # design decision: body NEVER in email outbound JSONL
+            # for privacy + size). For email-sourced rows the field
+            # stays null even on a successful xref. Documented
+            # in-line so the next reader knows it's intentional.
+            if xref_source == "email":
+                response_text = None
+            else:
+                response_text = _truncate_response_text(xref.get("text"))
             # If the xref surfaced a reasoning_error that supersedes
             # the audit-derived status (e.g. cost_ladder_halted with
             # no tool calls at all), reflect that in error_code.
