@@ -1791,6 +1791,144 @@ async def _dispatch_request_stop(
     )
 
 
+# ---------------------------------------------------------------------------
+# Tool: kora__send_test_alert (KR-ALERT-NOTIFY ST2 §4 Q4 — DEV-ONLY)
+# ---------------------------------------------------------------------------
+
+
+SEND_TEST_ALERT_TOOL: Dict[str, Any] = {
+    "name": "kora__send_test_alert",
+    "description": (
+        "Operator-debug tool: fire a synthetic Kora alert through the "
+        "live AlertNotifier so operator can verify the Slack DM + "
+        "email channels are configured correctly. Bypasses dedup + "
+        "cooldown + burst + digest throttling — every call dispatches. "
+        "**DEV-ONLY** — refuses on prd (KORA_DEPLOY_ENV=prd) to "
+        "prevent synthetic-alert pollution of the production audit "
+        "trail + accidental operator pings. Args: severity "
+        "('critical' | 'warning' | 'info'). The synthetic alert "
+        "routes via the standard severity → channel rules: "
+        "critical/warning → Slack DM, info → email."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "severity": {
+                "type": "string",
+                "enum": ["critical", "warning", "info"],
+            },
+        },
+        "required": ["severity"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": True,
+}
+
+
+class SendTestAlertResult(BaseModel):
+    success: bool
+    severity: str
+    channel: str
+    alert_id: str
+    error: Optional[str] = None
+    caller_actor_kind: str
+    deploy_env: str
+
+
+async def _execute_send_test_alert(
+    *,
+    severity: str,
+    caller: Caller,
+) -> SendTestAlertResult:
+    deploy_env = os.environ.get("KORA_DEPLOY_ENV", "").strip().lower()
+    if deploy_env == "prd":
+        raise _ST2_DevOnlyError(
+            "kora__send_test_alert refuses on KORA_DEPLOY_ENV=prd to "
+            "prevent synthetic-alert pollution. Use a staging / dev "
+            "environment for channel verification."
+        )
+
+    if severity not in ("critical", "warning", "info"):
+        raise _ST2_ToolInputError(
+            f"severity must be 'critical' | 'warning' | 'info'; got "
+            f"{severity!r}"
+        )
+
+    # Resolve the daemon-coordinator-managed AlertNotifier. Same
+    # listener-singleton pattern as the slack-dm + email send tools.
+    from kora_cli.listeners.alert_notifier_listener import (
+        current_alert_notifier,
+    )
+
+    notifier = current_alert_notifier()
+    if notifier is None:
+        raise _ST2_ToolInputError(
+            "alert_notifier_unavailable: AlertNotifier not registered "
+            "(daemon not running with alert_notifier listener)"
+        )
+
+    # Synthetic alert with a unique id per call (timestamp-based) so
+    # repeated tool invocations during operator verification each
+    # fire. Routes through the same _dispatch_alert pipeline real
+    # alerts use, so a successful test confirms the entire channel
+    # is wired correctly (env → client → format → send).
+    synthetic_id = (
+        f"test_alert:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    )
+    from kora_cli.alerts import Alert
+
+    synthetic_alert = Alert(
+        id=synthetic_id,
+        severity=severity,
+        category="test_alert",
+        title=f"Kora test alert ({severity})",
+        detail=(
+            "This is a synthetic alert dispatched via "
+            "kora__send_test_alert for channel verification. Routed "
+            f"to the standard {severity} → channel rule. Safe to "
+            "ignore."
+        ),
+        source_panel="ops",
+        source_panel_route="/alerts",
+        first_seen_at=datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    )
+
+    outcome = await notifier.dispatch_synthetic_alert(synthetic_alert)
+
+    _emit_audit(
+        tool="kora__send_test_alert",
+        caller=caller,
+        args={"severity": severity},
+        result=(
+            f"dispatched:{outcome.channel}"
+            if outcome.success
+            else f"failed:{outcome.channel}:{outcome.error}"
+        ),
+    )
+
+    return SendTestAlertResult(
+        success=outcome.success,
+        severity=severity,
+        channel=outcome.channel,
+        alert_id=synthetic_id,
+        error=outcome.error,
+        caller_actor_kind=caller.actor_kind,
+        deploy_env=deploy_env or "unknown",
+    )
+
+
+async def _dispatch_send_test_alert(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_send_test_alert(
+        severity=params.get("severity", ""),
+        caller=caller,
+    )
+
+
 ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
@@ -1803,6 +1941,8 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_RESUME_TOOL,
     # KR-MCP-STOP-CONTROL ST2 — substrate-backed L1/L2 stop
     REQUEST_STOP_TOOL,
+    # KR-ALERT-NOTIFY ST2 — dev-only test alert tool
+    SEND_TEST_ALERT_TOOL,
 ]
 
 
@@ -1822,4 +1962,6 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     "kora__request_resume": _dispatch_request_resume,
     # KR-MCP-STOP-CONTROL ST2 addition
     "kora__request_stop": _dispatch_request_stop,
+    # KR-ALERT-NOTIFY ST2 addition
+    "kora__send_test_alert": _dispatch_send_test_alert,
 }

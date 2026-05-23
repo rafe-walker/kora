@@ -20,6 +20,7 @@ Public surface:
 from kora_cli.alerts.aggregator import Alert, compute_active_alerts
 from kora_cli.alerts.notifier import (
     AlertNotifier,
+    DigestFlushResult,
     DispatchOutcome,
     NotificationCycleResult,
 )
@@ -27,6 +28,7 @@ from kora_cli.alerts.notifier import (
 __all__ = [
     "Alert",
     "AlertNotifier",
+    "DigestFlushResult",
     "DispatchOutcome",
     "NotificationCycleResult",
     "compute_active_alerts",
