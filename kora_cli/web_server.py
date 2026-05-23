@@ -5539,121 +5539,61 @@ async def list_recent_email():
 #
 # Status derivation: ok if every grouped tool has tool_status==ok;
 # otherwise the dominant non-ok status (capability_denied →
-# halted; execution_error → handler_error). cost_rung_at_call is
-# "unknown" (lowercase CostRung.value literal that satisfies the
-# FE's ReasoningCostRung union without surfacing a null we can't
-# actually validate from audit).
-
-
-def _project_reasoning_group(
-    session_id: str,
-    rows: list,
-) -> Dict[str, Any]:
-    """Collapse N audit rows sharing caller_session_id → 1 ReasoningCall.
-
-    Per spec §2 Flip 2: extends the FE payload with ``tools_used``
-    (list of tool names). Existing TS ReasoningCall doesn't have
-    this field — extras pass through unused; a follow-on FE bucket
-    can render it. Doesn't break the existing FE since JS object
-    structural-typing tolerates extras.
-    """
-    # rows are AuditEntry; newest first within the group.
-    rows = sorted(rows, key=lambda e: e.emitted_at)
-    first = rows[0]
-    last = rows[-1]
-    tool_names = [str(e.details.get("tool_name", "")) for e in rows]
-    total_duration_ms = sum(
-        int(e.details.get("tool_duration_ms") or 0) for e in rows
-    )
-    statuses = [e.details.get("tool_status", "ok") for e in rows]
-
-    if all(s == "ok" for s in statuses):
-        agg_status = "ok"
-        error_code = None
-    elif any(s == "not_allowed" for s in statuses):
-        agg_status = "halted"
-        error_code = "capability_denied"
-    elif any(s == "execution_error" for s in statuses):
-        agg_status = "failed"
-        error_code = "handler_error"
-    else:
-        # Unknown non-ok status — surface as failed without a specific
-        # code so the FE renders the destructive tone.
-        agg_status = "failed"
-        # Find first non-ok status as the dominant error indicator.
-        error_code = next((s for s in statuses if s != "ok"), "unknown")
-
-    triggered_by = first.details.get("triggered_by") or first.source or "slack_dm"
-
-    return {
-        "id": f"audit-session-{session_id or first.emitted_at.isoformat()}",
-        "triggered_by": str(triggered_by),
-        "started_at": first.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "duration_ms": total_duration_ms,
-        # Not in audit; cross-ref to slack_dm_log.jsonl happens in
-        # KR-REASONING-PANEL-MODEL-XREF follow-on bucket.
-        "model_used": None,
-        # CostRung.value lowercase "unknown" satisfies the FE's
-        # ReasoningCostRung union (engine.py:47-49) without
-        # claiming a rung we can't actually read from audit.
-        "cost_rung_at_call": "unknown",
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "status": agg_status,
-        "error_code": error_code,
-        "response_text_truncated_200": None,
-        # FE extension — extra field; existing TS ignores it.
-        "tools_used": tool_names,
-    }
+# halted; execution_error → handler_error).
+#
+# KR-REASONING-PANEL-MODEL-XREF (this file's update): model_used /
+# input_tokens / output_tokens / cost_rung_at_call /
+# response_text_truncated_200 are populated by cross-referencing
+# kora_audit_log.jsonl reasoning rows with slack_dm_log.jsonl
+# outbound entries via the channel_id + thread_ts/timestamp join
+# in ``kora_cli/audit/reasoning_xref.py``. Graceful degradation:
+# when no slack_dm match is found, those fields remain null (same
+# behavior as the pre-xref projection from PR #141).
 
 
 @app.get("/api/reasoning/recent")
 async def list_recent_reasoning(limit: int = 50):
     """Return recent Kora ReasoningEngine calls for the operator lens.
 
-    Reads ``${KORA_HOME}/kora_audit_log.jsonl``, filters to
-    ``seam=reasoning.tool_called``, and groups consecutive tool
-    calls by ``caller_session_id`` so a multi-tool reasoning
-    iteration collapses into a single ReasoningCall row with
-    ``tools_used: [...]``. Newest-first by the session's first
-    emitted_at.
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to
+    ``seam=reasoning.tool_called``, groups consecutive tool calls
+    by ``caller_session_id``, and cross-references each group with
+    ``slack_dm_log.jsonl`` outbound entries (via
+    ``kora_cli/audit/reasoning_xref.py``) to populate
+    ``model_used`` / ``input_tokens`` / ``output_tokens`` /
+    ``cost_rung_at_call`` / ``response_text_truncated_200``.
 
-    Limitations until the KR-REASONING-PANEL-MODEL-XREF follow-on:
-      * model_used / tokens / response_text_truncated_200 are null
-        (those fields live in slack_dm_log.jsonl outbound entries,
-        not in the audit log).
-      * cost_rung_at_call is "unknown" (same reason — audit doesn't
-        capture the rung at call time).
+    Graceful degradation: when the xref lookup fails for a group
+    (slack_dm entry missing or outside the ±60s correlation
+    window), those fields render as null. Same shape as the
+    pre-xref behavior from PR #141, so the FE handles both.
+
+    Aggregates (total_recent_24h, by_status_24h, by_model_24h,
+    tokens_total_24h) operate on INDIVIDUAL audit rows + xref'd
+    outbound entries — NOT groups — so headline counts reflect
+    activity volume.
     """
     from datetime import datetime, timedelta, timezone
     from kora_cli.audit.jsonl_reader import read_audit_entries
+    from kora_cli.audit.reasoning_xref import (
+        load_reasoning_calls_with_xref,
+    )
 
-    capped_limit = max(1, min(limit, 200))
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 
-    all_rows = read_audit_entries(seam="reasoning.tool_called")
+    projected, raw_in_window_count = load_reasoning_calls_with_xref(
+        limit=limit,
+    )
 
-    # Group by caller_session_id; rows without a session_id each get
-    # their own group (defensive — shouldn't happen since the writer
-    # always passes one).
-    groups: Dict[str, list] = {}
-    for e in all_rows:
-        key = e.caller_session_id or f"orphan-{id(e)}"
-        groups.setdefault(key, []).append(e)
-
-    # Project + sort newest-first by the LATEST event in each group.
-    projected = [
-        _project_reasoning_group(sid, group_rows)
-        for sid, group_rows in groups.items()
-    ]
-    projected.sort(key=lambda r: r["started_at"], reverse=True)
-
-    # 24h-window aggregates over individual audit rows (not groups)
-    # so the headline counts reflect raw activity volume.
-    in_window = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    # Per-status aggregate (individual rows). Re-read audit since
+    # the xref helper returns groups; we count INDIVIDUAL rows
+    # within the 24h window for the headline (per PR #141 rationale).
+    audit_rows = read_audit_entries(seam="reasoning.tool_called")
     by_status: Dict[str, int] = {"ok": 0, "failed": 0, "halted": 0}
-    for e in in_window:
+    for e in audit_rows:
+        if e.emitted_at < cutoff_24h:
+            continue
         st = e.details.get("tool_status", "ok")
         if st == "ok":
             by_status["ok"] += 1
@@ -5661,17 +5601,37 @@ async def list_recent_reasoning(limit: int = 50):
             by_status["halted"] += 1
         else:
             by_status["failed"] += 1
-    # Model + token aggregates are derived from the slack_dm log in
-    # the follow-on. Until then, surface the structure with zeros so
-    # the FE dashboard tile renders without conditional NaN handling.
+
+    # Model + token aggregates from the xref'd groups within window.
+    # Falls back to empty / zero if no xref enrichment happened.
     by_model: Dict[str, int] = {}
     tokens_total = {"input": 0, "output": 0}
+    for call in projected:
+        # Per-group emitted_at corresponds to started_at; only count
+        # those within the 24h window.
+        ts_str = call.get("started_at", "")
+        try:
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            continue
+        if ts < cutoff_24h:
+            continue
+        model = call.get("model_used")
+        if model:
+            by_model[model] = by_model.get(model, 0) + 1
+        elif call.get("status") == "halted":
+            by_model["halted_no_model"] = by_model.get("halted_no_model", 0) + 1
+        tokens_total["input"] += int(call.get("input_tokens") or 0)
+        tokens_total["output"] += int(call.get("output_tokens") or 0)
 
     return {
-        "calls": projected[:capped_limit],
+        # projected already capped by the helper per its limit arg.
+        "calls": projected,
         "stub": False,
         "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "total_recent_24h": len(in_window),
+        "total_recent_24h": raw_in_window_count,
         "by_model_24h": by_model,
         "by_status_24h": by_status,
         "tokens_total_24h": tokens_total,
