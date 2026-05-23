@@ -94,16 +94,19 @@ outbound services on Joshua's behalf").
 ≤5 min for the next probe cycle); `GET /api/heartbeat/services`
 should flip each service from `unknown` to `healthy` / `degraded`.
 
-#### Phase 2 Feature 3 — Purelymail outbound (KR-FEAT-EMAIL)
+#### Phase 2 Feature 3 — Purelymail (KR-FEAT-EMAIL + KR-FEAT-EMAIL-INBOUND-IMAP)
 
-Outbound email via SMTP. Per the bucket's double-STOP-ASK:
-Purelymail has no inbound webhooks AND no REST send API; SMTP
-is the only documented outbound mechanism. Inbound deferred to
-`KR-FEAT-EMAIL-INBOUND-IMAP` follow-on bucket.
+Email both directions. Outbound via SMTP (`smtp.purelymail.com:465`
+SSL — per the outbound bucket's double-STOP-ASK, Purelymail has
+no REST send API). Inbound via IMAP polling
+(`imap.purelymail.com:993` SSL — per the K-DG verification in
+KR-FEAT-EMAIL-INBOUND-IMAP ST1, no inbound webhooks either).
 
-Full mint + smoke-test walkthrough in
-`purelymail_outbound_runbook.md`. All 5 secrets live in
-`kora-runtime-gateways`:
+Full mint + smoke-test walkthrough in `purelymail_runbook.md`
+(both Part 1 outbound + Part 2 inbound). All secrets live in
+`kora-runtime-gateways`.
+
+**Outbound (5 secrets):**
 
 | Secret | Required by | Notes | Example shape |
 |---|---|---|---|
@@ -113,9 +116,24 @@ Full mint + smoke-test walkthrough in
 | `KORA_PUREMAIL_SMTP_PORT` | Optional override | Default `465` (SSL). Use `587` for STARTTLS if the deploy environment blocks 465 outbound. | `465` (default) or `587` |
 | `KORA_EMAIL_KORA_ALLOWED_FROM_DOMAINS` | `PurelymailClient.send_email` (raises if from-domain not in list) | Comma-separated allowed sender domains. Defense against accidental wide-open sends. **Unset = client rejects EVERY send** (operator-config error, not silent allow-all). | `stormhavenenterprises.com` |
 
+**Inbound (8 secrets — 4 IMAP transport + 4 email handler):**
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `KORA_PUREMAIL_IMAP_USERNAME` | `PurelymailIMAPClient.__init__` (fail-CLOSED on missing) | Full email address bound to the IMAP App Password. Typically same as `KORA_PUREMAIL_SMTP_USERNAME`. | `kora@<domain>` |
+| `KORA_PUREMAIL_IMAP_APP_PASSWORD` | `PurelymailIMAPClient.__init__` (fail-CLOSED on missing) | App Password minted in Purelymail dashboard. Purelymail's docs don't explicitly confirm App-Password protocol scoping; safe default is a separate App Password named `kora-runtime-inbound` (operators may reuse the SMTP one if they prefer + verify). | `<opaque>` |
+| `KORA_PUREMAIL_IMAP_HOST` | Optional override | Default `imap.purelymail.com`. | `imap.purelymail.com` |
+| `KORA_PUREMAIL_IMAP_PORT` | Optional override | Default `993` (SSL). | `993` |
+| `KORA_EMAIL_SENDER_ALLOWLIST` | `EmailInboundHandler.handle_event` (fail-CLOSED DENY ALL on unset / empty) | Comma-separated allowed inbound senders. Defense against accidental processing of non-Joshua mail. | `joshua@<domain>` |
+| `KORA_EMAIL_KORA_ADDRESS` | `EmailInboundHandler.handle_event` (recipient filter) | The address Kora receives AT — parsed `to:` header must include this (case-insensitive). | `kora@<domain>` |
+| `KORA_EMAIL_JOSHUA_ADDRESS` | `EmailInboundHandler.handle_event` (identity check; fail-CLOSED on unset) | The single sender address that's allowed to drive AUTO_REPLY. | `joshua@<domain>` |
+| `KORA_EMAIL_AUTO_REPLY` | `EmailInboundHandler.handle_event` (opt-in gate) | Default OFF. Set to `true`/`1`/`yes`/`on` to enable reasoning-driven email replies. See `purelymail_runbook.md` Part 2 Step 5 for the cost trade-off note. | `false` (default) or `true` |
+| `KORA_EMAIL_IMAP_POLL_INTERVAL_SEC` | Optional override | Default `300` (5 min). | `300` |
+
 **Validation tip**: after setting these, redeploy the daemon then
-run the Step 4 smoke test in `purelymail_outbound_runbook.md`.
-Expected: `SendResult(status="ok", smtp_code=250, retry_count=0)`.
+run the smoke tests in `purelymail_runbook.md` — Part 1 Step 4
+for outbound (`SendResult(status="ok", smtp_code=250)`) and
+Part 2 Step 3 for inbound (JSONL `handled_status: received`).
 
 ---
 
@@ -233,7 +251,8 @@ Per-secret rotation procedures (operator-driven):
 - `KORA_SLACK_SIGNING_SECRET` + `SLACK_SIGNING_SECRET` — when Slack rotates the signing secret (rare; operator-triggered via Slack app config). Update both env vars to the new value simultaneously.
 - `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` — when re-installing the Slack app or scoping changes. Mint via Slack app config.
 - `KORA_PUREMAIL_HMAC_SECRET` — DEAD CODE post KR-FEAT-EMAIL double-STOP-ASK. No rotation needed; leave unset (route 401s anyway).
-- `KORA_PUREMAIL_SMTP_APP_PASSWORD` — quarterly aligned with `KORA_SERVICE_TOKEN` per `purelymail_outbound_runbook.md` Step 6. Zero-downtime swap: mint new App Password → Doppler update → redeploy → smoke test → revoke old. Revoking before the redeploy causes a 535 window.
+- `KORA_PUREMAIL_SMTP_APP_PASSWORD` — quarterly aligned with `KORA_SERVICE_TOKEN` per `purelymail_runbook.md` Part 1 Step 6. Zero-downtime swap: mint new App Password → Doppler update → redeploy → smoke test → revoke old. Revoking before the redeploy causes a 535 window.
+- `KORA_PUREMAIL_IMAP_APP_PASSWORD` — same quarterly cadence + same zero-downtime swap shape as the SMTP App Password. If the SMTP one is being reused (operator chose to use one App Password for both protocols), this env mirrors the SMTP value automatically; rotate the single password + update both Doppler secrets together.
 
 ---
 
