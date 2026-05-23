@@ -5460,6 +5460,126 @@ async def list_recent_reasoning():
 
 
 # ---------------------------------------------------------------------------
+# Unified operator-attention lens (KR-ALERTS-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Aggregates "needs operator attention" signals from across the 12
+# existing panels into one place — operator scans ONE banner instead
+# of 12 destructive-tone cards. Each panel already has its own
+# headline-destructive trigger; this endpoint will (when real-data
+# flips) collect those triggers from a central alert-collector.
+#
+# v1 stub: 4 representative alerts per bucket §1(a) verbatim,
+# spanning all three severity tiers (critical / warning / info) and
+# four distinct categories so the operator's first look exercises
+# the severity sort + category icon mapping + click-through nav.
+#
+# Real alert generation is DEFERRED: needs source panels to expose
+# their alert state to a central collector (separate backend bucket).
+# Same stub-then-real pattern as HB-PANEL / MCP-3 / WEBHOOK-EVENTS /
+# AGENT-ACTIVITY / SLACK-DM / EMAIL / REASONING.
+#
+# 3-layer SECURITY contract (same shape as prior panels):
+#   1. ``title`` + ``detail`` rendered as PLAIN TEXT by the FE —
+#      React's default child escaping defangs HTML/markdown/script.
+#      FE pins via dangerouslySetInnerHTML grep. Real alert text
+#      may eventually quote source-panel state which could in
+#      theory contain user content.
+#   2. NO PII / secret patterns: walk-payload regex catches
+#      Anthropic key shapes, Slack token shapes, email addresses,
+#      raw Slack user IDs. Defense-in-depth even though alert
+#      strings are operator-authored at the source-panel level.
+#   3. TS interface declares typed severity + category enums; no
+#      ``raw_payload`` / ``user_message`` companion fields exist
+#      on the Alert type.
+
+
+@app.get("/api/alerts/current")
+async def list_current_alerts():
+    """Return currently-active operator-attention alerts.
+
+    v1 stub — pinned shape so the deferred alert-collector backend
+    can swap the body without touching the FE.
+
+    Per-alert fields:
+      id                  — opaque id
+      severity            — "critical" | "warning" | "info"
+      category            — alert category (drives the icon mapping);
+                            cost_ladder | operational_state |
+                            webhook_dead_letter | agent_capability_denied
+                            | reasoning_halted | service_unhealthy |
+                            boot_gate_failure
+      title               — short headline (single line, bold)
+      detail              — secondary explanation (rendered as text)
+      source_panel        — short id of the originating panel
+      source_panel_route  — FE route to navigate to; uses the flat
+                            ``/<panel>`` convention established by
+                            every prior panel in this branch
+                            (not the bucket-spec's ``/admin/<panel>``)
+      first_seen_at       — ISO-8601 when this alert first fired
+    """
+    return {
+        "alerts": [
+            {
+                "id": "stub-1",
+                "severity": "warning",
+                "category": "cost_ladder",
+                "title": "Budget at 78% of monthly cap",
+                "detail": (
+                    "Reasoning model downshifted opus → sonnet "
+                    "at warn_75 rung"
+                ),
+                "source_panel": "cost",
+                "source_panel_route": "/cost-state",
+                "first_seen_at": "2026-05-22T17:48:00Z",
+            },
+            {
+                "id": "stub-2",
+                "severity": "critical",
+                "category": "operational_state",
+                "title": "Operator paused Kora 12 min ago",
+                "detail": (
+                    "Slack DM handler dropping messages; reasoning "
+                    "engine refusing calls"
+                ),
+                "source_panel": "ops",
+                "source_panel_route": "/operational-state",
+                "first_seen_at": "2026-05-22T17:48:00Z",
+            },
+            {
+                "id": "stub-3",
+                "severity": "warning",
+                "category": "webhook_dead_letter",
+                "title": "8 webhook dead-letters in last 24h",
+                "detail": (
+                    "Threshold 5 exceeded; check signing-secret match"
+                ),
+                "source_panel": "webhook_events",
+                "source_panel_route": "/webhook-events",
+                "first_seen_at": "2026-05-22T13:00:00Z",
+            },
+            {
+                "id": "stub-4",
+                "severity": "info",
+                "category": "agent_capability_denied",
+                "title": "12 capability_denied responses in 24h",
+                "detail": (
+                    "Unconfigured caller actor_kinds — review "
+                    "mcp_callers.yaml"
+                ),
+                "source_panel": "agent_activity",
+                "source_panel_route": "/agent-activity",
+                "first_seen_at": "2026-05-22T08:00:00Z",
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_active": 4,
+        "by_severity": {"critical": 1, "warning": 2, "info": 1},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
