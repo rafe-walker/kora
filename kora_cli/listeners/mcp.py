@@ -139,6 +139,7 @@ from kora_cli.listeners.mcp_tools import (  # noqa: E402
     ST2_TOOL_DISPATCH as _ST2_DISPATCH,
     TOOL_DESCRIPTORS as _ST1_DESCRIPTORS,
     TOOL_DISPATCH as _ST1_DISPATCH,
+    _ST2_ActorIdRequired,  # noqa: F401
     _ST2_DevOnlyError,  # noqa: F401
     _ST2_ToolInputError,  # noqa: F401
 )
@@ -213,6 +214,7 @@ def _execute_daemon_status() -> Dict[str, Any]:
             "uptime_seconds": None,
             "shutdown_reason": None,
             "listeners": [],
+            "daemon_session_id": None,
         }
     return coord.get_status()
 
@@ -368,6 +370,22 @@ async def post_jsonrpc(
                 return _jsonrpc_error(
                     req_id, -32602, f"invalid params: {exc}"
                 )
+            except _ST2_ActorIdRequired as exc:
+                # KR-MCP-STOP-CONTROL ST2 — distinct -32001 code from
+                # capability_denied. The cap may be granted but the
+                # caller still lacks the actor_id field needed for
+                # substrate attribution. Operator-fix path is in the
+                # error message.
+                return _jsonrpc_error(
+                    req_id,
+                    -32001,
+                    "actor_id_required_for_stop",
+                    data={
+                        "caller_actor_kind": caller.actor_kind,
+                        "tool": tool_name,
+                        "remediation": str(exc),
+                    },
+                )
             except Exception as exc:
                 logger.exception(
                     "[mcp] tool %s raised %r", tool_name, exc
@@ -397,12 +415,17 @@ def _jsonrpc_result(req_id: Any, result: Any) -> Dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def _jsonrpc_error(req_id: Any, code: int, message: str) -> Dict[str, Any]:
-    return {
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "error": {"code": code, "message": message},
-    }
+def _jsonrpc_error(
+    req_id: Any,
+    code: int,
+    message: str,
+    *,
+    data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    error: Dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": req_id, "error": error}
 
 
 def _execute_daemon_status_text() -> str:

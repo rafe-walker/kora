@@ -14,6 +14,12 @@ Two-mode bearer-token authentication:
     callers:
       - token_hash: "sha256:abc123..."   # sha256 of bearer token, hex
         actor_kind: "claude_pm_isokron"   # for audit logging
+        actor_id: "0fd2c8ee-..."          # OPTIONAL — UUID in substrate
+                                          #   actor_registry. Required for
+                                          #   tools that write substrate
+                                          #   rows attributed to the caller
+                                          #   (e.g. kora__request_stop).
+                                          #   Omit for read-only callers.
         allowed_caps:
           - kora__create_sea_ticket
           - kora__request_state_transition
@@ -64,6 +70,7 @@ import hashlib
 import hmac
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -87,6 +94,16 @@ class Caller:
     exact-match set of tool names the caller may invoke; a tool name
     NOT in this set is denied at dispatch time.
 
+    ``actor_id`` is the caller's UUID in substrate ``actor_registry`` —
+    populated when the caller needs substrate-write attribution (e.g.
+    ``kora__request_stop`` writes a ``kora_control`` row, and the
+    ``issue_kora_control`` SECDEF requires ``p_issuer_actor_id UUID``
+    that resolves in actor_registry, belongs to the workspace, and is
+    NOT ``actor_kind='kora'``). Optional + defaults to ``None`` —
+    callers that only invoke tools needing actor_kind attribution
+    don't need to populate it. Tools that require actor_id resolve to
+    ``-32001 actor_id_required_for_<tool>`` when ``None``.
+
     For Mode 1 (legacy env-token) callers, ``actor_kind`` is the
     sentinel ``"anonymous"`` and ``allowed_caps`` is empty. Mode 1
     callers cannot pass ``requires_cap_gate=True`` checks.
@@ -94,6 +111,7 @@ class Caller:
 
     actor_kind: str
     allowed_caps: frozenset[str] = field(default_factory=frozenset)
+    actor_id: Optional[str] = None
 
     def can_invoke(self, tool_name: str) -> bool:
         """Allow iff the tool is in ``allowed_caps`` (exact match)."""
@@ -230,8 +248,42 @@ def load_callers(
         allowed_caps = frozenset(
             c for c in allowed_caps_raw if isinstance(c, str)
         )
+
+        # actor_id is optional. When present, it must parse as a UUID
+        # (substrate's actor_registry stores UUIDs). A malformed value
+        # is a config error — SKIP the caller fail-CLOSED rather than
+        # admit them with actor_id=None and risk silent attribution
+        # drift on substrate writes.
+        actor_id_raw = entry.get("actor_id")
+        actor_id: Optional[str] = None
+        if actor_id_raw is not None:
+            if not isinstance(actor_id_raw, str):
+                logger.warning(
+                    "[mcp_caller_auth] %s caller[%d] actor_id must be a "
+                    "string when present; skipping caller",
+                    target,
+                    idx,
+                )
+                continue
+            try:
+                # Normalize to canonical string form. uuid.UUID accepts
+                # both hyphenated + unhyphenated; we store the canonical
+                # form so downstream comparisons are byte-stable.
+                actor_id = str(uuid.UUID(actor_id_raw))
+            except ValueError:
+                logger.warning(
+                    "[mcp_caller_auth] %s caller[%d] actor_id %r is not "
+                    "a valid UUID; skipping caller",
+                    target,
+                    idx,
+                    actor_id_raw,
+                )
+                continue
+
         callers[token_hash] = Caller(
-            actor_kind=actor_kind, allowed_caps=allowed_caps
+            actor_kind=actor_kind,
+            allowed_caps=allowed_caps,
+            actor_id=actor_id,
         )
 
     _callers_cache[cache_key] = callers

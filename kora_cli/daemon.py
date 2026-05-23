@@ -43,6 +43,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, List, Optional
 
@@ -149,6 +150,14 @@ class DaemonCoordinator:
         # ``None`` until startup completes; read by ``get_status()`` for
         # uptime computation. KR-D-DAEMON ST2 (kora__daemon_status).
         self._startup_completed_at: Optional[float] = None
+        # KR-MCP-STOP-CONTROL ST2 — process-stable session id surfaced
+        # via get_status() so MCP callers can echo it back as the
+        # confirm_token on kora__request_stop. Re-generated on each
+        # coordinator construction; constant for the daemon's lifetime.
+        # Prevents a stale caller from replaying a stop request
+        # against a different daemon instance (their cached
+        # session_id won't match the new boot's value).
+        self._daemon_session_id: str = uuid.uuid4().hex
 
     # ------------------------------------------------------------------
     # Registration
@@ -313,7 +322,18 @@ class DaemonCoordinator:
             "uptime_seconds": uptime,
             "shutdown_reason": self._shutdown_reason,
             "listeners": listeners,
+            "daemon_session_id": self._daemon_session_id,
         }
+
+    @property
+    def daemon_session_id(self) -> str:
+        """Per-process stable session id (hex uuid4).
+
+        Echoed back by callers as the ``confirm_token`` on
+        ``kora__request_stop`` to bind the stop request to a specific
+        daemon instance. Changes only across process restarts.
+        """
+        return self._daemon_session_id
 
     # ------------------------------------------------------------------
     # Signal handling

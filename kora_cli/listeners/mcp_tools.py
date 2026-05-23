@@ -1535,6 +1535,262 @@ async def _dispatch_request_resume(
     )
 
 
+# ---------------------------------------------------------------------------
+# KR-MCP-STOP-CONTROL ST2 — kora__request_stop
+# ---------------------------------------------------------------------------
+
+
+REQUEST_STOP_TOOL: Dict[str, Any] = {
+    "name": "kora__request_stop",
+    "description": (
+        "Issue a STOP-KORA command (L1/L2 only) by writing a "
+        "kora_control row via the substrate public.issue_kora_control "
+        "SECDEF. L1=intake-stop (matches kind='pause'); L2=drain "
+        "(matches kind='drain'). L3-L5 are operator-on-machine "
+        "actions (abort/kill) and REFUSED at this layer — use "
+        "flyctl machine stop / Doppler token revoke for those.\n\n"
+        "Returns immediately after the substrate write succeeds; "
+        "actual enforcement happens async when Kora's poll loop "
+        "reads the command (next ~5s). Caller can verify via "
+        "kora__get_operational_state polling.\n\n"
+        "Args:\n"
+        "  reason — free-form operator reason (REQUIRED, non-empty); "
+        "passed to the substrate as p_reason and propagated to "
+        "kora_control row.\n"
+        "  level — 1 (pause) or 2 (drain). Other values rejected.\n"
+        "  confirm_token — must echo the daemon's current "
+        "daemon_session_id (read kora__daemon_status first). "
+        "Mismatch → -32602. Binds the stop request to a specific "
+        "daemon instance so a stale caller can't accidentally "
+        "re-trigger stop across a daemon restart.\n"
+        "  dry_run — when true, runs validation + returns the "
+        "predicted command shape WITHOUT invoking substrate. The "
+        "command_id / chain_event_id are placeholder zero-UUIDs "
+        "and sequence is -1. Use for pre-flight checks.\n\n"
+        "Caller must:\n"
+        "  • have kora__request_stop in allowed_caps\n"
+        "  • have actor_id populated in mcp_callers.yaml (UUID in "
+        "substrate actor_registry; NOT actor_kind='kora'). Absent "
+        "actor_id → -32001 actor_id_required_for_stop."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "minLength": 1},
+            "level": {"type": "integer", "enum": [1, 2]},
+            "confirm_token": {"type": "string", "minLength": 1},
+            "dry_run": {"type": "boolean", "default": False},
+        },
+        "required": ["reason", "level", "confirm_token"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class RequestStopResult(BaseModel):
+    success: bool
+    kora_control_id: str
+    sequence: int
+    lifecycle_state: str
+    superseded_command_ids: List[str]
+    level: int
+    kind: str
+    requested_at: str  # iso-8601 utc
+    predicted_state_change: str
+    dry_run: bool
+    caller_actor_kind: str
+
+
+class _ST2_ActorIdRequired(RuntimeError):
+    """Caller lacks ``actor_id`` in mcp_callers.yaml. Maps to -32001
+    ``actor_id_required_for_stop`` (distinct from capability_denied so
+    operator can diagnose the difference)."""
+
+
+_LEVEL_TO_KIND: Dict[int, str] = {1: "pause", 2: "drain"}
+_LEVEL_TO_PREDICTED_CHANGE: Dict[int, str] = {
+    1: "active->paused (intake stops; in-flight work continues)",
+    2: "active->draining (no new claims AND no new tool calls; "
+    "current attempt finishes already-dispatched ops, then releases)",
+}
+
+
+async def _execute_request_stop(
+    *,
+    reason: str,
+    level: int,
+    confirm_token: str,
+    dry_run: bool,
+    caller: Caller,
+) -> RequestStopResult:
+    """Validate + invoke ``public.issue_kora_control`` for L1/L2.
+
+    Validation order (each step short-circuits with the right error):
+      1. reason / level / confirm_token shape (-32602).
+      2. level in {1, 2} (-32602 with explicit L3-L5 refusal message).
+      3. confirm_token == daemon's daemon_session_id (-32602).
+      4. caller.actor_id is non-None (-32001 actor_id_required_for_stop).
+      5. workspace_id resolvable via active_provider (-32603 if not).
+      6. KoraControlWriter dispatch — substrate-side rejections
+         bubble up wrapped as SubstrateRejected (-32603).
+    """
+    from datetime import datetime, timezone
+
+    if not isinstance(reason, str) or not reason.strip():
+        raise _ST2_ToolInputError("reason is required (non-empty)")
+    if not isinstance(confirm_token, str) or not confirm_token.strip():
+        raise _ST2_ToolInputError("confirm_token is required (non-empty)")
+    if level not in _LEVEL_TO_KIND:
+        if level in (3, 4, 5):
+            raise _ST2_ToolInputError(
+                f"level={level} is operator-on-machine only "
+                f"(L3=abort, L4/L5=kill). Use flyctl machine stop "
+                f"or Doppler token revoke. This tool refuses L3-L5."
+            )
+        raise _ST2_ToolInputError(
+            f"level={level} is not a valid stop level; must be 1 (pause) "
+            f"or 2 (drain)"
+        )
+
+    # Confirm token vs current daemon session_id.
+    from kora_cli.listeners.mcp import current_coordinator
+
+    coord = current_coordinator()
+    if coord is None:
+        raise _ST2_ToolInputError(
+            "daemon coordinator not running — cannot validate "
+            "confirm_token. Stop refused fail-CLOSED."
+        )
+    expected_session_id = coord.daemon_session_id
+    if confirm_token != expected_session_id:
+        raise _ST2_ToolInputError(
+            "confirm_token mismatch — read kora__daemon_status to "
+            "fetch the current daemon_session_id and retry. (Token "
+            "value omitted from this error to avoid leaking either "
+            "side; check the daemon_status response.)"
+        )
+
+    # Caller's actor_id required for substrate attribution.
+    if not caller.actor_id:
+        raise _ST2_ActorIdRequired(
+            "kora__request_stop requires the caller to have actor_id "
+            "populated in mcp_callers.yaml (UUID from substrate "
+            "actor_registry). Operator: edit ~/.kora/mcp_callers.yaml, "
+            "add an actor_id field on this caller entry, and atomic-"
+            "replace the file."
+        )
+
+    # Workspace_id resolution + writer construction.
+    from kora_cli.clients.kora_control_writer import (
+        KoraControlWriterError,
+        MissingActorIdError,
+        SubstrateRejected,
+        current_kora_control_writer,
+    )
+    from plugins.memory.isokron.active_provider import get_active_provider
+
+    provider = get_active_provider()
+    if provider is None:
+        raise _ST2_ToolInputError(
+            "IsoKron memory provider not initialized — kora_control "
+            "write surface unavailable. Stop refused fail-CLOSED."
+        )
+    workspace_id = provider._resolve_workspace_id()
+    if not workspace_id:
+        raise _ST2_ToolInputError(
+            "could not resolve workspace_id from active provider. "
+            "Stop refused fail-CLOSED."
+        )
+
+    writer = current_kora_control_writer()
+    if writer is None:
+        raise _ST2_ToolInputError(
+            "KoraControlWriter unavailable — IsoKron connection not "
+            "initialized. Stop refused fail-CLOSED."
+        )
+
+    kind = _LEVEL_TO_KIND[level]
+    requested_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        result = await writer.issue_command(
+            workspace_id=workspace_id,
+            issuer_session_id=expected_session_id,
+            issuer_actor_id=caller.actor_id,
+            level=level,  # type: ignore[arg-type]  # validated above
+            kind=kind,  # type: ignore[arg-type]
+            reason=reason,
+            dry_run=dry_run,
+        )
+    except MissingActorIdError as exc:
+        # Should be unreachable — actor_id validated above. Defensive.
+        raise _ST2_ActorIdRequired(str(exc)) from exc
+    except SubstrateRejected as exc:
+        # Substrate-side rejection. Audit as execution_error; let
+        # mcp.py surface as -32603 with the sqlstate + message.
+        _emit_audit(
+            tool="kora__request_stop",
+            caller=caller,
+            args={
+                "level": level,
+                "kind": kind,
+                "dry_run": dry_run,
+                "actor_id_present": True,
+            },
+            result=f"substrate_rejected:{exc.sqlstate}",
+        )
+        raise KoraControlWriterError(
+            f"substrate rejected issue_kora_control: {exc.sqlstate} "
+            f"{exc.substrate_message}"
+        ) from exc
+
+    # Success — audit (NEVER includes reason text per Q4 ruling) +
+    # return predicted state change.
+    _emit_audit(
+        tool="kora__request_stop",
+        caller=caller,
+        args={
+            "level": level,
+            "kind": kind,
+            "dry_run": dry_run,
+            "actor_id_present": True,
+        },
+        result=(
+            f"dry_run_predicted:{kind}"
+            if dry_run
+            else f"issued:{kind}@seq{result.sequence}"
+        ),
+    )
+
+    return RequestStopResult(
+        success=True,
+        kora_control_id=result.command_id,
+        sequence=result.sequence,
+        lifecycle_state=result.lifecycle_state,
+        superseded_command_ids=result.superseded_command_ids,
+        level=level,
+        kind=kind,
+        requested_at=requested_at,
+        predicted_state_change=_LEVEL_TO_PREDICTED_CHANGE[level],
+        dry_run=result.dry_run,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _dispatch_request_stop(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_request_stop(
+        reason=params.get("reason", ""),
+        level=int(params.get("level", -1)),
+        confirm_token=params.get("confirm_token", ""),
+        dry_run=bool(params.get("dry_run", False)),
+        caller=caller,
+    )
+
+
 ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
@@ -1545,6 +1801,8 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     # KR-MCP-STOP-CONTROL ST1 additions — pause/resume wrappers
     REQUEST_PAUSE_TOOL,
     REQUEST_RESUME_TOOL,
+    # KR-MCP-STOP-CONTROL ST2 — substrate-backed L1/L2 stop
+    REQUEST_STOP_TOOL,
 ]
 
 
@@ -1562,4 +1820,6 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     # KR-MCP-STOP-CONTROL ST1 additions
     "kora__request_pause": _dispatch_request_pause,
     "kora__request_resume": _dispatch_request_resume,
+    # KR-MCP-STOP-CONTROL ST2 addition
+    "kora__request_stop": _dispatch_request_stop,
 }
