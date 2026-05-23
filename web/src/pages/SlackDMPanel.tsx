@@ -23,7 +23,15 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
-import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import {
+  formatRelative,
+  formatTimestamp,
+  timestampAbsoluteUtc,
+} from "@/lib/panelHelpers";
+import {
+  SHOW_MORE_DEFAULT_LIMIT,
+  ShowMoreFooter,
+} from "@/components/ShowMoreFooter";
 import type {
   SlackDMDirection,
   SlackDMHandledStatus,
@@ -164,7 +172,7 @@ function MessageRow({ message, expanded, onToggle }: MessageRowProps) {
               )}
               <span className="text-muted-foreground flex items-center gap-1 ml-auto">
                 <Clock className="h-3 w-3" />
-                <span title={formatTimestamp(message.timestamp)}>
+                <span title={timestampAbsoluteUtc(message.timestamp)}>
                   {formatRelative(message.timestamp)}
                 </span>
               </span>
@@ -186,7 +194,9 @@ function MessageRow({ message, expanded, onToggle }: MessageRowProps) {
               <span className="text-muted-foreground min-w-[110px]">
                 timestamp
               </span>
-              <span>{formatTimestamp(message.timestamp)}</span>
+              <span title={timestampAbsoluteUtc(message.timestamp)}>
+                {formatTimestamp(message.timestamp)}
+              </span>
             </div>
             <div className="flex gap-2">
               <span className="text-muted-foreground min-w-[110px]">
@@ -250,6 +260,7 @@ export default function SlackDMPanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<Filter>("all");
+  const [limit, setLimit] = useState<number>(SHOW_MORE_DEFAULT_LIMIT);
   const { toast, showToast } = useToast();
 
   const loadDM = useCallback(
@@ -257,7 +268,7 @@ export default function SlackDMPanel() {
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
-        .getRecentSlackDM()
+        .getRecentSlackDM(limit)
         .then((resp) => setData(resp))
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : String(e);
@@ -268,7 +279,7 @@ export default function SlackDMPanel() {
           if (isManual) setRefreshing(false);
         });
     },
-    [showToast],
+    [showToast, limit],
   );
 
   useEffect(() => {
@@ -489,6 +500,12 @@ export default function SlackDMPanel() {
               ))}
             </div>
           )}
+          <ShowMoreFooter
+            currentLimit={limit}
+            totalShown={data.messages.length}
+            onShowMore={setLimit}
+            unitLabel="messages"
+          />
         </>
       )}
     </div>
