@@ -96,6 +96,13 @@ DEFAULT_SYSTEM_PROMPT_PATH = (
 DEFAULT_TIMEOUT_SECONDS = 60.0
 DEFAULT_MAX_OUTPUT_TOKENS = 2048
 
+# KR-FEAT-AGENTIC-REASONING ST1 — safety cap on the tool-use loop.
+# Each iteration is a separate Anthropic API roundtrip; 5 covers
+# legitimate "check state + check ledger + check sea_tickets" chains
+# while bounding tail-latency + cost-ladder burn. Bucket §4 Q2
+# locked. Operator-tunable would require config; deferred per Q4.
+MAX_TOOL_USE_ITERATIONS = 5
+
 # Model identifiers per the canonical Claude 4.X family. Values
 # verified against the project_kora memory + the latest SDK docs.
 MODEL_OPUS = "claude-opus-4-7"
@@ -201,7 +208,27 @@ class AnthropicReasoningEngine:
         message: IncomingMessage,
         context: ConversationContext,
     ) -> ResponseResult:
-        """Main entry. See :class:`ReasoningEngine.respond`."""
+        """Main entry. See :class:`ReasoningEngine.respond`.
+
+        KR-FEAT-AGENTIC-REASONING ST1: now drives a tool-use loop
+        instead of a single chat completion. The Anthropic API
+        returns either a pure-text response (stop_reason="end_turn")
+        OR a response containing ``tool_use`` content blocks
+        (stop_reason="tool_use"). On tool_use we execute each tool
+        in-process via ``execute_reasoning_tool``, append the
+        assistant turn + a user turn carrying ``tool_result`` blocks,
+        and make the next API call. Loop until pure-text OR
+        :data:`MAX_TOOL_USE_ITERATIONS` (5) exceeded.
+
+        Each iteration is a separate Anthropic roundtrip, so a
+        Joshua-message-with-3-tools = 4 ``record_inference`` calls
+        against the $200/mo Agent SDK pool. PR body documents this
+        cost-shape change for operator visibility.
+
+        Tokens are accumulated across iterations; the returned
+        ``ResponseResult.input_tokens`` / ``output_tokens`` are
+        totals over all roundtrips, NOT just the final one.
+        """
         started_at = time.monotonic()
 
         # Refuse-paths first — these don't call the SDK.
@@ -226,9 +253,6 @@ class AnthropicReasoningEngine:
             )
         model = RUNG_MODEL_MAP.get(rung)
         if model is None:
-            # Unknown rung (e.g. "unknown") — default to OPUS but log
-            # a WARN. The cost-ladder listener should always inject a
-            # valid rung; this path covers misconfiguration.
             logger.warning(
                 "[kora.reasoning] unknown cost rung %r — defaulting to "
                 "opus + continuing",
@@ -236,30 +260,343 @@ class AnthropicReasoningEngine:
             )
             model = MODEL_OPUS
 
-        # Assemble the message list. Anthropic SDK expects:
-        #   [{role: "user"|"assistant", content: "..."}]
-        # Map ConversationTurn.direction → role. The fresh
-        # IncomingMessage goes at the end as the latest user turn.
+        # Assemble the message list (oldest→newest history + fresh
+        # inbound as final user turn).
         messages = self._build_message_history(message, context)
 
-        # SDK call. Single attempt — NO retry per PM Q3 default.
-        client = await self._ensure_client()
+        # Reasoning-tools available to Kora — read-only allowlist
+        # (KR-FEAT-AGENTIC-REASONING ST1's security boundary). Empty
+        # list if the registry can't load for any reason; engine
+        # then degrades to flat chat completion + still works.
         try:
-            response = await client.messages.create(
-                model=model,
-                system=self._system_prompt,
-                messages=messages,
-                max_tokens=self._max_output_tokens,
-                timeout=self._timeout,
-            )
-        except Exception as exc:
-            return self._map_sdk_exception(
-                exc, model=model, started_at=started_at
+            from kora_cli.reasoning.tool_registry import (
+                get_reasoning_available_tools,
             )
 
-        # Extract reply text + token counts.
-        return self._project_response(
-            response, model=model, started_at=started_at
+            tools = get_reasoning_available_tools()
+        except Exception as exc:
+            logger.warning(
+                "[kora.reasoning] tool registry unavailable: %r — "
+                "engine running tool-free",
+                exc,
+            )
+            tools = []
+
+        client = await self._ensure_client()
+        return await self._tool_use_loop(
+            client=client,
+            model=model,
+            messages=messages,
+            tools=tools,
+            started_at=started_at,
+        )
+
+    async def _tool_use_loop(
+        self,
+        *,
+        client: Any,
+        model: str,
+        messages: list,
+        tools: list,
+        started_at: float,
+    ) -> ResponseResult:
+        """Drive the tool-use roundtrip cascade.
+
+        See ``respond`` docstring for the high-level flow. Token
+        accumulation is per-iteration; SDK exceptions on any
+        iteration short-circuit to a mapped error result.
+        """
+        # Accumulators across iterations.
+        total_input_tokens = 0
+        total_output_tokens = 0
+        # Track which tools Kora actually used — surfaced to the
+        # handler via ResponseResult.tools_used (ST2 wires it into
+        # the outbound JSONL; ST1 ships the field on the result
+        # class so handler/test consumers don't churn between STs).
+        tools_used: list[str] = []
+
+        for iteration in range(1, MAX_TOOL_USE_ITERATIONS + 1):
+            try:
+                # tools= is optional per the SDK; omit when the
+                # registry returned empty so we don't send an empty
+                # array (some Anthropic SDK versions are strict).
+                kwargs: Dict[str, Any] = {
+                    "model": model,
+                    "system": self._system_prompt,
+                    "messages": messages,
+                    "max_tokens": self._max_output_tokens,
+                    "timeout": self._timeout,
+                }
+                if tools:
+                    kwargs["tools"] = tools
+                response = await client.messages.create(**kwargs)
+            except Exception as exc:
+                return self._map_sdk_exception(
+                    exc, model=model, started_at=started_at
+                )
+
+            # Per-iteration token accumulation.
+            usage = getattr(response, "usage", None)
+            total_input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+            total_output_tokens += int(
+                getattr(usage, "output_tokens", 0) or 0
+            )
+
+            # Detect tool-use vs end-of-turn. Anthropic SDK sets
+            # ``response.stop_reason`` to one of:
+            #   "end_turn" / "max_tokens" / "stop_sequence" / "tool_use"
+            stop_reason = getattr(response, "stop_reason", None)
+            if stop_reason != "tool_use":
+                # Done — final text response. Project + return.
+                return self._project_final_response(
+                    response,
+                    model=model,
+                    started_at=started_at,
+                    total_input_tokens=total_input_tokens,
+                    total_output_tokens=total_output_tokens,
+                    tools_used=tools_used,
+                )
+
+            # Tool-use iteration. Extract ``tool_use`` blocks +
+            # the assistant's interleaved text (preserved in the
+            # assistant turn we'll echo back).
+            tool_use_blocks = self._extract_tool_use_blocks(response)
+            if not tool_use_blocks:
+                # Defensive: stop_reason said tool_use but no blocks.
+                # Treat as end-of-turn so we don't loop forever.
+                logger.warning(
+                    "[kora.reasoning] stop_reason=tool_use but no "
+                    "tool_use blocks — projecting as final"
+                )
+                return self._project_final_response(
+                    response,
+                    model=model,
+                    started_at=started_at,
+                    total_input_tokens=total_input_tokens,
+                    total_output_tokens=total_output_tokens,
+                    tools_used=tools_used,
+                )
+
+            # Append the assistant turn verbatim (with tool_use
+            # blocks) so the next API call sees what Claude said.
+            assistant_content = self._response_content_as_blocks(response)
+            messages.append(
+                {"role": "assistant", "content": assistant_content}
+            )
+
+            # Execute each tool + build tool_result content blocks.
+            tool_result_blocks = await self._execute_tool_calls(
+                tool_use_blocks, tools_used=tools_used
+            )
+            messages.append(
+                {"role": "user", "content": tool_result_blocks}
+            )
+
+            # Loop — next API call will see the tool results.
+            continue
+
+        # Loop exited via for-else — max iterations exceeded.
+        logger.warning(
+            "[kora.reasoning] tool-use loop hit MAX_TOOL_USE_ITERATIONS "
+            "(%d) — returning error result",
+            MAX_TOOL_USE_ITERATIONS,
+        )
+        return ResponseResult(
+            text="",
+            model_used=model,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            reasoning_duration_ms=_elapsed_ms(started_at),
+            error="tool_use_max_iterations_exceeded",
+            tools_used=tools_used,
+        )
+
+    def _extract_tool_use_blocks(self, response: Any) -> list:
+        """Return the list of ``tool_use`` content blocks from an
+        Anthropic SDK response. Each block has ``.id``, ``.name``,
+        ``.input`` attributes (typed ``ToolUseBlock``).
+        """
+        out = []
+        try:
+            content = getattr(response, "content", None) or []
+            for block in content:
+                if getattr(block, "type", "") == "tool_use":
+                    out.append(block)
+        except Exception as exc:
+            logger.warning(
+                "[kora.reasoning] tool_use extraction failed: %r", exc
+            )
+        return out
+
+    def _response_content_as_blocks(self, response: Any) -> list:
+        """Re-serialize an assistant response's content as a list of
+        block dicts suitable for the next ``messages.create`` call's
+        history. The SDK's response blocks are typed objects; the
+        ``messages=`` history accepts dicts.
+        """
+        blocks: list = []
+        try:
+            for block in getattr(response, "content", None) or []:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    blocks.append(
+                        {"type": "text", "text": getattr(block, "text", "")}
+                    )
+                elif btype == "tool_use":
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": getattr(block, "id", ""),
+                            "name": getattr(block, "name", ""),
+                            "input": getattr(block, "input", {}) or {},
+                        }
+                    )
+                # Other block types (thinking / etc.) are dropped —
+                # they're not part of the reasoning-tool contract.
+        except Exception as exc:
+            logger.warning(
+                "[kora.reasoning] response content re-serialization "
+                "failed: %r — appending empty content",
+                exc,
+            )
+        return blocks
+
+    async def _execute_tool_calls(
+        self, tool_use_blocks: list, *, tools_used: list[str]
+    ) -> list:
+        """Run each tool_use block + return the matching
+        ``tool_result`` blocks for the next user turn.
+
+        Failure modes (each becomes a ``tool_result`` with
+        ``is_error: true``):
+
+          - Tool not in reasoning allowlist
+          - Tool execution exception (Pydantic validation, substrate
+            read failure, etc.)
+          - Tool returned non-serializable result (shouldn't happen
+            with Pydantic models but guarded)
+
+        Tool exceptions become tool_result errors — they do NOT
+        propagate. The engine can recover by letting Claude reason
+        about the error in the next iteration.
+        """
+        import json
+
+        from kora_cli.reasoning.tool_registry import (
+            ReasoningToolNotAllowed,
+            execute_reasoning_tool,
+        )
+
+        results: list = []
+        for block in tool_use_blocks:
+            tool_use_id = getattr(block, "id", "")
+            tool_name = getattr(block, "name", "")
+            tool_input = getattr(block, "input", {}) or {}
+
+            try:
+                result_model = await execute_reasoning_tool(
+                    name=tool_name, tool_input=tool_input
+                )
+                # Pydantic BaseModel → JSON string for tool_result text.
+                result_text = (
+                    result_model.model_dump_json()
+                    if hasattr(result_model, "model_dump_json")
+                    else json.dumps(result_model, default=str)
+                )
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result_text,
+                    }
+                )
+                tools_used.append(tool_name)
+            except ReasoningToolNotAllowed as exc:
+                logger.warning(
+                    "[kora.reasoning] tool_not_allowed name=%s id=%s",
+                    tool_name,
+                    tool_use_id,
+                )
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": (
+                            f"tool_not_allowed: {tool_name!r} is not in "
+                            f"the reasoning allowlist"
+                        ),
+                        "is_error": True,
+                    }
+                )
+            except Exception as exc:
+                # ANY other exception → tool_result error. Engine
+                # continues; Claude can reason about the failure.
+                logger.warning(
+                    "[kora.reasoning] tool_execution_error name=%s "
+                    "id=%s exc_type=%s",
+                    tool_name,
+                    tool_use_id,
+                    type(exc).__name__,
+                )
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": (
+                            f"tool_execution_error: {type(exc).__name__}"
+                        ),
+                        "is_error": True,
+                    }
+                )
+        return results
+
+    def _project_final_response(
+        self,
+        response: Any,
+        *,
+        model: str,
+        started_at: float,
+        total_input_tokens: int,
+        total_output_tokens: int,
+        tools_used: list[str],
+    ) -> ResponseResult:
+        """Multi-iteration variant of :meth:`_project_response`.
+
+        Token totals are passed in (accumulated across all
+        iterations) rather than read from the final response's
+        usage block — important since intermediate roundtrips
+        billed tokens too.
+        """
+        text_parts: list[str] = []
+        try:
+            for block in getattr(response, "content", None) or []:
+                if getattr(block, "type", "") == "text":
+                    text_parts.append(getattr(block, "text", "") or "")
+        except Exception as exc:
+            logger.warning(
+                "[kora.reasoning] final response content projection "
+                "failed: %r",
+                exc,
+            )
+            return ResponseResult(
+                text="",
+                model_used=getattr(response, "model", model) or model,
+                input_tokens=total_input_tokens,
+                output_tokens=total_output_tokens,
+                reasoning_duration_ms=_elapsed_ms(started_at),
+                error="response_projection_failed",
+                tools_used=tools_used,
+            )
+
+        text = "".join(text_parts).strip()
+        return ResponseResult(
+            text=text,
+            model_used=getattr(response, "model", model) or model,
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            reasoning_duration_ms=_elapsed_ms(started_at),
+            error=None,
+            tools_used=tools_used,
         )
 
     async def close(self) -> None:
