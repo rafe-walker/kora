@@ -33,19 +33,7 @@ _PANEL_PATH = _REPO_ROOT / "web" / "src" / "pages" / "MCPClientsPanel.tsx"
 _HELPERS_PATH = _REPO_ROOT / "web" / "src" / "lib" / "mcpHealth.ts"
 
 
-def _strip_ts_comments(src: str) -> str:
-    """Strip /* … */ block comments, // line comments, and {/* … */}
-    JSX block comments so source-pin tests check live code only, not
-    explanatory prose that may legitimately mention the very pattern
-    being banned (e.g., a 'NEVER use dangerouslySetInnerHTML' note).
-    """
-    # JSX comments first ({/* ... */}) — must come before block comments
-    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.DOTALL)
-    # /* ... */ block comments
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
-    # // line comments (must avoid eating URLs like https://...)
-    src = re.sub(r"(^|[^:])//[^\n]*", r"\1", src)
-    return src
+from tests.kora_cli._panel_test_helpers import strip_ts_comments as _strip_ts_comments  # noqa: E402
 
 
 # ---- 0. Source files exist (fast-fail if rename) -------------------

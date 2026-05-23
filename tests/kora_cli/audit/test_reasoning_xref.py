@@ -51,26 +51,14 @@ _DM_CHANNEL = "D0123456789ABCDEF"
 _EVENT_TS = "1779380123.456"
 
 
+from tests.kora_cli._panel_test_helpers import isolated_kora_home  # noqa: E402
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Per #137/#141 fixture lesson — monkeypatch get_kora_home in
-    all 3 module namespaces. The reasoning_xref helper uses a local
-    kora_constants import in _slack_dm_log_path() so the patch in
-    kora_constants is sufficient for the xref reader; the audit
-    reader has the same local-import pattern."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("KORA_HOME", str(tmp_path))
-    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.web_server.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "kora_cli.config.get_config_path",
-        lambda: tmp_path / "config.yaml",
-    )
-    monkeypatch.setattr(
-        "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
-    )
-    return tmp_path
+    all 3 module namespaces via the shared helper."""
+    return isolated_kora_home(tmp_path, monkeypatch)
 
 
 def _iso(minutes_ago: int = 5) -> str:

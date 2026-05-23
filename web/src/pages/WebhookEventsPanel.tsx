@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
 import type {
   WebhookEvent,
   WebhookEventStatus,
@@ -59,38 +60,6 @@ function shortEndpoint(endpoint: string): string {
   // "/api/webhooks/slack/events" → "/slack/events"
   // "/api/webhooks/email/inbound" → "/email/inbound"
   return endpoint.replace(/^\/api\/webhooks/, "");
-}
-
-function formatTimestamp(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
-function formatRelative(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const deltaMs = d.getTime() - Date.now();
-  const absSec = Math.abs(deltaMs) / 1000;
-  if (absSec < 60) {
-    const n = Math.round(absSec);
-    return deltaMs < 0 ? `${n}s ago` : `in ${n}s`;
-  }
-  const absMin = absSec / 60;
-  if (absMin < 60) {
-    const n = Math.round(absMin);
-    return deltaMs < 0 ? `${n}m ago` : `in ${n}m`;
-  }
-  const absHr = absMin / 60;
-  if (absHr < 24) {
-    const n = Math.round(absHr);
-    return deltaMs < 0 ? `${n}h ago` : `in ${n}h`;
-  }
-  const absDay = absHr / 24;
-  const n = Math.round(absDay);
-  return deltaMs < 0 ? `${n}d ago` : `in ${n}d`;
 }
 
 interface EventRowProps {

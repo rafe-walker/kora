@@ -42,21 +42,12 @@ _FULL_IPV4_LEAK = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 _MASKED_IPV4_PIN = re.compile(r"^\d{1,3}\.\d{1,3}\.x\.x$")
 
 
+from tests.kora_cli._panel_test_helpers import isolated_kora_home  # noqa: E402
+
+
 @pytest.fixture
 def audit_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("KORA_HOME", str(tmp_path))
-    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.web_server.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "kora_cli.config.get_config_path",
-        lambda: tmp_path / "config.yaml",
-    )
-    monkeypatch.setattr(
-        "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
-    )
-    return tmp_path
+    return isolated_kora_home(tmp_path, monkeypatch)
 
 
 def _dead_letter(

@@ -39,26 +39,15 @@ _ANTHROPIC_KEY_SHAPE = re.compile(r"\bsk-ant-[A-Za-z0-9_-]{16,}\b")
 _SLACK_TOKEN_SHAPE = re.compile(r"\bxox[abprs]-[0-9A-Za-z-]{8,}\b")
 
 
+from tests.kora_cli._panel_test_helpers import isolated_kora_home  # noqa: E402
+
+
 @pytest.fixture
 def audit_env(tmp_path, monkeypatch):
     """Per the KR-SLACK-DM-PANEL-FLIP (#137) fixture-isolation
-    lesson: monkeypatch get_kora_home in ALL THREE module namespaces
-    (kora_constants, kora_cli.config, kora_cli.web_server) so the
-    endpoint's by-namespace symbol resolution sees the override
-    regardless of parallel test interleaving."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("KORA_HOME", str(tmp_path))
-    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.web_server.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "kora_cli.config.get_config_path",
-        lambda: tmp_path / "config.yaml",
-    )
-    monkeypatch.setattr(
-        "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
-    )
-    return tmp_path
+    lesson — monkeypatch get_kora_home in all 3 module namespaces
+    via the shared helper."""
+    return isolated_kora_home(tmp_path, monkeypatch)
 
 
 def _entry(

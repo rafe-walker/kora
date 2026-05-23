@@ -42,11 +42,7 @@ _PANEL_PATH = _REPO_ROOT / "web" / "src" / "pages" / "AlertsPanel.tsx"
 _BANNER_PATH = _REPO_ROOT / "web" / "src" / "components" / "AlertsBanner.tsx"
 
 
-def _strip_ts_comments(src: str) -> str:
-    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.DOTALL)
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
-    src = re.sub(r"(^|[^:])//[^\n]*", r"\1", src)
-    return src
+from tests.kora_cli._panel_test_helpers import strip_ts_comments as _strip_ts_comments  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

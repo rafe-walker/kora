@@ -30,21 +30,12 @@ _HEX_SECRET_SHAPE = re.compile(r"\b[0-9a-fA-F]{32,}\b")
 _VALID_COST_RUNGS = {"normal", "warn_75", "downshift_90", "hard_stop_100", "unknown"}
 
 
+from tests.kora_cli._panel_test_helpers import isolated_kora_home  # noqa: E402
+
+
 @pytest.fixture
 def audit_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("KORA_HOME", str(tmp_path))
-    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.web_server.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr(
-        "kora_cli.config.get_config_path",
-        lambda: tmp_path / "config.yaml",
-    )
-    monkeypatch.setattr(
-        "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
-    )
-    return tmp_path
+    return isolated_kora_home(tmp_path, monkeypatch)
 
 
 def _reasoning_tool(

@@ -76,15 +76,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANEL_PATH = _REPO_ROOT / "web" / "src" / "pages" / "EmailPanel.tsx"
 
 
-def _strip_ts_comments(src: str) -> str:
-    """Strip /* … */ block comments, // line comments, and {/* … */}
-    JSX block comments so source-pin tests check live code only, not
-    explanatory prose that may legitimately mention the banned pattern.
-    """
-    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.DOTALL)
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
-    src = re.sub(r"(^|[^:])//[^\n]*", r"\1", src)
-    return src
+from tests.kora_cli._panel_test_helpers import strip_ts_comments as _strip_ts_comments  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
