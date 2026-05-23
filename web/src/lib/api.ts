@@ -132,6 +132,8 @@ export const api = {
     fetchJSON<EmailResponse>("/api/email/recent"),
   getRecentReasoning: () =>
     fetchJSON<ReasoningResponse>("/api/reasoning/recent"),
+  getCurrentAlerts: () =>
+    fetchJSON<AlertsResponse>("/api/alerts/current"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1736,4 +1738,49 @@ export interface ReasoningResponse {
   by_model_24h: Record<string, number>;
   by_status_24h: Record<string, number>;
   tokens_total_24h: { input: number; output: number };
+}
+
+// Unified operator-attention lens (KR-ALERTS-PANEL).
+// 3-layer SECURITY CONTRACT:
+//   1. title + detail rendered as PLAIN TEXT — React's default
+//      child escaping defangs HTML/markdown/script. FE pins via
+//      dangerouslySetInnerHTML grep. Real alert text may
+//      eventually quote source-panel state.
+//   2. NO PII / secret patterns: backend tests sweep payload for
+//      Anthropic key shapes, Slack tokens, email addresses, raw
+//      Slack user IDs. Defense-in-depth.
+//   3. This TS type enforces shape; no raw_payload / user_message
+//      companion fields exist on Alert.
+export type AlertSeverity = "critical" | "warning" | "info";
+
+// Open enum: backend may add new categories without breaking the FE.
+// Known categories drive specific icons; unknown values fall back to
+// a generic AlertTriangle icon.
+export type AlertCategory =
+  | "cost_ladder"
+  | "operational_state"
+  | "webhook_dead_letter"
+  | "agent_capability_denied"
+  | "reasoning_halted"
+  | "service_unhealthy"
+  | "boot_gate_failure"
+  | string;
+
+export interface Alert {
+  id: string;
+  severity: AlertSeverity;
+  category: AlertCategory;
+  title: string; // plain text
+  detail: string; // plain text
+  source_panel: string; // short id (cost / ops / webhook_events / ...)
+  source_panel_route: string; // FE route to navigate to
+  first_seen_at: string;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+  stub: boolean;
+  generated_at: string;
+  total_active: number;
+  by_severity: Record<AlertSeverity, number>;
 }

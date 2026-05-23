@@ -16,6 +16,7 @@ import {
 } from "react-router-dom";
 import {
   Activity,
+  AlertTriangle,
   BarChart3,
   BookOpen,
   BookOpenCheck,
@@ -93,6 +94,7 @@ import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import SlackDMPanel from "@/pages/SlackDMPanel";
 import EmailPanel from "@/pages/EmailPanel";
 import ReasoningPanel from "@/pages/ReasoningPanel";
+import AlertsPanel from "@/pages/AlertsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
@@ -151,6 +153,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/webhook-events": WebhookEventsPanel,
   "/agent-activity": AgentActivityPanel,
   "/reasoning": ReasoningPanel,
+  "/alerts": AlertsPanel,
   "/slack-dm": SlackDMPanel,
   "/email": EmailPanel,
   "/boot-status": BootStatusPage,
@@ -185,6 +188,16 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    // Alerts at the TOP of the rest-of-sidebar per spec §1(d) —
+    // priority position so the operator sees it first. AlertTriangle
+    // icon (warning glyph; the banner on /overview already uses
+    // severity-tinted variants per active state).
+    path: "/alerts",
+    labelKey: "alerts",
+    label: "Alerts",
+    icon: AlertTriangle,
+  },
   {
     path: "/",
     labelKey: "overview",

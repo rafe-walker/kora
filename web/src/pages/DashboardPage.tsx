@@ -63,7 +63,9 @@ import type {
   EmailResponse,
   EmailHandledStatus,
   ReasoningResponse,
+  AlertsResponse,
 } from "@/lib/api";
+import { AlertsBanner } from "@/components/AlertsBanner";
 
 type LoadStatus<T> =
   | { state: "loading" }
@@ -98,6 +100,8 @@ interface DashboardData {
   email: LoadStatus<EmailResponse>;
   // KR-REASONING-PANEL — Kora ReasoningEngine activity (stub)
   reasoning: LoadStatus<ReasoningResponse>;
+  // KR-ALERTS-PANEL — operator-attention banner (stub)
+  alerts: LoadStatus<AlertsResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -119,6 +123,7 @@ const INITIAL_DATA: DashboardData = {
   slackDM: { state: "loading" },
   email: { state: "loading" },
   reasoning: { state: "loading" },
+  alerts: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -1032,6 +1037,8 @@ export default function DashboardPage() {
         loadOne("email", () => api.getRecentEmail()),
         // KR-REASONING-PANEL
         loadOne("reasoning", () => api.getRecentReasoning()),
+        // KR-ALERTS-PANEL — drives the top-of-page banner
+        loadOne("alerts", () => api.getCurrentAlerts()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -1068,6 +1075,7 @@ export default function DashboardPage() {
     data.slackDM,
     data.email,
     data.reasoning,
+    data.alerts,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -1108,6 +1116,13 @@ export default function DashboardPage() {
           </Button>
         </div>
       </div>
+
+      {/* KR-ALERTS-PANEL banner — TOP placement per spec §1(c).
+          Self-hides when no active alerts (no false-alarm trigger
+          from absent data) and when operator dismissed for this tab. */}
+      <AlertsBanner
+        data={data.alerts.state === "ready" ? data.alerts.data : null}
+      />
 
       {anyStubbed && (
         <Card className="border-border bg-muted/30">
