@@ -21,6 +21,10 @@ import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import {
+  SHOW_MORE_DEFAULT_LIMIT,
+  ShowMoreFooter,
+} from "@/components/ShowMoreFooter";
 import type {
   WebhookEvent,
   WebhookEventStatus,
@@ -156,6 +160,7 @@ export default function WebhookEventsPanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<StatusFilter>("all");
+  const [limit, setLimit] = useState<number>(SHOW_MORE_DEFAULT_LIMIT);
   const { toast, showToast } = useToast();
 
   const loadEvents = useCallback(
@@ -163,7 +168,7 @@ export default function WebhookEventsPanel() {
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
-        .getRecentWebhookEvents()
+        .getRecentWebhookEvents(limit)
         .then((resp) => setData(resp))
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : String(e);
@@ -174,7 +179,7 @@ export default function WebhookEventsPanel() {
           if (isManual) setRefreshing(false);
         });
     },
-    [showToast],
+    [showToast, limit],
   );
 
   useEffect(() => {
@@ -328,12 +333,37 @@ export default function WebhookEventsPanel() {
 
           {/* ── Events list (timeline, newest first) ────────────── */}
           {filteredEvents.length === 0 ? (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                <HelpCircle className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                {data.events.length === 0
-                  ? "No webhook events yet. Public webhook plane is on port 9118; verify daemon is running."
-                  : `No events matching filter "${filter}".`}
+            <Card
+              className={
+                data.events.length === 0
+                  ? "border-success/30 bg-success/5"
+                  : ""
+              }
+            >
+              <CardContent className="py-8 text-center text-sm">
+                {/* Empty-state convergence (KR-FE-OPS-QUALITY-PASS):
+                    no recent traffic on the public webhook plane is
+                    a healthy steady-state for an idle daemon — use
+                    AlertsPanel's positive-reinforcement pattern.
+                    Filter-empty (operator chose a filter that
+                    matches nothing) is NOT a healthy signal — keep
+                    the neutral HelpCircle there. */}
+                {data.events.length === 0 ? (
+                  <>
+                    <CheckCircle2 className="h-6 w-6 mx-auto mb-2 text-success" />
+                    <div className="font-medium">
+                      No webhook traffic.
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-0.5">
+                      Public plane healthy on port 9118.
+                    </div>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">
+                    <HelpCircle className="h-6 w-6 mx-auto mb-2 opacity-50" />
+                    {`No events matching filter "${filter}".`}
+                  </span>
+                )}
               </CardContent>
             </Card>
           ) : (
@@ -348,6 +378,12 @@ export default function WebhookEventsPanel() {
               ))}
             </div>
           )}
+          <ShowMoreFooter
+            currentLimit={limit}
+            totalShown={data.events.length}
+            onShowMore={setLimit}
+            unitLabel="events"
+          />
         </>
       )}
     </div>

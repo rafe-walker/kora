@@ -28,7 +28,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
-import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import {
+  formatRelative,
+  formatTimestamp,
+  timestampAbsoluteUtc,
+} from "@/lib/panelHelpers";
 import type {
   Alert,
   AlertCategory,
@@ -131,7 +135,7 @@ function AlertRow({ alert, expanded, onToggle }: AlertRowProps) {
                 <span className="font-semibold">{alert.title}</span>
                 <span className="text-muted-foreground flex items-center gap-1 ml-auto text-xs">
                   <Clock className="h-3 w-3" />
-                  <span title={formatTimestamp(alert.first_seen_at)}>
+                  <span title={timestampAbsoluteUtc(alert.first_seen_at)}>
                     {formatRelative(alert.first_seen_at)}
                   </span>
                 </span>
@@ -165,7 +169,9 @@ function AlertRow({ alert, expanded, onToggle }: AlertRowProps) {
               <span className="text-muted-foreground min-w-[130px]">
                 first_seen_at
               </span>
-              <span>{formatTimestamp(alert.first_seen_at)}</span>
+              <span title={timestampAbsoluteUtc(alert.first_seen_at)}>
+                {formatTimestamp(alert.first_seen_at)}
+              </span>
             </div>
             <div className="flex gap-2">
               <span className="text-muted-foreground min-w-[130px]">

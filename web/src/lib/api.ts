@@ -122,16 +122,28 @@ export const api = {
     fetchJSON<HeartbeatServicesResponse>("/api/heartbeat/services"),
   getMCPClients: () =>
     fetchJSON<MCPClientsListResponse>("/api/mcp/clients/list"),
-  getRecentWebhookEvents: () =>
-    fetchJSON<WebhookEventsResponse>("/api/webhooks/events/recent"),
-  getRecentAgentActivity: () =>
-    fetchJSON<AgentActivityResponse>("/api/agent-activity/recent"),
-  getRecentSlackDM: () =>
-    fetchJSON<SlackDMResponse>("/api/slack-dm/recent"),
+  // KR-FE-OPS-QUALITY-PASS: ?limit query param threading for the
+  // Show More affordance on 4 timeline panels. Backend cap is 200;
+  // FE clamps to that ceiling at call sites so the operator's
+  // request can't out-grow what the endpoint will serve.
+  getRecentWebhookEvents: (limit?: number) =>
+    fetchJSON<WebhookEventsResponse>(
+      limit ? `/api/webhooks/events/recent?limit=${limit}` : "/api/webhooks/events/recent",
+    ),
+  getRecentAgentActivity: (limit?: number) =>
+    fetchJSON<AgentActivityResponse>(
+      limit ? `/api/agent-activity/recent?limit=${limit}` : "/api/agent-activity/recent",
+    ),
+  getRecentSlackDM: (limit?: number) =>
+    fetchJSON<SlackDMResponse>(
+      limit ? `/api/slack-dm/recent?limit=${limit}` : "/api/slack-dm/recent",
+    ),
   getRecentEmail: () =>
     fetchJSON<EmailResponse>("/api/email/recent"),
-  getRecentReasoning: () =>
-    fetchJSON<ReasoningResponse>("/api/reasoning/recent"),
+  getRecentReasoning: (limit?: number) =>
+    fetchJSON<ReasoningResponse>(
+      limit ? `/api/reasoning/recent?limit=${limit}` : "/api/reasoning/recent",
+    ),
   getCurrentAlerts: () =>
     fetchJSON<AlertsResponse>("/api/alerts/current"),
   getSessions: (limit = 20, offset = 0) =>

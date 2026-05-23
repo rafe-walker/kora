@@ -27,7 +27,12 @@ import {
   formatLatency,
   formatRelative,
   formatTimestamp,
+  timestampAbsoluteUtc,
 } from "@/lib/panelHelpers";
+import {
+  SHOW_MORE_DEFAULT_LIMIT,
+  ShowMoreFooter,
+} from "@/components/ShowMoreFooter";
 import type {
   ReasoningCall,
   ReasoningCostRung,
@@ -196,7 +201,7 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
               )}
               <span className="text-muted-foreground flex items-center gap-1 ml-auto">
                 <Clock className="h-3 w-3" />
-                <span title={formatTimestamp(call.started_at)}>
+                <span title={timestampAbsoluteUtc(call.started_at)}>
                   {formatRelative(call.started_at)}
                 </span>
               </span>
@@ -243,7 +248,9 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
               <span className="text-muted-foreground min-w-[130px]">
                 started_at
               </span>
-              <span>{formatTimestamp(call.started_at)}</span>
+              <span title={timestampAbsoluteUtc(call.started_at)}>
+                {formatTimestamp(call.started_at)}
+              </span>
             </div>
             <div className="flex gap-2">
               <span className="text-muted-foreground min-w-[130px]">
@@ -328,6 +335,7 @@ export default function ReasoningPanel() {
   const [refreshing, setRefreshing] = useState(false);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<Filter>("all");
+  const [limit, setLimit] = useState<number>(SHOW_MORE_DEFAULT_LIMIT);
   const { toast, showToast } = useToast();
 
   const loadReasoning = useCallback(
@@ -335,7 +343,7 @@ export default function ReasoningPanel() {
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
-        .getRecentReasoning()
+        .getRecentReasoning(limit)
         .then((resp) => setData(resp))
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : String(e);
@@ -346,7 +354,7 @@ export default function ReasoningPanel() {
           if (isManual) setRefreshing(false);
         });
     },
-    [showToast],
+    [showToast, limit],
   );
 
   useEffect(() => {
@@ -570,12 +578,18 @@ export default function ReasoningPanel() {
           </Card>
 
           {/* ── Timeline (newest first) ──────────────────────── */}
+          {/* Empty-state convergence (KR-FE-OPS-QUALITY-PASS): an
+              idle Kora (no recent reasoning calls) is a healthy
+              steady-state — positive reinforcement instead of the
+              data-absence neutral. */}
           {data.calls.length === 0 ? (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                <Brain className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                No reasoning activity yet. Once Joshua DMs Kora,
-                reasoning calls will appear here.
+            <Card className="border-success/30 bg-success/5">
+              <CardContent className="py-8 text-center text-sm">
+                <CheckCircle2 className="h-6 w-6 mx-auto mb-2 text-success" />
+                <div className="font-medium">No reasoning activity.</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Kora is idle.
+                </div>
               </CardContent>
             </Card>
           ) : visibleCalls.length === 0 ? (
@@ -597,6 +611,12 @@ export default function ReasoningPanel() {
               ))}
             </div>
           )}
+          <ShowMoreFooter
+            currentLimit={limit}
+            totalShown={data.calls.length}
+            onShowMore={setLimit}
+            unitLabel="calls"
+          />
         </>
       )}
     </div>

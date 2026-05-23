@@ -38,13 +38,36 @@ export function formatRelative(iso: string | null | undefined): string {
 }
 
 // Absolute timestamp formatted in the operator's browser locale.
-// "—" for missing inputs; raw value passes through for un-parseable strings
-// so the operator at least sees the bad input.
+// "—" for missing inputs; raw value passes through for un-parseable
+// strings so the operator at least sees the bad input.
+//
+// KR-FE-OPS-QUALITY-PASS: appends "(local)" hint so an operator
+// switching between machines / timezones isn't momentarily confused
+// about which TZ the rendered time is in. The hover tooltip (via
+// timestampAbsoluteUtc) gives the unambiguous UTC ISO for forensic
+// correlation against logs / substrate.
 export function formatTimestamp(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
+  return `${d.toLocaleString()} (local)`;
+}
+
+// Companion to formatTimestamp — the unambiguous UTC ISO for the
+// timestamp hover tooltip. Renders the original ISO when valid; falls
+// back to the raw value or "—" so the title/aria-label always has a
+// stringable value. Use on the SAME element as formatTimestamp via
+// title= or aria-label= so operator hover surfaces the absolute form.
+export function timestampAbsoluteUtc(
+  iso: string | null | undefined,
+): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  // Normalize to Z-suffixed UTC ISO regardless of input form so the
+  // hover always reads as "2026-05-23T17:48:42Z" — the canonical
+  // shape operator workflows grep for.
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
 // "142 ms" / "2.40 s" / "—" — formats a duration in milliseconds.

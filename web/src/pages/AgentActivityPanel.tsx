@@ -26,7 +26,12 @@ import {
   formatLatency,
   formatRelative,
   formatTimestamp,
+  timestampAbsoluteUtc,
 } from "@/lib/panelHelpers";
+import {
+  SHOW_MORE_DEFAULT_LIMIT,
+  ShowMoreFooter,
+} from "@/components/ShowMoreFooter";
 import type {
   AgentActivityResponse,
   AgentCall,
@@ -134,7 +139,9 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
               <span className="text-muted-foreground min-w-[120px]">
                 called_at
               </span>
-              <span>{formatTimestamp(call.called_at)}</span>
+              <span title={timestampAbsoluteUtc(call.called_at)}>
+                {formatTimestamp(call.called_at)}
+              </span>
             </div>
             <div className="flex gap-2">
               <span className="text-muted-foreground min-w-[120px]">
@@ -174,6 +181,7 @@ export default function AgentActivityPanel() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<AgentCallStatus | "all">("all");
   const [callerFilter, setCallerFilter] = useState<string>("all");
+  const [limit, setLimit] = useState<number>(SHOW_MORE_DEFAULT_LIMIT);
   const { toast, showToast } = useToast();
 
   const loadActivity = useCallback(
@@ -181,7 +189,7 @@ export default function AgentActivityPanel() {
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
-        .getRecentAgentActivity()
+        .getRecentAgentActivity(limit)
         .then((resp) => setData(resp))
         .catch((e: unknown) => {
           const msg = e instanceof Error ? e.message : String(e);
@@ -192,7 +200,7 @@ export default function AgentActivityPanel() {
           if (isManual) setRefreshing(false);
         });
     },
-    [showToast],
+    [showToast, limit],
   );
 
   useEffect(() => {
@@ -366,11 +374,18 @@ export default function AgentActivityPanel() {
           </Card>
 
           {/* ── Timeline ───────────────────────────────────────── */}
+          {/* Empty-state convergence (KR-FE-OPS-QUALITY-PASS):
+              no recent agent activity on the /mcp surface is a
+              healthy idle steady-state — use positive-reinforcement
+              pattern from AlertsPanel. */}
           {data.calls.length === 0 ? (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                <Workflow className="h-6 w-6 mx-auto mb-2 opacity-50" />
-                No agent activity yet. MCP surface lives at /mcp on port 9119.
+            <Card className="border-success/30 bg-success/5">
+              <CardContent className="py-8 text-center text-sm">
+                <CheckCircle2 className="h-6 w-6 mx-auto mb-2 text-success" />
+                <div className="font-medium">No agent activity.</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  /mcp endpoint healthy on port 9119.
+                </div>
               </CardContent>
             </Card>
           ) : filteredCalls.length === 0 ? (
@@ -392,6 +407,12 @@ export default function AgentActivityPanel() {
               ))}
             </div>
           )}
+          <ShowMoreFooter
+            currentLimit={limit}
+            totalShown={data.calls.length}
+            onShowMore={setLimit}
+            unitLabel="calls"
+          />
         </>
       )}
     </div>

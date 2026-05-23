@@ -25,7 +25,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
-import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import {
+  formatRelative,
+  formatTimestamp,
+  timestampAbsoluteUtc,
+} from "@/lib/panelHelpers";
 import type {
   EmailDirection,
   EmailHandledStatus,
@@ -185,7 +189,7 @@ function MessageRow({ message, expanded, onToggle }: MessageRowProps) {
               )}
               <span className="text-muted-foreground flex items-center gap-1 ml-auto">
                 <Clock className="h-3 w-3" />
-                <span title={formatTimestamp(message.timestamp)}>
+                <span title={timestampAbsoluteUtc(message.timestamp)}>
                   {formatRelative(message.timestamp)}
                 </span>
               </span>
@@ -214,7 +218,9 @@ function MessageRow({ message, expanded, onToggle }: MessageRowProps) {
               <span className="text-muted-foreground min-w-[120px]">
                 timestamp
               </span>
-              <span>{formatTimestamp(message.timestamp)}</span>
+              <span title={timestampAbsoluteUtc(message.timestamp)}>
+                {formatTimestamp(message.timestamp)}
+              </span>
             </div>
             <div className="flex gap-2">
               <span className="text-muted-foreground min-w-[120px]">
