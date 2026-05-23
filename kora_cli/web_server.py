@@ -4891,173 +4891,202 @@ async def list_mcp_clients():
 # from KR-MCP-3 #106: backend shape + TS interface + test regex).
 
 
+# Mask the last two octets of an IPv4 address to match the
+# panel's source_ip contract (e.g. "54.203.99.142" → "54.203.x.x").
+# Non-IPv4 strings (IPv6, "-", empty) pass through with a single
+# "x.x" suffix replacing the last segment for any dotted form, else
+# return "—" — defensive so the FE always sees a stringable value.
+def _mask_ipv4_last_two_octets(value: str) -> str:
+    if not value or value == "-":
+        return "—"
+    parts = value.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        return f"{parts[0]}.{parts[1]}.x.x"
+    # IPv6 / unexpected shape: don't try to mask; surface as "—" so
+    # the panel doesn't leak an unmasked form. The mask-format test
+    # below pins this defensive shape.
+    return "—"
+
+
+def _endpoint_for_webhook_source(source: str) -> str:
+    """Map audit details.source → public webhook route. CC#3's
+    emit_audit at webhook_dead_letter.py:139 passes "slack" / "email";
+    map back to the routes the FE knows."""
+    if source == "slack":
+        return "/api/webhooks/slack/events"
+    if source == "email":
+        return "/api/webhooks/email/inbound"
+    return f"/api/webhooks/{source}"  # forward-compat
+
+
+def _project_webhook_dead_letter(
+    entry: "AuditEntry", lineno: int
+) -> Dict[str, Any]:
+    """Project a webhook.dead_letter AuditEntry to WebhookEvent shape."""
+    d = entry.details
+    raw_peer_ip = str(d.get("peer_ip", "-"))
+    return {
+        "id": f"audit-{lineno}",
+        "endpoint": _endpoint_for_webhook_source(str(d.get("source", ""))),
+        "received_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": "dead_letter",  # this seam ONLY produces dead-letters
+        "source_ip": _mask_ipv4_last_two_octets(raw_peer_ip),
+        "event_type": str(d.get("reason", "")) or None,
+        # Subset the audit details to FE-shaped detail. NEVER pass
+        # the full audit details through verbatim — that could
+        # surface internal fields the FE doesn't expect.
+        "details": {
+            "reason": str(d.get("reason", "")),
+            "header_present": bool(d.get("header_present", False)),
+        },
+    }
+
+
 @app.get("/api/webhooks/events/recent")
-async def list_recent_webhook_events():
+async def list_recent_webhook_events(limit: int = 50):
     """Return recent public-webhook events for the operator-facing lens.
 
-    v1 stub — pinned shape so CC#3's per-event recording (chain-event
-    emission OR substrate webhook_events table) can swap the body
-    without touching the FE.
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to
+    ``seam=webhook.dead_letter`` (written by
+    ``kora_cli/listeners/webhook_dead_letter.py:136-146``) and
+    projects each row to the FE's ``WebhookEvent`` shape.
 
-    Per-event fields:
-      id            — opaque event id
-      endpoint      — e.g. "/api/webhooks/slack/events"
-      received_at   — ISO-8601 timestamp
-      status        — verified | dead_letter | rate_limited | handler_error
-      source_ip     — OCTET-MASKED ("54.203.x.x" never "54.203.99.142")
-      event_type    — handler-side classification (e.g. "message",
-                      "url_verification", "hmac_invalid"); null when
-                      rate-limited (request never reached the handler)
-      details       — handler-shape-specific dict (slack_team_id,
-                      reason, etc.) — future redaction pass for PII
-                      lands when real data wires in (out of scope here)
+    Limitations until follow-on buckets land:
+      * Verified happy-path events are NOT in the audit log
+        (audit is attention-events only; verified events emit
+        via the existing chain-log seams). Panel shows only
+        dead-letters for now.
+      * Rate-limited events come from the slowapi middleware
+        which doesn't currently call emit_audit. Follow-on bucket
+        can wire that.
+
+    SECURITY (3-layer contract carry-forward from PR #109):
+      1. source_ip is OCTET-MASKED in the response
+         (``_mask_ipv4_last_two_octets``) — the audit writer passes
+         the raw peer_ip; THIS endpoint enforces the mask. Backend
+         test asserts no full 4-octet IPv4 leaks anywhere.
+      2. details is sub-set to FE-shaped fields (reason +
+         header_present) — never the raw audit details dict, which
+         could carry future fields the panel hasn't vetted.
+      3. event_type derived from details.reason (machine code,
+         never user content).
     """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(limit, 200))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="webhook.dead_letter")
+    projected = [
+        _project_webhook_dead_letter(e, lineno=i + 1)
+        for i, e in enumerate(all_rows)
+    ]
+
+    in_window = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+
     return {
-        "events": [
-            {
-                "id": "stub-1",
-                "endpoint": "/api/webhooks/slack/events",
-                "received_at": "2026-05-22T17:55:13Z",
-                "status": "verified",
-                "source_ip": "54.203.x.x",
-                "event_type": "message",
-                "details": {
-                    "slack_team_id": "T_STUB",
-                    "channel_id": "C_STUB",
-                },
-            },
-            {
-                "id": "stub-2",
-                "endpoint": "/api/webhooks/slack/events",
-                "received_at": "2026-05-22T17:52:01Z",
-                "status": "verified",
-                "source_ip": "54.203.x.x",
-                "event_type": "url_verification",
-                "details": {"challenge_echoed": True},
-            },
-            {
-                "id": "stub-3",
-                "endpoint": "/api/webhooks/email/inbound",
-                "received_at": "2026-05-22T17:48:22Z",
-                "status": "dead_letter",
-                "source_ip": "203.0.113.x",
-                "event_type": "hmac_invalid",
-                "details": {
-                    "reason": "signature_mismatch",
-                    "header_present": True,
-                },
-            },
-            {
-                "id": "stub-4",
-                "endpoint": "/api/webhooks/slack/events",
-                "received_at": "2026-05-22T17:45:09Z",
-                "status": "rate_limited",
-                "source_ip": "198.51.100.x",
-                "event_type": None,
-                "details": {"rate_limit_window": "60/minute"},
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_recent_24h": 4,
+        "events": projected[:capped_limit],
+        "stub": False,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_window),
     }
 
 
 # ---------------------------------------------------------------------------
-# Agent activity lens (KR-AGENT-ACTIVITY-PANEL)
+# Agent activity lens (KR-AGENT-ACTIVITY-PANEL) — KR-AUDIT-PANEL-ENDPOINTS flip
 # ---------------------------------------------------------------------------
 #
 # Operator-facing observability for OTHER agents calling Kora via the
-# /mcp endpoint (Feature 4). Pairs with CC#3's KR-MCP-RUNTIME-SURFACE
-# bucket — ST2 will swap this stub for real per-call ledger reads
-# from kora_cli/listeners/mcp.py (PR #101 stubbed kora__daemon_status
-# only; ST2 adds the full kora__* tool surface).
+# /mcp endpoint (Feature 4). Reads the live ``kora_audit_log.jsonl``
+# written by CC#3's KR-AUDIT-JSONL-SINK (PR #139), filtered to
+# ``seam=mcp.tool_called`` rows.
 #
-# v1 stub: 5 representative calls per bucket §3 verbatim, deliberately
-# spanning ok / capability_denied / denied_prod_only so operator sees
-# what failures look like. stub:true keeps the FE banner visible.
+# K-DG drift caught (spec §2 Flip 1 vs actual emit_audit call site at
+# kora_cli/listeners/mcp_tools.py:714-724):
+#   * spec said details.duration_ms — NOT in actual writer
+#   * spec said details.tool_status — NOT in actual writer
+#   * spec said details.result_summary — actual key is `result`
+#   * Audit only fires on success path; failed mutating-tool calls
+#     don't currently emit_audit. So all logged rows are status=ok.
+#     KR-MCP-RUNTIME-SURFACE follow-on (read tools + failure path)
+#     will extend the audit writer; until then duration_ms is set
+#     to 0 (FE renders as "0 ms" — accurate to the data we have).
 #
-# SECURITY (3-layer contract, same pattern as KR-MCP-3 / WEBHOOK-EVENTS):
-#   1. ``result_summary`` is a SHORT TEXTUAL summary — never raw JSON
-#      payloads. Backend test asserts no embedded {/[/" sequences that
-#      would indicate a JSON dump leaked into the summary line.
-#   2. ``caller_actor_kind`` is a LABEL (claude_pm / kora_drone_7 /
-#      etc.) — never bearer-token-shaped or token-hash-shaped. Backend
-#      test asserts the field doesn't match base64/hex patterns of
-#      typical token shapes.
-#   3. TS interface enforces both contracts at compile time.
+# SECURITY (3-layer contract carry-forward from PR #114):
+#   1. result_summary is a SHORT TEXTUAL summary — projection takes
+#      details.result (the writer's docstring confirms this is a
+#      short stringified result; full bodies NEVER hit audit).
+#      Backend test sweeps for raw-JSON shapes in the field.
+#   2. caller_actor_kind is a LABEL — derived from
+#      details.caller_actor_kind (writer pre-validates per
+#      mcp_callers.yaml). Backend test sweeps for token shapes.
+#   3. TS interface (AgentCall) enforces both contracts at compile
+#      time. No FE changes for this flip; TS shape matches the
+#      projection exactly.
+
+
+def _project_mcp_tool_called(entry: "AuditEntry", lineno: int) -> Dict[str, Any]:
+    """Project a ``mcp.tool_called`` AuditEntry to AgentCall shape."""
+    d = entry.details
+    return {
+        "id": f"audit-{lineno}",
+        "tool_name": d.get("tool_name", ""),
+        "caller_actor_kind": d.get("caller_actor_kind", ""),
+        "called_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # Not in audit writer today; KR-MCP-RUNTIME-SURFACE follow-on
+        # will add. FE renders "0 ms" rather than NaN until then.
+        "duration_ms": 0,
+        # Audit only fires on success path today; see K-DG note above.
+        "status": "ok",
+        "result_summary": str(d.get("result", "")),
+    }
 
 
 @app.get("/api/agent-activity/recent")
-async def list_recent_agent_activity():
+async def list_recent_agent_activity(limit: int = 50):
     """Return recent agent-driven MCP tool calls for the operator lens.
 
-    v1 stub — pinned shape so CC#3's KR-MCP-RUNTIME-SURFACE ST2 can
-    swap the body without touching the FE.
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl`` (written by
+    CC#3's KR-AUDIT-JSONL-SINK, PR #139), filters to the
+    ``mcp.tool_called`` seam, projects each row to the FE's
+    ``AgentCall`` shape, and returns the newest first.
 
-    Per-call fields:
-      id                — opaque call id
-      tool_name         — kora__* MCP tool invoked
-      caller_actor_kind — LABEL only (claude_pm, kora_drone_N, etc.);
-                          never a token or token hash
-      called_at         — ISO-8601 timestamp
-      duration_ms       — int (>= 0)
-      status            — ok | capability_denied | denied_prod_only |
-                          tool_not_found | handler_error | timeout
-      result_summary    — short TEXTUAL summary; never raw JSON
+    Query params:
+      limit — number of newest entries to return; default 50,
+              capped at 200.
     """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(limit, 200))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="mcp.tool_called")
+    projected = [
+        _project_mcp_tool_called(e, lineno=i + 1)
+        for i, e in enumerate(all_rows)
+    ]
+
+    in_window = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    by_caller: Dict[str, int] = {}
+    by_status: Dict[str, int] = {}
+    for e in in_window:
+        caller = e.details.get("caller_actor_kind", "unknown")
+        by_caller[caller] = by_caller.get(caller, 0) + 1
+        # All audit-logged calls are status=ok today (K-DG note above);
+        # tally still uses the projection's status so the dict shape
+        # matches what real-failure-path data will look like.
+        by_status["ok"] = by_status.get("ok", 0) + 1
+
     return {
-        "calls": [
-            {
-                "id": "stub-1",
-                "tool_name": "kora__get_operational_state",
-                "caller_actor_kind": "claude_pm",
-                "called_at": "2026-05-22T17:58:42Z",
-                "duration_ms": 124,
-                "status": "ok",
-                "result_summary": "state: RUNNING, 0 active sea_tickets",
-            },
-            {
-                "id": "stub-2",
-                "tool_name": "kora__create_sea_ticket",
-                "caller_actor_kind": "claude_pm",
-                "called_at": "2026-05-22T17:51:08Z",
-                "duration_ms": 832,
-                "status": "ok",
-                "result_summary": "ticket: sea_abc123",
-            },
-            {
-                "id": "stub-3",
-                "tool_name": "kora__request_state_transition",
-                "caller_actor_kind": "kora_drone_7",
-                "called_at": "2026-05-22T17:44:19Z",
-                "duration_ms": 67,
-                "status": "capability_denied",
-                "result_summary": "required: cap_kora_state_transition",
-            },
-            {
-                "id": "stub-4",
-                "tool_name": "kora__get_recent_chain_events",
-                "caller_actor_kind": "claude_pm",
-                "called_at": "2026-05-22T17:42:55Z",
-                "duration_ms": 198,
-                "status": "ok",
-                "result_summary": "20 events returned",
-            },
-            {
-                "id": "stub-5",
-                "tool_name": "kora__send_webhook_test_event",
-                "caller_actor_kind": "claude_pm",
-                "called_at": "2026-05-22T17:40:11Z",
-                "duration_ms": 12,
-                "status": "denied_prod_only",
-                "result_summary": "dev-only tool refused on prd environment",
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_recent_24h": 23,
-        "by_caller_24h": {"claude_pm": 19, "kora_drone_7": 4},
+        "calls": projected[:capped_limit],
+        "stub": False,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_window),
+        "by_caller_24h": by_caller,
     }
 
 
@@ -5493,112 +5522,159 @@ async def list_recent_email():
 #      no ``raw_prompt`` / ``auth_token`` companion fields exist.
 
 
+# Audit-derived reasoning panel — KR-AUDIT-PANEL-ENDPOINTS flip.
+#
+# Reads ``kora_audit_log.jsonl`` rows where ``seam ==
+# "reasoning.tool_called"`` (written by
+# ``kora_cli/reasoning/anthropic_engine.py:921-938``) and GROUPS
+# them by ``caller_session_id`` so a multi-tool reasoning iteration
+# collapses into one ReasoningCall row.
+#
+# K-DG: the audit writer details only includes tool_name +
+# triggered_by + tool_duration_ms + tool_status (+ optional
+# exc_type). It does NOT have model_used / tokens / response_text —
+# those live in ``slack_dm_log.jsonl`` outbound entries. For this
+# flip, those fields are null; the cross-reference happens in the
+# follow-on bucket KR-REASONING-PANEL-MODEL-XREF.
+#
+# Status derivation: ok if every grouped tool has tool_status==ok;
+# otherwise the dominant non-ok status (capability_denied →
+# halted; execution_error → handler_error). cost_rung_at_call is
+# "unknown" (lowercase CostRung.value literal that satisfies the
+# FE's ReasoningCostRung union without surfacing a null we can't
+# actually validate from audit).
+
+
+def _project_reasoning_group(
+    session_id: str,
+    rows: list,
+) -> Dict[str, Any]:
+    """Collapse N audit rows sharing caller_session_id → 1 ReasoningCall.
+
+    Per spec §2 Flip 2: extends the FE payload with ``tools_used``
+    (list of tool names). Existing TS ReasoningCall doesn't have
+    this field — extras pass through unused; a follow-on FE bucket
+    can render it. Doesn't break the existing FE since JS object
+    structural-typing tolerates extras.
+    """
+    # rows are AuditEntry; newest first within the group.
+    rows = sorted(rows, key=lambda e: e.emitted_at)
+    first = rows[0]
+    last = rows[-1]
+    tool_names = [str(e.details.get("tool_name", "")) for e in rows]
+    total_duration_ms = sum(
+        int(e.details.get("tool_duration_ms") or 0) for e in rows
+    )
+    statuses = [e.details.get("tool_status", "ok") for e in rows]
+
+    if all(s == "ok" for s in statuses):
+        agg_status = "ok"
+        error_code = None
+    elif any(s == "not_allowed" for s in statuses):
+        agg_status = "halted"
+        error_code = "capability_denied"
+    elif any(s == "execution_error" for s in statuses):
+        agg_status = "failed"
+        error_code = "handler_error"
+    else:
+        # Unknown non-ok status — surface as failed without a specific
+        # code so the FE renders the destructive tone.
+        agg_status = "failed"
+        # Find first non-ok status as the dominant error indicator.
+        error_code = next((s for s in statuses if s != "ok"), "unknown")
+
+    triggered_by = first.details.get("triggered_by") or first.source or "slack_dm"
+
+    return {
+        "id": f"audit-session-{session_id or first.emitted_at.isoformat()}",
+        "triggered_by": str(triggered_by),
+        "started_at": first.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "duration_ms": total_duration_ms,
+        # Not in audit; cross-ref to slack_dm_log.jsonl happens in
+        # KR-REASONING-PANEL-MODEL-XREF follow-on bucket.
+        "model_used": None,
+        # CostRung.value lowercase "unknown" satisfies the FE's
+        # ReasoningCostRung union (engine.py:47-49) without
+        # claiming a rung we can't actually read from audit.
+        "cost_rung_at_call": "unknown",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "status": agg_status,
+        "error_code": error_code,
+        "response_text_truncated_200": None,
+        # FE extension — extra field; existing TS ignores it.
+        "tools_used": tool_names,
+    }
+
+
 @app.get("/api/reasoning/recent")
-async def list_recent_reasoning():
+async def list_recent_reasoning(limit: int = 50):
     """Return recent Kora ReasoningEngine calls for the operator lens.
 
-    v1 stub — pinned shape so CC#3's KR-FEAT-AI-RESPONSE-LOOP ST2
-    follow-on can swap the body without touching the FE.
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl``, filters to
+    ``seam=reasoning.tool_called``, and groups consecutive tool
+    calls by ``caller_session_id`` so a multi-tool reasoning
+    iteration collapses into a single ReasoningCall row with
+    ``tools_used: [...]``. Newest-first by the session's first
+    emitted_at.
 
-    Per-call fields:
-      id                            — opaque id
-      triggered_by                  — "slack_dm" (only one in v1)
-      started_at                    — ISO-8601
-      duration_ms                   — int (>= 0)
-      model_used                    — claude-opus-4-7 / sonnet-4-6 /
-                                      haiku-4-5-20251001 / null when
-                                      halted (no SDK call made)
-      cost_rung_at_call             — lowercase CostRung.value string:
-                                      "normal" / "warn_75" /
-                                      "downshift_90" / "hard_stop_100"
-                                      (matches engine.py:47-49 literal)
-      input_tokens / output_tokens  — ints; 0 when halted/failed-pre-call
-      status                        — ok | failed | halted | paused
-      error_code                    — null when ok; ReasoningEngine
-                                      taxonomy otherwise (PR #126):
-                                      sdk_auth | sdk_rate_limited |
-                                      sdk_5xx | sdk_4xx_<code> |
-                                      sdk_timeout | sdk_transport |
-                                      sdk_unknown_<class> |
-                                      cost_ladder_halted |
-                                      operational_state_paused |
-                                      response_projection_failed
-      response_text_truncated_200   — plain-text response excerpt
-                                      capped at 200 chars; null when
-                                      no response produced
+    Limitations until the KR-REASONING-PANEL-MODEL-XREF follow-on:
+      * model_used / tokens / response_text_truncated_200 are null
+        (those fields live in slack_dm_log.jsonl outbound entries,
+        not in the audit log).
+      * cost_rung_at_call is "unknown" (same reason — audit doesn't
+        capture the rung at call time).
     """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(limit, 200))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="reasoning.tool_called")
+
+    # Group by caller_session_id; rows without a session_id each get
+    # their own group (defensive — shouldn't happen since the writer
+    # always passes one).
+    groups: Dict[str, list] = {}
+    for e in all_rows:
+        key = e.caller_session_id or f"orphan-{id(e)}"
+        groups.setdefault(key, []).append(e)
+
+    # Project + sort newest-first by the LATEST event in each group.
+    projected = [
+        _project_reasoning_group(sid, group_rows)
+        for sid, group_rows in groups.items()
+    ]
+    projected.sort(key=lambda r: r["started_at"], reverse=True)
+
+    # 24h-window aggregates over individual audit rows (not groups)
+    # so the headline counts reflect raw activity volume.
+    in_window = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    by_status: Dict[str, int] = {"ok": 0, "failed": 0, "halted": 0}
+    for e in in_window:
+        st = e.details.get("tool_status", "ok")
+        if st == "ok":
+            by_status["ok"] += 1
+        elif st == "not_allowed":
+            by_status["halted"] += 1
+        else:
+            by_status["failed"] += 1
+    # Model + token aggregates are derived from the slack_dm log in
+    # the follow-on. Until then, surface the structure with zeros so
+    # the FE dashboard tile renders without conditional NaN handling.
+    by_model: Dict[str, int] = {}
+    tokens_total = {"input": 0, "output": 0}
+
     return {
-        "calls": [
-            {
-                "id": "stub-1",
-                "triggered_by": "slack_dm",
-                "started_at": "2026-05-22T17:58:42Z",
-                "duration_ms": 1247,
-                "model_used": "claude-opus-4-7",
-                "cost_rung_at_call": "normal",
-                "input_tokens": 842,
-                "output_tokens": 127,
-                "status": "ok",
-                "error_code": None,
-                "response_text_truncated_200": (
-                    "Daemon is RUNNING. Health rollup green. "
-                    "2 sea tickets active."
-                ),
-            },
-            {
-                "id": "stub-2",
-                "triggered_by": "slack_dm",
-                "started_at": "2026-05-22T17:42:11Z",
-                "duration_ms": 894,
-                "model_used": "claude-sonnet-4-6",
-                "cost_rung_at_call": "warn_75",
-                "input_tokens": 612,
-                "output_tokens": 84,
-                "status": "ok",
-                "error_code": None,
-                "response_text_truncated_200": (
-                    "Got it. Quieter responses since we're at "
-                    "78% of monthly budget."
-                ),
-            },
-            {
-                "id": "stub-3",
-                "triggered_by": "slack_dm",
-                "started_at": "2026-05-22T17:30:55Z",
-                "duration_ms": 32,
-                "model_used": None,
-                "cost_rung_at_call": "hard_stop_100",
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "status": "halted",
-                "error_code": "cost_ladder_halted",
-                "response_text_truncated_200": None,
-            },
-            {
-                "id": "stub-4",
-                "triggered_by": "slack_dm",
-                "started_at": "2026-05-22T17:20:18Z",
-                "duration_ms": 5821,
-                "model_used": "claude-opus-4-7",
-                "cost_rung_at_call": "normal",
-                "input_tokens": 423,
-                "output_tokens": 0,
-                "status": "failed",
-                "error_code": "sdk_timeout",
-                "response_text_truncated_200": None,
-            },
-        ],
-        "stub": True,
-        "generated_at": "2026-05-22T18:00:00Z",
-        "total_recent_24h": 47,
-        "by_model_24h": {
-            "claude-opus-4-7": 31,
-            "claude-sonnet-4-6": 14,
-            "claude-haiku-4-5-20251001": 0,
-            "halted_no_model": 2,
-        },
-        "by_status_24h": {"ok": 41, "failed": 4, "halted": 2},
-        "tokens_total_24h": {"input": 18420, "output": 3104},
+        "calls": projected[:capped_limit],
+        "stub": False,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_window),
+        "by_model_24h": by_model,
+        "by_status_24h": by_status,
+        "tokens_total_24h": tokens_total,
     }
 
 
