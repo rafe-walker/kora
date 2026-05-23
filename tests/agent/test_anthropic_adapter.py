@@ -29,6 +29,34 @@ from agent.transports import get_transport
 
 
 # ---------------------------------------------------------------------------
+# Module-level isolation — KR-TEST-STABILITY-SWEEP
+# ---------------------------------------------------------------------------
+#
+# ``resolve_anthropic_token`` + ``read_claude_code_credentials`` read
+# from the OS keychain on macOS (via
+# ``_read_claude_code_credentials_from_keychain``) in addition to the
+# env vars + filesystem credential files individual tests
+# monkeypatch. Without an autouse keychain-stub a developer's real
+# OAuth token bleeds into TestResolveAnthropicToken assertions
+# (observed during pre-existing-failure sweep: keychain returned a
+# live ``sk-ant-oat01-...`` token regardless of the test's env setup).
+#
+# ``TestReadClaudeCodeCredentials`` already had its own per-class
+# autouse fixture stubbing the keychain reader. Promoted to module
+# scope so every Test* class in the file gets the same isolation by
+# default — same shape, broader reach. The per-class fixture in
+# TestReadClaudeCodeCredentials is now redundant but kept verbatim
+# for self-documentation; both fire on those tests with no side
+# effects (both patch to the same lambda value).
+@pytest.fixture(autouse=True)
+def _module_no_keychain(monkeypatch):
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------
 

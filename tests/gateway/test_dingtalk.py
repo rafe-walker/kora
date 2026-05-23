@@ -250,7 +250,9 @@ class TestSend:
         assert call_args[0][0] == "https://dingtalk.example/webhook"
         payload = call_args[1]["json"]
         assert payload["msgtype"] == "markdown"
-        assert payload["markdown"]["title"] == "Hermes"
+        # Identity rebrand: PlatformConfig.display_name defaults to
+        # "Kora" since the Hermes→Kora fork (see gateway/config.py:304).
+        assert payload["markdown"]["title"] == "Kora"
         assert payload["markdown"]["text"] == "Hello!"
 
     @pytest.mark.asyncio

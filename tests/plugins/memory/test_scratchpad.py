@@ -21,8 +21,16 @@ import asyncio
 import logging
 from typing import Any, List, Optional
 
-import blake3
 import pytest
+
+# blake3 is an optional plugin dep (declared in the ``isokron`` extra
+# in pyproject.toml + the plugin.yaml). The production module
+# ``plugins.memory.isokron.scratchpad`` already imports it inside a
+# try/except — test side mirrors that with importorskip so the suite
+# collects cleanly in environments where the isokron extra isn't
+# installed (e.g. the default ``--extra dev --extra all`` test
+# invocation). Collection-time skip > collection-time ImportError.
+blake3 = pytest.importorskip("blake3")
 
 from plugins.memory.isokron.scratchpad import (
     DEFAULT_SCRATCHPAD_READ_LIMIT,
