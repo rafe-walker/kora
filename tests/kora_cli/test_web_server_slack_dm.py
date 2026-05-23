@@ -58,11 +58,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANEL_PATH = _REPO_ROOT / "web" / "src" / "pages" / "SlackDMPanel.tsx"
 
 
-def _strip_ts_comments(src: str) -> str:
-    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.DOTALL)
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
-    src = re.sub(r"(^|[^:])//[^\n]*", r"\1", src)
-    return src
+from tests.kora_cli._panel_test_helpers import strip_ts_comments as _strip_ts_comments  # noqa: E402
 
 
 # ---- Test env isolation + JSONL fixture helpers --------------------
@@ -89,22 +85,10 @@ def env(tmp_path, monkeypatch):
     rebinds the override but the ContextVar chain isn't restored
     cleanly across multiple fixtures, leaving stale state.
     """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setenv("KORA_HOME", str(tmp_path))
+    from tests.kora_cli._panel_test_helpers import isolated_kora_home
+
+    isolated_kora_home(tmp_path, monkeypatch)
     monkeypatch.setenv("KORA_SLACK_JOSHUA_USER_ID", _JOSHUA_USER_ID)
-    monkeypatch.setattr(
-        "kora_cli.config.get_config_path",
-        lambda: tmp_path / "config.yaml",
-    )
-    monkeypatch.setattr(
-        "kora_cli.config.get_env_path", lambda: tmp_path / ".env"
-    )
-    monkeypatch.setattr("kora_constants.get_kora_home", lambda: tmp_path)
-    monkeypatch.setattr("kora_cli.config.get_kora_home", lambda: tmp_path)
-    # Critical: the endpoint resolves get_kora_home from its own
-    # module namespace (line 5233), not via a fresh import. Monkeypatch
-    # there too.
-    monkeypatch.setattr("kora_cli.web_server.get_kora_home", lambda: tmp_path)
     return tmp_path
 
 

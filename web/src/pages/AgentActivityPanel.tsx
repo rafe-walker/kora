@@ -22,6 +22,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import {
+  formatLatency,
+  formatRelative,
+  formatTimestamp,
+} from "@/lib/panelHelpers";
 import type {
   AgentActivityResponse,
   AgentCall,
@@ -75,42 +80,6 @@ function StatusIcon({ status }: { status: AgentCallStatus }) {
   }
 }
 
-function formatTimestamp(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
-function formatRelative(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const deltaMs = d.getTime() - Date.now();
-  const absSec = Math.abs(deltaMs) / 1000;
-  if (absSec < 60) {
-    const n = Math.round(absSec);
-    return deltaMs < 0 ? `${n}s ago` : `in ${n}s`;
-  }
-  const absMin = absSec / 60;
-  if (absMin < 60) {
-    const n = Math.round(absMin);
-    return deltaMs < 0 ? `${n}m ago` : `in ${n}m`;
-  }
-  const absHr = absMin / 60;
-  if (absHr < 24) {
-    const n = Math.round(absHr);
-    return deltaMs < 0 ? `${n}h ago` : `in ${n}h`;
-  }
-  const absDay = absHr / 24;
-  const n = Math.round(absDay);
-  return deltaMs < 0 ? `${n}d ago` : `in ${n}d`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-}
 
 // Visual "expensive call" bar — purely cosmetic, capped at 1000ms.
 // Anything ≥ 1s gets a full bar to signal "this took real time".
@@ -154,7 +123,7 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
               className={`font-mono ${isSlow ? "text-warning" : ""}`}
               title={`${call.duration_ms} ms`}
             >
-              {formatDuration(call.duration_ms)}
+              {formatLatency(call.duration_ms)}
             </span>
           </span>
         </button>

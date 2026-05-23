@@ -21,11 +21,7 @@ _PANEL_PATH = _REPO_ROOT / "web" / "src" / "pages" / "HeartbeatPanel.tsx"
 _DASHBOARD_PATH = _REPO_ROOT / "web" / "src" / "pages" / "DashboardPage.tsx"
 
 
-def _strip_ts_comments(src: str) -> str:
-    src = re.sub(r"\{/\*.*?\*/\}", "", src, flags=re.DOTALL)
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL)
-    src = re.sub(r"(^|[^:])//[^\n]*", r"\1", src)
-    return src
+from tests.kora_cli._panel_test_helpers import strip_ts_comments as _strip_ts_comments  # noqa: E402
 
 
 # ---- 1. source files exist ----------------------------------------
@@ -88,17 +84,33 @@ def test_format_timestamp_accepts_null():
     """formatTimestamp + formatRelative must accept `string | null`
     so HeartbeatService.last_check_at: string | null type-checks.
     Catches a regression that drops the null arm from the helper
-    signatures."""
-    src = _PANEL_PATH.read_text()
-    # Both helpers must declare nullable parameter types.
+    signatures.
+
+    Post KR-FE-PANEL-HELPERS-DRY: formatTimestamp + formatRelative
+    moved into ``web/src/lib/panelHelpers.ts``. The pin now checks
+    the shared module's signatures (the canonical source of truth)
+    AND that HeartbeatPanel imports from it (so the assertion isn't
+    just verifying an unused module).
+    """
+    helpers_path = _REPO_ROOT / "web" / "src" / "lib" / "panelHelpers.ts"
+    helpers_src = helpers_path.read_text()
+    # Both helpers must accept nullable + undefined (the superset
+    # nullable signature so panels don't need wrapper logic).
     assert re.search(
-        r"function formatTimestamp\(iso:\s*string\s*\|\s*null\)",
-        src,
-    ), "formatTimestamp must accept string | null"
+        r"function formatTimestamp\(iso:\s*string\s*\|\s*null\s*\|\s*undefined\)",
+        helpers_src,
+    ), "panelHelpers.formatTimestamp must accept string | null | undefined"
     assert re.search(
-        r"function formatRelative\(iso:\s*string\s*\|\s*null\)",
-        src,
-    ), "formatRelative must accept string | null"
+        r"function formatRelative\(iso:\s*string\s*\|\s*null\s*\|\s*undefined\)",
+        helpers_src,
+    ), "panelHelpers.formatRelative must accept string | null | undefined"
+    # HeartbeatPanel must import from the shared helpers (so the
+    # pin above isn't checking an orphaned module).
+    panel_src = _PANEL_PATH.read_text()
+    assert re.search(
+        r'from\s+"@/lib/panelHelpers"',
+        panel_src,
+    ), "HeartbeatPanel.tsx must import from @/lib/panelHelpers"
 
 
 def test_format_relative_null_path_says_never_checked():

@@ -23,6 +23,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import {
+  formatLatency,
+  formatRelative,
+  formatTimestamp,
+} from "@/lib/panelHelpers";
 import type {
   ReasoningCall,
   ReasoningCostRung,
@@ -121,42 +126,6 @@ function StatusIcon({ status }: { status: ReasoningStatus }) {
   }
 }
 
-function formatTimestamp(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
-function formatRelative(iso: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const deltaMs = d.getTime() - Date.now();
-  const absSec = Math.abs(deltaMs) / 1000;
-  if (absSec < 60) {
-    const n = Math.round(absSec);
-    return deltaMs < 0 ? `${n}s ago` : `in ${n}s`;
-  }
-  const absMin = absSec / 60;
-  if (absMin < 60) {
-    const n = Math.round(absMin);
-    return deltaMs < 0 ? `${n}m ago` : `in ${n}m`;
-  }
-  const absHr = absMin / 60;
-  if (absHr < 24) {
-    const n = Math.round(absHr);
-    return deltaMs < 0 ? `${n}h ago` : `in ${n}h`;
-  }
-  const absDay = absHr / 24;
-  const n = Math.round(absDay);
-  return deltaMs < 0 ? `${n}d ago` : `in ${n}d`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-}
 
 // Cap visual bar at 5s — anything beyond is "long" regardless of
 // exact value; the operator just needs the "this took real time" cue.
@@ -240,7 +209,7 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
                 title={`${call.duration_ms} ms`}
               >
                 <Timer className="h-3 w-3" />
-                {formatDuration(call.duration_ms)}
+                {formatLatency(call.duration_ms)}
               </span>
               <span className="flex-1 max-w-[160px] h-1 bg-muted rounded-full overflow-hidden">
                 <span

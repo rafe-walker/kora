@@ -20,6 +20,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import {
+  formatRelative as formatRelativeShared,
+  formatTimestamp,
+} from "@/lib/panelHelpers";
 import type {
   HeartbeatService,
   HeartbeatServicesResponse,
@@ -59,36 +63,13 @@ function StatusIcon({ status }: { status: HeartbeatStatus }) {
   }
 }
 
-function formatTimestamp(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
+// Heartbeat-specific override: null last_check_at means the probe
+// has never completed a roundtrip; render "never checked" instead of
+// the shared helper's "" default (the operator needs the explicit
+// confirmation that no probe has run, NOT a blank cell).
 function formatRelative(iso: string | null): string {
   if (!iso) return "never checked";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const deltaMs = d.getTime() - Date.now();
-  const absSec = Math.abs(deltaMs) / 1000;
-  if (absSec < 60) {
-    const n = Math.round(absSec);
-    return deltaMs < 0 ? `${n}s ago` : `in ${n}s`;
-  }
-  const absMin = absSec / 60;
-  if (absMin < 60) {
-    const n = Math.round(absMin);
-    return deltaMs < 0 ? `${n}m ago` : `in ${n}m`;
-  }
-  const absHr = absMin / 60;
-  if (absHr < 24) {
-    const n = Math.round(absHr);
-    return deltaMs < 0 ? `${n}h ago` : `in ${n}h`;
-  }
-  const absDay = absHr / 24;
-  const n = Math.round(absDay);
-  return deltaMs < 0 ? `${n}d ago` : `in ${n}d`;
+  return formatRelativeShared(iso);
 }
 
 function formatDetailValue(value: unknown): string {
