@@ -350,3 +350,159 @@ def test_resolve_caller_env_unset_no_yaml_returns_none(monkeypatch):
         resolve_caller("any-tok", callers_path=Path("/nonexistent"))
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# KR-MCP-STOP-CONTROL ST2 — actor_id field
+# ---------------------------------------------------------------------------
+
+
+_VALID_ACTOR_UUID = "8d50b3aa-1111-4222-9333-cafebabe1234"
+
+
+def test_caller_actor_id_defaults_to_none():
+    """Existing callers (no actor_id field) still construct cleanly."""
+    c = Caller(actor_kind="x", allowed_caps=frozenset())
+    assert c.actor_id is None
+
+
+def test_caller_actor_id_explicit_value():
+    c = Caller(
+        actor_kind="x", allowed_caps=frozenset(), actor_id=_VALID_ACTOR_UUID
+    )
+    assert c.actor_id == _VALID_ACTOR_UUID
+
+
+def test_load_callers_without_actor_id_loads_with_none(tmp_path):
+    """Backwards-compat — entries that omit actor_id load as None."""
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-no-id"),
+                    "actor_kind": "claude_pm_legacy",
+                    "allowed_caps": ["kora__create_sea_ticket"],
+                }
+            ]
+        },
+    )
+    callers = load_callers(path)
+    assert len(callers) == 1
+    c = callers[_sha256("tok-no-id")]
+    assert c.actor_id is None
+
+
+def test_load_callers_with_valid_actor_id(tmp_path):
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-with-id"),
+                    "actor_kind": "claude_pm_operator",
+                    "actor_id": _VALID_ACTOR_UUID,
+                    "allowed_caps": ["kora__request_stop"],
+                }
+            ]
+        },
+    )
+    callers = load_callers(path)
+    c = callers[_sha256("tok-with-id")]
+    assert c.actor_id == _VALID_ACTOR_UUID
+
+
+def test_load_callers_with_invalid_actor_id_skips_caller(tmp_path, caplog):
+    """Malformed UUID → skip the caller fail-CLOSED."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-bad-id"),
+                    "actor_kind": "claude_pm_bad",
+                    "actor_id": "not-a-uuid",
+                    "allowed_caps": ["kora__request_stop"],
+                }
+            ]
+        },
+    )
+    callers = load_callers(path)
+    # Caller skipped — fail-CLOSED (mutating call would deny anyway,
+    # but the WARN log is essential for operator diagnosis).
+    assert callers == {}
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("actor_id" in w for w in warnings)
+
+
+def test_load_callers_with_non_string_actor_id_skips_caller(tmp_path, caplog):
+    """Non-string actor_id (e.g. accidentally a list / int) → skip."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-int-id"),
+                    "actor_kind": "claude_pm_x",
+                    "actor_id": 12345,  # int instead of string
+                    "allowed_caps": [],
+                }
+            ]
+        },
+    )
+    callers = load_callers(path)
+    assert callers == {}
+
+
+def test_load_callers_accepts_unhyphenated_actor_id(tmp_path):
+    """uuid.UUID accepts both hyphenated + unhyphenated; we normalize."""
+    unhyphenated = _VALID_ACTOR_UUID.replace("-", "")
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-flat"),
+                    "actor_kind": "x",
+                    "actor_id": unhyphenated,
+                    "allowed_caps": [],
+                }
+            ]
+        },
+    )
+    callers = load_callers(path)
+    c = callers[_sha256("tok-flat")]
+    # Canonical hyphenated form on the way out.
+    assert c.actor_id == _VALID_ACTOR_UUID
+
+
+def test_load_callers_mixed_with_and_without_actor_id(tmp_path):
+    """Two callers in one file — additive doesn't break existing entries."""
+    path = _write_yaml(
+        tmp_path / "mcp_callers.yaml",
+        {
+            "callers": [
+                {
+                    "token_hash": _sha256("tok-old"),
+                    "actor_kind": "legacy",
+                    "allowed_caps": ["kora__create_sea_ticket"],
+                },
+                {
+                    "token_hash": _sha256("tok-new"),
+                    "actor_kind": "operator",
+                    "actor_id": _VALID_ACTOR_UUID,
+                    "allowed_caps": ["kora__request_stop"],
+                },
+            ]
+        },
+    )
+    callers = load_callers(path)
+    assert len(callers) == 2
+    assert callers[_sha256("tok-old")].actor_id is None
+    assert callers[_sha256("tok-new")].actor_id == _VALID_ACTOR_UUID
