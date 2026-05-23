@@ -292,6 +292,47 @@ staging deploy stays running as long as it's healthy.
 
 ---
 
+## Operator obligations — JSONL log rotation
+
+The daemon writes several append-only JSONL files into
+`$KORA_HOME` (`/home/hermes/.kora/` on Fly per the mounts config):
+
+| File | Source | Growth-shape |
+|---|---|---|
+| `slack_dm_log.jsonl` | KR-FEAT-SLACK-DM ST1 + ST2 inbound + outbound entries | ~1 line per inbound DM + ~1 line per outbound reply |
+| `email_outbound_log.jsonl` / `email_inbound_log.jsonl` | KR-FEAT-EMAIL outbound + IMAP inbound | ~1 line per send / receive |
+| `kora_audit_log.jsonl` | KR-AUDIT-JSONL-SINK — bridge for the 4 structured-log audit seams (`mcp.tool_called` / `webhook.dead_letter` / `slack_dm.reply_failed` / `reasoning.tool_called`) | ~1 line per audit event (multi-iteration reasoning tool calls produce N lines per response) |
+
+**The daemon does NOT rotate these files** — by design. Operator
+manages rotation via standard tooling:
+
+- **`logrotate`** with `copytruncate` for in-place rotation
+  (preserves file handle held by daemon writers)
+- **Fly log-tailing** to an external sink (Datadog / Loki /
+  S3) — `flyctl logs` reads the structured-log lines that are
+  also emitted alongside the JSONL writes; the JSONL itself can
+  be tailed via `flyctl ssh sftp` or a sidecar shipper
+- Periodic `flyctl ssh console` + `mv $KORA_HOME/foo.jsonl
+  $KORA_HOME/foo.jsonl.$(date +%Y%m%d)` for low-volume archive
+
+**No automated rotation gate** in the daemon — large JSONL files
+do NOT block Kora's operation, but unbounded disk growth on
+`$KORA_HOME`'s 5GB Fly volume will eventually trigger an OS-level
+disk-full error that surfaces as `[kora.audit.skipped] JSONL
+write failed` WARN lines + a failing TCP healthcheck.
+
+For the `kora_audit_log.jsonl` specifically: structured-log
+lines stay emitted even when the JSONL write fails, so operator
+grep workflows keep functioning — the panel surface degrades
+silently to "no recent events" until the disk space frees.
+
+When the substrate-backed audit ledger lands (cross-team coord
+2026-05-22), these JSONL files become a debug/forensics-only
+artifact + substrate becomes the canonical audit surface; this
+rotation responsibility shrinks but doesn't disappear.
+
+---
+
 ## Known-good first-deploy smoke artifacts
 
 After Step 8 succeeds, capture for the audit trail:

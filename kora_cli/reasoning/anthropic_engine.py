@@ -885,18 +885,12 @@ def _emit_tool_called_audit(
     tool_status: str,
     exc_type: Optional[str] = None,
 ) -> None:
-    """Stable structured-log audit per reasoning-tool call.
+    """Stable audit per reasoning-tool call — KR-AUDIT-JSONL-SINK.
 
-    Stable prefix ``[kora.reasoning.tool_called]`` so operator
-    log analysis (flyctl logs / OPS-PANEL / future
-    REASONING-PANEL) can branch on tool_name / tool_status / etc.
-
-    Same audit-seam precedent as KR-MCP-RUNTIME-SURFACE ST2's
-    ``[kora.mcp.tool_called]`` — substrate-backed audit is the
-    follow-on bucket (substrate-backed conversation memory +
-    audit). When that lands, the runtime extension is a small
-    change in this emitter; the log-line surface is the stable
-    seam.
+    **Dual-write**: existing ``[kora.reasoning.tool_called]``
+    structured-log line preserved VERBATIM (operator grep workflows
+    keep working) + :func:`emit_audit` writes a JSONL row to
+    ``kora_audit_log.jsonl`` (panel consumption).
 
     NEVER logs tool input/output bodies (those may contain
     privileged operator data). Names + status codes only.
@@ -923,3 +917,22 @@ def _emit_tool_called_audit(
             tool_duration_ms,
             tool_status,
         )
+
+    # KR-AUDIT-JSONL-SINK — JSONL bridge to panels.
+    from kora_cli.audit import emit_audit
+
+    details: Dict[str, Any] = {
+        "tool_name": tool_name,
+        "triggered_by": triggered_by,
+        "tool_duration_ms": tool_duration_ms,
+        "tool_status": tool_status,
+    }
+    if exc_type is not None:
+        details["exc_type"] = exc_type
+
+    emit_audit(
+        seam="reasoning.tool_called",
+        details=details,
+        caller_session_id=caller_session_id,
+        source="reasoning",
+    )

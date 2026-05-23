@@ -683,10 +683,22 @@ class _ST2_ToolInputError(ValueError):
 
 
 def _emit_audit(*, tool: str, caller: Caller, args: Dict[str, Any], result: str) -> None:
-    """Stable audit-log line. Replaces the bucket-spec ledger write.
+    """Stable audit per MCP mutating-tool call — KR-AUDIT-JSONL-SINK.
 
-    Operator finds these via flyctl logs or the OPS-PANEL chain tail.
-    Body content is NEVER logged here — args summary only.
+    **Dual-write**: existing ``[kora.mcp.tool_called]``
+    structured-log line preserved VERBATIM (operator grep workflows
+    keep working) + :func:`emit_audit` writes a JSONL row to
+    ``kora_audit_log.jsonl`` (panel consumption).
+
+    Body content NEVER in the audit — only ``args_keys`` (sorted
+    list of key names; values dropped). The 5 mutating-tool call
+    sites that invoke this helper pre-filter their ``args`` dicts
+    to safe shapes (e.g. ``text_len`` instead of ``text``,
+    ``subject_len`` instead of ``subject``).
+
+    Read tools (KR-MCP-RUNTIME-SURFACE ST1) don't currently emit
+    audit. When they do (follow-on bucket), they'll use
+    ``tool_kind="read"`` on the same ``mcp.tool_called`` seam.
     """
     logger.info(
         "[kora.mcp.tool_called] tool=%s caller_actor_kind=%s args_keys=%s result=%s",
@@ -694,6 +706,21 @@ def _emit_audit(*, tool: str, caller: Caller, args: Dict[str, Any], result: str)
         caller.actor_kind,
         sorted(args.keys()),
         result,
+    )
+
+    # KR-AUDIT-JSONL-SINK — JSONL bridge to panels.
+    from kora_cli.audit import emit_audit
+
+    emit_audit(
+        seam="mcp.tool_called",
+        details={
+            "tool_name": tool,
+            "tool_kind": "mutating",
+            "caller_actor_kind": caller.actor_kind,
+            "args_keys": sorted(args.keys()),
+            "result": result,
+        },
+        source="mcp_http",
     )
 
 

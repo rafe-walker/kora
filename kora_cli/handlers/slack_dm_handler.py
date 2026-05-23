@@ -852,13 +852,35 @@ class SlackDMHandler:
     def _emit_reply_failed_event(
         self, *, channel_id: str, reason: str
     ) -> None:
-        """Stable structured-log emit for reply failure. Same audit
-        seam as ``_emit_received_event`` — extends to chain emit
-        when substrate ships the vocab literal."""
+        """Audit per reply-failure — KR-AUDIT-JSONL-SINK dual-write.
+
+        Preserves the existing ``[kora.slack_dm.reply_failed]``
+        structured-log line VERBATIM (operator grep workflows
+        unchanged) + writes a JSONL row to ``kora_audit_log.jsonl``
+        for AGENT-ACTIVITY-PANEL / WEBHOOK-EVENTS-PANEL consumption.
+
+        ``channel_id`` is included verbatim (Slack channel IDs are
+        not sensitive). ``reason`` is a stable machine code
+        (``slack_client_not_configured`` / ``transport:<status>`` /
+        ``slack_api:<error>``) — no operator data.
+        """
+        # Existing structured-log line — preserved VERBATIM.
         logger.warning(
             "[kora.slack_dm.reply_failed] channel=%s reason=%s",
             channel_id,
             reason,
+        )
+
+        # KR-AUDIT-JSONL-SINK — JSONL bridge to panels.
+        from kora_cli.audit import emit_audit
+
+        emit_audit(
+            seam="slack_dm.reply_failed",
+            details={
+                "channel_id": channel_id,
+                "reason": reason,
+            },
+            source="slack_dm",
         )
 
     @staticmethod
