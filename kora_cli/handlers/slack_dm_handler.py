@@ -50,7 +50,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -408,6 +408,13 @@ class SlackDMHandler:
             "output_tokens": None,
             "reasoning_duration_ms": None,
             "reasoning_error": None,
+            # KR-FEAT-AGENTIC-REASONING ST2 — names of reasoning-side
+            # tools Kora actually invoked during this response.
+            # Empty list when she didn't call any tools (flat
+            # completion path); recorded in the outbound JSONL so
+            # the REASONING-PANEL can surface "this response used
+            # N tools" without parsing structured logs.
+            "tools_used": None,
         }
 
         if engine is None:
@@ -578,6 +585,7 @@ class SlackDMHandler:
                     "output_tokens": None,
                     "reasoning_duration_ms": None,
                     "reasoning_error": f"engine_exception:{type(exc).__name__}",
+                    "tools_used": None,
                 },
             )
 
@@ -587,6 +595,23 @@ class SlackDMHandler:
             "output_tokens": result.output_tokens,
             "reasoning_duration_ms": result.reasoning_duration_ms,
             "reasoning_error": result.error,
+            # KR-FEAT-AGENTIC-REASONING ST2 — pass the engine's
+            # tools_used list through to the outbound JSONL.
+            # Semantic distinction in JSONL key presence:
+            #   - key absent: engine refused / errored / bypassed
+            #     (no tools could have been called)
+            #   - key present == []: engine completed reasoning +
+            #     chose to use zero tools
+            #   - key present with names: engine called these tools
+            # When result.error is set the engine refused before
+            # invoking any tool — same as "engine bypassed" from
+            # the tools_used audit perspective, so we pass None to
+            # the outbound builder + the key is omitted.
+            "tools_used": (
+                list(result.tools_used)
+                if result.error is None
+                else None
+            ),
         }
 
         if result.error is not None:
@@ -747,6 +772,13 @@ class SlackDMHandler:
         # call, the caller's actor_kind appears here for audit
         # attribution. None (omitted) on handler-driven sends.
         caller_actor_kind: Optional[str] = None,
+        # KR-FEAT-AGENTIC-REASONING ST2 — names of reasoning-side
+        # tools Kora invoked during this response. Empty list when
+        # she didn't use tools (flat completion path). None
+        # (omitted from JSONL) on canned-fallback / non-reasoning
+        # paths so the field's presence distinguishes "engine ran"
+        # from "engine bypassed."
+        tools_used: Optional[List[str]] = None,
     ) -> None:
         """Outbound-side JSONL entry. Distinct schema from inbound
         entries (``sent_at`` instead of ``received_at``) so operator
@@ -798,6 +830,13 @@ class SlackDMHandler:
             entry["reasoning_error"] = reasoning_error
         if caller_actor_kind is not None:
             entry["caller_actor_kind"] = caller_actor_kind
+        # tools_used: None means the engine wasn't engaged (canned
+        # fallback / no-reasoning paths); we omit the key so JSONL
+        # consumers can branch on presence. ``[]`` IS recorded —
+        # it means the engine ran + chose to use zero tools, which
+        # is a different signal than "engine didn't run."
+        if tools_used is not None:
+            entry["tools_used"] = list(tools_used)
 
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
