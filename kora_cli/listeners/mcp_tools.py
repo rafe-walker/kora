@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -996,6 +996,321 @@ async def _dispatch_send_webhook_test_event(
 
 
 # ---------------------------------------------------------------------------
+# Tool 9: kora__send_slack_dm (KR-MCP-SEND-TOOLS)
+# ---------------------------------------------------------------------------
+
+
+SEND_SLACK_DM_TOOL: Dict[str, Any] = {
+    "name": "kora__send_slack_dm",
+    "description": (
+        "Send a Slack DM via Kora's SlackClient. Restricted to DM "
+        "channels (channel_id must start with 'D' OR match "
+        "KORA_SLACK_JOSHUA_USER_ID to prevent accidental channel "
+        "broadcast). Bot identity is Kora; from-identity is NOT "
+        "caller-controllable. Caller must have kora__send_slack_dm "
+        "in allowed_caps. Args: channel_id, text (≤4000 chars), "
+        "thread_ts (optional). Returns slack_message_ts on success."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "channel_id": {"type": "string", "minLength": 1},
+            "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "thread_ts": {"type": ["string", "null"]},
+        },
+        "required": ["channel_id", "text"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+SLACK_DM_TEXT_MAX_LEN = 4000
+_JOSHUA_USER_ID_ENV = "KORA_SLACK_JOSHUA_USER_ID"
+
+
+class SendSlackDmResult(BaseModel):
+    success: bool
+    slack_message_ts: Optional[str] = None
+    sent_at: str
+    caller_actor_kind: str
+
+
+async def _execute_send_slack_dm(
+    *,
+    channel_id: str,
+    text: str,
+    thread_ts: Optional[str],
+    caller: Caller,
+) -> SendSlackDmResult:
+    # Input validation — at the MCP layer so the error envelope is
+    # JSON-RPC-shaped (-32602 invalid_params) rather than client
+    # exception text.
+    if not isinstance(channel_id, str) or not channel_id.strip():
+        raise _ST2_ToolInputError("channel_id is required (non-empty)")
+    if not isinstance(text, str) or not text.strip():
+        raise _ST2_ToolInputError("text is required (non-empty)")
+    if len(text) > SLACK_DM_TEXT_MAX_LEN:
+        raise _ST2_ToolInputError(
+            f"text exceeds Slack's {SLACK_DM_TEXT_MAX_LEN}-char limit "
+            f"({len(text)} > {SLACK_DM_TEXT_MAX_LEN})"
+        )
+
+    # channel_id validation — DM channels only (D-prefix) OR
+    # Joshua's user ID (which Slack auto-resolves to DM channel
+    # on bot post). Reject U... user-IDs at the MCP layer (would
+    # require an extra Slack API call to resolve; operator should
+    # pre-resolve). Defense against accidental channel broadcast.
+    joshua_user_id = os.environ.get(_JOSHUA_USER_ID_ENV, "").strip()
+    if not (
+        channel_id.startswith("D")
+        or (joshua_user_id and channel_id == joshua_user_id)
+    ):
+        raise _ST2_ToolInputError(
+            f"channel_id {channel_id!r} must start with 'D' (DM "
+            f"channel) or match KORA_SLACK_JOSHUA_USER_ID; "
+            f"non-DM channel sends are out of scope for this tool"
+        )
+
+    # Resolve the daemon-coordinator-managed SlackClient.
+    from kora_cli.listeners.slack_client_listener import (
+        current_slack_client,
+    )
+
+    client = current_slack_client()
+    if client is None:
+        # Surface as -32001 (capability_denied) with a distinct
+        # error_code so callers can branch on availability vs. ACL.
+        raise _ST2_ToolInputError(
+            "slack_client_unavailable: SlackClient not registered "
+            "(KORA_SLACK_BOT_TOKEN unset or daemon not running with "
+            "slack_client listener)"
+        )
+
+    try:
+        response = await client.post_dm(
+            channel_id=channel_id, text=text, thread_ts=thread_ts
+        )
+    except Exception as exc:
+        # Sanitize — never let the bot token leak in error text.
+        raise _ST2_ToolInputError(
+            f"slack_send_failed: {type(exc).__name__}"
+        )
+
+    # Audit log entry via a fresh handler instance (just for the
+    # outbound-log helper). The handler doesn't need an event payload
+    # — we're using its outbound-log writer to keep entries in one
+    # file with consistent shape.
+    sent_at_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    slack_ts = response.get("ts") if isinstance(response, dict) else None
+
+    try:
+        from kora_cli.handlers.slack_dm_handler import SlackDMHandler
+
+        SlackDMHandler()._append_outbound_log_entry(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            text=text,
+            slack_message_ts=str(slack_ts) if slack_ts else None,
+            send_status="ok",
+            caller_actor_kind=caller.actor_kind,
+        )
+    except Exception as log_exc:  # pragma: no cover — log fail-soft
+        logger.warning(
+            "[kora.mcp.send_slack_dm] outbound log write failed: %r",
+            log_exc,
+        )
+
+    _emit_audit(
+        tool="kora__send_slack_dm",
+        caller=caller,
+        args={
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+            "text_len": len(text),
+        },
+        result=f"slack_ts={slack_ts}",
+    )
+
+    return SendSlackDmResult(
+        success=True,
+        slack_message_ts=str(slack_ts) if slack_ts else None,
+        sent_at=sent_at_iso,
+        caller_actor_kind=caller.actor_kind,
+    )
+
+
+async def _dispatch_send_slack_dm(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_send_slack_dm(
+        channel_id=params.get("channel_id", ""),
+        text=params.get("text", ""),
+        thread_ts=params.get("thread_ts"),
+        caller=caller,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 10: kora__send_email (KR-MCP-SEND-TOOLS)
+# ---------------------------------------------------------------------------
+
+
+SEND_EMAIL_TOOL: Dict[str, Any] = {
+    "name": "kora__send_email",
+    "description": (
+        "Send an email via Kora's PurelymailClient (SMTP). "
+        "from_addr is derived from KORA_PUREMAIL_SMTP_USERNAME and "
+        "is NOT caller-controllable (security: prevents sender "
+        "impersonation). Recipient cap (≤10) + from-domain "
+        "allowlist + 30s timeout + retry-on-transient enforced by "
+        "the underlying client. NO attachments via this tool — "
+        "deferred to KR-MCP-SEND-TOOLS-ATTACHMENTS. Caller must "
+        "have kora__send_email in allowed_caps."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "to": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "minItems": 1,
+                "maxItems": 10,
+            },
+            "subject": {"type": "string", "minLength": 1},
+            "body_text": {"type": "string", "minLength": 1},
+            "body_html": {"type": ["string", "null"]},
+            "in_reply_to": {"type": ["string", "null"]},
+        },
+        "required": ["to", "subject", "body_text"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class SendEmailResult(BaseModel):
+    success: bool
+    message_id: Optional[str] = None
+    smtp_code: Optional[int] = None
+    sent_at: str
+    caller_actor_kind: str
+    error: Optional[str] = None
+
+
+async def _execute_send_email(
+    *,
+    to: List[str],
+    subject: str,
+    body_text: str,
+    body_html: Optional[str],
+    in_reply_to: Optional[str],
+    caller: Caller,
+) -> SendEmailResult:
+    # MCP-layer validation. The PurelymailClient enforces its own
+    # caps (≤10 recipients; per-/total-attachment sizes; domain
+    # allowlist) but we surface JSON-RPC-shaped errors at this
+    # layer for malformed input + before any SMTP traffic.
+    if not isinstance(to, list) or not to:
+        raise _ST2_ToolInputError("to must be a non-empty list of strings")
+    if not isinstance(subject, str) or not subject.strip():
+        raise _ST2_ToolInputError("subject is required (non-empty)")
+    if not isinstance(body_text, str) or not body_text.strip():
+        raise _ST2_ToolInputError("body_text is required (non-empty)")
+    if len(to) > 10:
+        raise _ST2_ToolInputError(
+            f"to has {len(to)} addresses; max 10 per send "
+            "(defense against accidental mass-send)"
+        )
+    for addr in to:
+        if not isinstance(addr, str) or "@" not in addr:
+            raise _ST2_ToolInputError(
+                f"recipient {addr!r} is malformed (must be a string "
+                "containing '@')"
+            )
+
+    # Resolve the daemon-coordinator-managed PurelymailClient.
+    from kora_cli.listeners.purelymail_client_listener import (
+        current_purelymail_client,
+    )
+
+    client = current_purelymail_client()
+    if client is None:
+        raise _ST2_ToolInputError(
+            "purelymail_client_unavailable: PurelymailClient not "
+            "registered (SMTP auth env unset or daemon not running "
+            "with purelymail_client listener)"
+        )
+
+    # from_addr is the username env value — never caller-controllable.
+    from_addr = os.environ.get("KORA_PUREMAIL_SMTP_USERNAME", "").strip()
+    if not from_addr:
+        raise _ST2_ToolInputError(
+            "purelymail_client_unavailable: "
+            "KORA_PUREMAIL_SMTP_USERNAME env is unset"
+        )
+
+    try:
+        result = await client.send_email(
+            from_addr=from_addr,
+            to=to,
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
+            in_reply_to=in_reply_to,
+            attachments=None,  # NOT supported in this bucket
+            caller_actor_kind=caller.actor_kind,
+        )
+    except Exception as exc:
+        # Sanitize — PurelymailClient already strips the password
+        # from any error string it raises; we add the type-name
+        # prefix without leaking caller-controlled content.
+        raise _ST2_ToolInputError(
+            f"email_send_failed: {type(exc).__name__}"
+        )
+
+    _emit_audit(
+        tool="kora__send_email",
+        caller=caller,
+        args={
+            "to": to,
+            "subject_len": len(subject),
+            "body_text_len": len(body_text),
+            "has_html": body_html is not None,
+            "in_reply_to": in_reply_to,
+        },
+        result=(
+            f"status={result.status} smtp_code={result.smtp_code} "
+            f"message_id={result.message_id}"
+        ),
+    )
+
+    return SendEmailResult(
+        success=result.status == "ok",
+        message_id=result.message_id,
+        smtp_code=result.smtp_code,
+        sent_at=result.sent_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        caller_actor_kind=caller.actor_kind,
+        error=result.error,
+    )
+
+
+async def _dispatch_send_email(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_send_email(
+        to=params.get("to", []),
+        subject=params.get("subject", ""),
+        body_text=params.get("body_text", ""),
+        body_html=params.get("body_html"),
+        in_reply_to=params.get("in_reply_to"),
+        caller=caller,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public ST2 descriptor + dispatch tables
 # ---------------------------------------------------------------------------
 
@@ -1013,6 +1328,9 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
     SEND_WEBHOOK_TEST_EVENT_TOOL,
+    # KR-MCP-SEND-TOOLS additions
+    SEND_SLACK_DM_TOOL,
+    SEND_EMAIL_TOOL,
 ]
 
 
@@ -1024,4 +1342,7 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     "kora__request_state_transition": _dispatch_request_state_transition,
     "kora__create_sea_ticket": _dispatch_create_sea_ticket,
     "kora__send_webhook_test_event": _dispatch_send_webhook_test_event,
+    # KR-MCP-SEND-TOOLS additions
+    "kora__send_slack_dm": _dispatch_send_slack_dm,
+    "kora__send_email": _dispatch_send_email,
 }
