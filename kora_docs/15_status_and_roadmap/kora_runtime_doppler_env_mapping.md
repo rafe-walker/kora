@@ -135,6 +135,34 @@ run the smoke tests in `purelymail_runbook.md` — Part 1 Step 4
 for outbound (`SendResult(status="ok", smtp_code=250)`) and
 Part 2 Step 3 for inbound (JSONL `handled_status: received`).
 
+#### Phase 2 Feature follow-on — Alert notifier (KR-ALERT-NOTIFY ST1 + ST2)
+
+Push-notification layer that pings Joshua via Slack DM (critical /
+warning) or email (info) when alerts fire in the cockpit. All
+envs in `kora-runtime-gateways`. Channels reuse the same
+SlackClient + PurelymailClient set up in the rows above.
+
+**ST1 (set during initial deploy):**
+
+| Secret | Required by | Notes | Example shape |
+|---|---|---|---|
+| `KORA_SLACK_JOSHUA_USER_ID` | Slack DM channel (also used by Slack inbound handler) | The notifier passes this as `channel_id` to `chat.postMessage`; Slack auto-resolves to Joshua's DM channel | `U01ABC...` |
+| `KORA_ALERT_NOTIFY_INTERVAL_SEC` | Optional override | Default `180` (3 min). Cycle cadence for the notifier periodic task. | `180` |
+
+**ST2 throttling (optional — defaults are operator-friendly):**
+
+| Secret | Default | Effect |
+|---|---|---|
+| `KORA_ALERT_NOTIFY_MODE` | `immediate` | `digest` queues warning + info for a daily email; criticals always fire immediately |
+| `KORA_ALERT_NOTIFY_CATEGORY_COOLDOWN_SEC` | `1800` (30 min) | Same category can't re-dispatch within this window. Set `0` to disable. |
+| `KORA_ALERT_NOTIFY_BURST_THRESHOLD` | `5` | >threshold newly-firing alerts in one cycle → ONE summary Slack DM instead of N individual |
+| `KORA_ALERT_NOTIFY_DIGEST_INTERVAL_SEC` | `86400` (24h) | Digest-flush cadence when mode=digest. No-op in immediate mode. |
+| `KORA_COCKPIT_URL` | unset | When set, appended to email bodies + burst summaries so operator can jump to the cockpit |
+
+See `alert_notifier_runbook.md` for full configuration + tuning
+guidance + the `kora__send_test_alert` MCP tool for channel
+verification.
+
 ---
 
 ## fly.toml `[env]` values (NOT in Doppler)

@@ -77,6 +77,11 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("KORA_EMAIL_JOSHUA_ADDRESS", _JOSHUA_EMAIL)
     monkeypatch.setenv("KORA_EMAIL_KORA_ADDRESS", _KORA_EMAIL)
     monkeypatch.delenv("KORA_COCKPIT_URL", raising=False)
+    # ST2 throttling envs — disabled by default so ST1-shape tests
+    # get the pre-ST2 behavior. ST2-specific tests override these.
+    monkeypatch.setenv("KORA_ALERT_NOTIFY_CATEGORY_COOLDOWN_SEC", "0")
+    monkeypatch.setenv("KORA_ALERT_NOTIFY_BURST_THRESHOLD", "100")
+    monkeypatch.delenv("KORA_ALERT_NOTIFY_MODE", raising=False)
 
 
 def _make_alert(

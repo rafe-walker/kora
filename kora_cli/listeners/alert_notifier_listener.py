@@ -53,39 +53,54 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SEC: float = 180.0  # 3 min per §4 Q1 default
 INTERVAL_ENV: str = "KORA_ALERT_NOTIFY_INTERVAL_SEC"
 
+# ST2 digest-flush cadence — daily by default. The digest-flush task
+# is registered unconditionally; in immediate mode the notifier's
+# `flush_digest` is a no-op (queue is always empty in immediate mode).
+DEFAULT_DIGEST_INTERVAL_SEC: float = 86400.0  # 24 h
+DIGEST_INTERVAL_ENV: str = "KORA_ALERT_NOTIFY_DIGEST_INTERVAL_SEC"
 
-def _read_interval() -> float:
-    """Resolve cycle cadence from env with sane fallback.
 
-    Mirrors the pattern from
-    :func:`kora_cli.listeners.mcp_consumption._read_health_check_interval`
-    + email_inbound_imap_listener's _read_poll_interval — invalid
-    values (non-numeric, <=0) WARN-log + fall back to default.
-    """
-    raw = os.environ.get(INTERVAL_ENV, "").strip()
+def _read_positive_interval(
+    env_name: str, default_value: float
+) -> float:
+    """Generic env-or-default reader for cadence values. Mirrors the
+    pattern in mcp_consumption / email_inbound_imap_listener."""
+    raw = os.environ.get(env_name, "").strip()
     if not raw:
-        return DEFAULT_INTERVAL_SEC
+        return default_value
     try:
         value = float(raw)
     except ValueError:
         logger.warning(
             "[kora.alert_notifier_listener] %s=%r is not numeric; using "
             "default %ss",
-            INTERVAL_ENV,
+            env_name,
             raw,
-            DEFAULT_INTERVAL_SEC,
+            default_value,
         )
-        return DEFAULT_INTERVAL_SEC
+        return default_value
     if value <= 0:
         logger.warning(
             "[kora.alert_notifier_listener] %s=%s must be > 0; using "
             "default %ss",
-            INTERVAL_ENV,
+            env_name,
             value,
-            DEFAULT_INTERVAL_SEC,
+            default_value,
         )
-        return DEFAULT_INTERVAL_SEC
+        return default_value
     return value
+
+
+def _read_interval() -> float:
+    """Resolve cycle cadence from env with sane fallback."""
+    return _read_positive_interval(INTERVAL_ENV, DEFAULT_INTERVAL_SEC)
+
+
+def _read_digest_interval() -> float:
+    """Resolve digest-flush cadence from env with sane fallback."""
+    return _read_positive_interval(
+        DIGEST_INTERVAL_ENV, DEFAULT_DIGEST_INTERVAL_SEC
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -145,16 +160,56 @@ async def run_notification_cycle() -> None:
         )
         return
 
-    if result.newly_firing_count > 0 or result.dispatch_errors > 0:
+    if (
+        result.newly_firing_count > 0
+        or result.dispatch_errors > 0
+        or result.cooldown_suppressed > 0
+        or result.burst_summarized > 0
+        or result.digest_queued > 0
+    ):
         logger.info(
             "[kora.alert_notifier_listener] cycle: active=%d new=%d "
-            "resolved=%d slack=%d email=%d errors=%d",
+            "resolved=%d slack=%d email=%d errors=%d "
+            "cooldown_suppressed=%d burst_summarized=%d digest_queued=%d",
             result.active_count,
             result.newly_firing_count,
             result.newly_resolved_count,
             result.slack_dispatched,
             result.email_dispatched,
             result.dispatch_errors,
+            result.cooldown_suppressed,
+            result.burst_summarized,
+            result.digest_queued,
+        )
+
+
+async def run_digest_flush() -> None:
+    """ST2 digest-flush scheduler tick. No-op in immediate mode (the
+    notifier's :meth:`flush_digest` checks mode internally + returns
+    a zero result without sending). Defense-in-depth outer catch."""
+    notifier = current_alert_notifier()
+    if notifier is None:
+        logger.debug(
+            "[kora.alert_notifier_listener] digest tick skipped: no "
+            "active notifier"
+        )
+        return
+    try:
+        result = await notifier.flush_digest()
+    except Exception as exc:
+        logger.warning(
+            "[kora.alert_notifier_listener] digest flush raised past "
+            "inner catch: %r",
+            exc,
+        )
+        return
+    if result.flushed_count > 0 or result.success is False:
+        logger.info(
+            "[kora.alert_notifier_listener] digest flush: count=%d "
+            "success=%s error=%s",
+            result.flushed_count,
+            result.success,
+            result.error,
         )
 
 
@@ -252,4 +307,14 @@ register_periodic_task(
     "alerts.notify",
     interval_seconds=_read_interval(),
     callable=run_notification_cycle,
+)
+
+# ST2 digest-flush task. Registered unconditionally — the notifier's
+# flush_digest() checks mode internally and no-ops in immediate mode,
+# so the env can flip between modes across daemon restarts without
+# changing the registered task list.
+register_periodic_task(
+    "alerts.digest_flush",
+    interval_seconds=_read_digest_interval(),
+    callable=run_digest_flush,
 )

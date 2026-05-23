@@ -166,6 +166,9 @@ async def test_run_cycle_invokes_notifier():
     fake_result.newly_resolved_count = 0
     fake_result.slack_dispatched = 0
     fake_result.email_dispatched = 0
+    fake_result.cooldown_suppressed = 0
+    fake_result.burst_summarized = 0
+    fake_result.digest_queued = 0
     fake_notifier.run_notification_cycle = AsyncMock(return_value=fake_result)
     with patch.object(
         alert_notifier_listener,
