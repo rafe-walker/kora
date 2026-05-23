@@ -1,24 +1,24 @@
-"""AnthropicReasoningEngine — KR-FEAT-AI-RESPONSE-LOOP ST1.
+"""AnthropicReasoningEngine — KR-FEAT-AI-RESPONSE-LOOP ST1+ST2.
 
 Implements :class:`kora_cli.reasoning.engine.ReasoningEngine` against
-Anthropic's Python SDK (``anthropic==0.86.0``, declared in the
-``[web]`` extra alongside fastapi/uvicorn/slowapi so daemon installs
-auto-pick it up).
+Anthropic's Python SDK (``anthropic==0.86.0``, runtime dep — promoted
+from extra in ST2 per PM ruling 2026-05-22 since the reasoning_engine
+listener imports it unconditionally at boot).
 
-# Credential cascade
+# Credential cascade — OAuth FIRST (PM ruling 2026-05-22 ST2)
 
-Two supported credential sources (K-DG drift surfaced in the ST1
-PR body — bucket spec said ``KORA_ANTHROPIC_API_KEY`` only; the
-existing env mapping doc plus the gate-2 anti-secret block + the
-"Max plan via Agent SDK billing" framing in §1 imply
-``CLAUDE_CODE_OAUTH_TOKEN`` is the canonical credential):
+Two supported credential sources. **OAuth-first** because Joshua's
+Max 20x plan + the post-May-15 SDK billing split route the $200/mo
+Agent SDK pool via the OAuth token path. OAuth = production;
+API key = fallback for testing / dev / local-without-Max-setup.
 
-  1. ``KORA_ANTHROPIC_API_KEY`` (if set) → SDK constructed with
-     ``api_key=...``. Billing: Anthropic Console (operator must
-     provision an API key separately).
-  2. ``CLAUDE_CODE_OAUTH_TOKEN`` (fallback) → SDK constructed with
+  1. ``CLAUDE_CODE_OAUTH_TOKEN`` (if set) → SDK constructed with
      ``auth_token=...``. Billing: Max plan ($200/mo Agent SDK
      pool). Existing Doppler ``kora-runtime-anthropic`` secret.
+     **Production path.**
+  2. ``KORA_ANTHROPIC_API_KEY`` (fallback) → SDK constructed with
+     ``api_key=...``. Billing: Anthropic Console (operator must
+     provision an API key separately). Test / dev escape hatch.
 
 Both unset → ``ReasoningEngineNotConfigured`` raised at
 construction. **Fail-CLOSED** per
@@ -153,18 +153,22 @@ class AnthropicReasoningEngine:
         # stand-in (anything with an async ``messages.create``).
         client: Optional[Any] = None,
     ) -> None:
-        # Credential cascade. Read once at construction (production
-        # rotation pattern: redeploy, not hot-reload — same as
-        # SlackClient's bot-token model).
-        api_key = os.environ.get(API_KEY_ENV, "").strip() or None
+        # Credential cascade — OAuth FIRST (PM ruling 2026-05-22).
+        # OAuth = production path (Max plan billing); API key =
+        # fallback for dev/testing. Read once at construction
+        # (production rotation pattern: redeploy, not hot-reload —
+        # same as SlackClient's bot-token model).
         oauth_token = os.environ.get(OAUTH_TOKEN_ENV, "").strip() or None
-        if not api_key and not oauth_token:
+        api_key = os.environ.get(API_KEY_ENV, "").strip() or None
+        if not oauth_token and not api_key:
             raise ReasoningEngineNotConfigured(
-                f"both {API_KEY_ENV} and {OAUTH_TOKEN_ENV} are unset — "
-                "daemon cannot reason. Set one in Doppler "
-                "(kora-runtime-anthropic project). See env-mapping doc."
+                f"both {OAUTH_TOKEN_ENV} and {API_KEY_ENV} are unset — "
+                "daemon cannot reason. Set CLAUDE_CODE_OAUTH_TOKEN in "
+                "Doppler (kora-runtime-anthropic project) — the "
+                "production path via Joshua's Max plan."
             )
-        self._auth_mode: str = "api_key" if api_key else "oauth_token"
+        # OAuth wins when both are set.
+        self._auth_mode: str = "oauth_token" if oauth_token else "api_key"
         # Stored under underscore-prefixed attrs to discourage casual
         # serialization. NEVER logged.
         self._api_key = api_key
@@ -286,15 +290,15 @@ class AnthropicReasoningEngine:
         # never see the real client created.
         from anthropic import AsyncAnthropic
 
-        if self._api_key:
-            self._client = AsyncAnthropic(
-                api_key=self._api_key, timeout=self._timeout
-            )
-        else:
-            # OAuth token via the SDK's ``auth_token`` constructor
-            # arg (Max plan billing path).
+        # OAuth-first per PM ruling: prefer Max-plan billing path.
+        # Falls back to API key only when OAuth is absent.
+        if self._oauth_token:
             self._client = AsyncAnthropic(
                 auth_token=self._oauth_token, timeout=self._timeout
+            )
+        else:
+            self._client = AsyncAnthropic(
+                api_key=self._api_key, timeout=self._timeout
             )
         return self._client
 
