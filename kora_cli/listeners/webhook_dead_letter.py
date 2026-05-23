@@ -111,6 +111,10 @@ def emit_webhook_dead_letter(
       now: Injectable timestamp for tests. Defaults to ``time.time()``.
     """
     ts = now if now is not None else time.time()
+    summarized_headers = _summarize_headers(headers)
+
+    # Preserve the existing structured-log line VERBATIM — operator
+    # grep workflows depend on the prior shape.
     logger.warning(
         "[kora.webhook.dead_letter] source=%s reason=%s ts=%.3f "
         "peer_ip=%s request_id=%s body_bytes=%s headers=%s",
@@ -120,5 +124,25 @@ def emit_webhook_dead_letter(
         peer_ip or "-",
         request_id or "-",
         body_bytes if body_bytes is not None else "-",
-        _summarize_headers(headers),
+        summarized_headers,
+    )
+
+    # KR-AUDIT-JSONL-SINK — JSONL bridge to panels.
+    # ``slack`` and ``email`` are the only verifier sources today
+    # (KR-D-DAEMON ST3); both map cleanly to SourceName literals.
+    from kora_cli.audit import emit_audit
+
+    source_literal = "slack_dm" if source == "slack" else "email"
+    emit_audit(
+        seam="webhook.dead_letter",
+        details={
+            "source": source,
+            "reason": reason,
+            "ts": round(ts, 3),
+            "peer_ip": peer_ip or "-",
+            "request_id": request_id or "-",
+            "body_bytes": body_bytes if body_bytes is not None else "-",
+            "headers": summarized_headers,
+        },
+        source=source_literal,
     )
