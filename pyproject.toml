@@ -73,6 +73,16 @@ dependencies = [
   # (slowapi was wrongly under [web] extra while the webhooks listener
   # imported it unconditionally).
   "aiosmtplib==4.0.1",
+  # Rate limiter for the public webhook listener (KR-D-DAEMON ST3).
+  # Runtime-critical: kora_cli/listeners/webhooks.py imports slowapi
+  # unconditionally, and the import chain
+  #   kora_cli/web_server.py → listeners/__init__ → listeners/webhooks
+  # runs in every base-install process that touches web_server. Under
+  # the [web] extra (where it lived until task #265), base CI / dev
+  # installs hit ModuleNotFoundError and 18 mcp_clients tests fell
+  # over on import (task #269). PR #125 traced the cascade. Same
+  # placement discipline as aiosmtplib above.
+  "slowapi==0.1.9",
 ]
 
 [project.urls]
@@ -188,7 +198,7 @@ youtube = [
   "youtube-transcript-api==1.2.4",
 ]
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "slowapi>=0.1.9", "anthropic==0.86.0"]
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "anthropic==0.86.0"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
