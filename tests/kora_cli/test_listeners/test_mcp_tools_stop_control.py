@@ -48,6 +48,32 @@ def _reset_caller_cache():
     mcp_caller_auth._reset_cache_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _reset_operational_state_holder():
+    """Reset the module-level ``OperationalStateHolder`` singleton
+    between tests — KR-TEST-STABILITY-XDIST.
+
+    The ``_holder_with_state`` helper below installs a holder via
+    direct ``h_mod._HOLDER = holder`` assignment (rather than
+    ``monkeypatch.setattr``) because most tests use the helper for
+    its side effect WITHOUT taking ``monkeypatch`` as a fixture arg.
+    Without this autouse reset, a test that sets the holder to
+    PAUSED leaks into the next test on the same xdist worker —
+    surfacing as ``test_email_inbound_handler.py`` flakes where the
+    state-gate sees a stale PAUSED holder and returns
+    ``filtered_paused`` instead of ``received``.
+
+    Resetting at BOTH setup and teardown is intentional: a previous
+    test in the same worker may have left a dirty holder, AND this
+    test may dirty the holder. Either path catches the leak.
+    """
+    from agent import operational_state_holder as h_mod
+
+    h_mod._HOLDER = None
+    yield
+    h_mod._HOLDER = None
+
+
 @pytest.fixture
 def authorized_token(monkeypatch, tmp_path):
     """Caller with BOTH pause + resume caps (no full transition cap)."""
