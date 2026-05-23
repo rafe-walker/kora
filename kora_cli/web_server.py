@@ -5310,6 +5310,156 @@ async def list_recent_email():
 
 
 # ---------------------------------------------------------------------------
+# Kora reasoning activity lens (KR-REASONING-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing view of Kora's recent ReasoningEngine calls.
+# Pairs with CC#3's KR-FEAT-AI-RESPONSE-LOOP ST2 (in flight) —
+# ST2 extends the slack_dm_log.jsonl outbound entries with the
+# model_used / input_tokens / output_tokens / reasoning_duration_ms
+# / reasoning_error fields, and a small follow-on bucket reads
+# those into this endpoint.
+#
+# v1 stub: 4 representative calls per bucket §3(a), spanning
+#   * ok @ NORMAL on opus      — happy path
+#   * ok @ WARN_75 on sonnet   — cost-downshift in action
+#   * halted @ HARD_STOP_100   — budget-locked refusal
+#   * failed sdk_timeout       — transport failure
+#
+# K-DG drift caught (bucket spec used uppercase enum NAMES but
+# the wire format is the lowercase Enum VALUES per
+# ``agent/cost_state_holder.py:114-117``: NORMAL = "normal" etc):
+# stub uses the lowercase ``.value`` strings to match what CC#3
+# real data will emit. cost_rung_at_call is a literal value
+# string; the FE pill-color map keys on these.
+#
+# 4-layer SECURITY contract (extending the established pattern
+# with reasoning-specific guards):
+#   1. response_text_truncated_200 rendered as PLAIN TEXT by the
+#      FE — React's default child escaping defangs any HTML /
+#      markdown / script in Kora's generated text. FE pins via
+#      dangerouslySetInnerHTML grep.
+#   2. NO Anthropic-key shapes anywhere in payload — walk-payload
+#      regex sweeps for ``sk-ant-`` prefix + base64-like 32+ char
+#      runs. Catches a future log-entry edit or error-projection
+#      bug that leaks credential material into the operator view.
+#   3. NO PII from message context: response_text_truncated_200
+#      must never contain the inbound user's identifying patterns
+#      (email regex / Slack user-ID regex). Backend test sweeps.
+#   4. TS interface declares all fields with documented contracts;
+#      no ``raw_prompt`` / ``auth_token`` companion fields exist.
+
+
+@app.get("/api/reasoning/recent")
+async def list_recent_reasoning():
+    """Return recent Kora ReasoningEngine calls for the operator lens.
+
+    v1 stub — pinned shape so CC#3's KR-FEAT-AI-RESPONSE-LOOP ST2
+    follow-on can swap the body without touching the FE.
+
+    Per-call fields:
+      id                            — opaque id
+      triggered_by                  — "slack_dm" (only one in v1)
+      started_at                    — ISO-8601
+      duration_ms                   — int (>= 0)
+      model_used                    — claude-opus-4-7 / sonnet-4-6 /
+                                      haiku-4-5-20251001 / null when
+                                      halted (no SDK call made)
+      cost_rung_at_call             — lowercase CostRung.value string:
+                                      "normal" / "warn_75" /
+                                      "downshift_90" / "hard_stop_100"
+                                      (matches engine.py:47-49 literal)
+      input_tokens / output_tokens  — ints; 0 when halted/failed-pre-call
+      status                        — ok | failed | halted | paused
+      error_code                    — null when ok; ReasoningEngine
+                                      taxonomy otherwise (PR #126):
+                                      sdk_auth | sdk_rate_limited |
+                                      sdk_5xx | sdk_4xx_<code> |
+                                      sdk_timeout | sdk_transport |
+                                      sdk_unknown_<class> |
+                                      cost_ladder_halted |
+                                      operational_state_paused |
+                                      response_projection_failed
+      response_text_truncated_200   — plain-text response excerpt
+                                      capped at 200 chars; null when
+                                      no response produced
+    """
+    return {
+        "calls": [
+            {
+                "id": "stub-1",
+                "triggered_by": "slack_dm",
+                "started_at": "2026-05-22T17:58:42Z",
+                "duration_ms": 1247,
+                "model_used": "claude-opus-4-7",
+                "cost_rung_at_call": "normal",
+                "input_tokens": 842,
+                "output_tokens": 127,
+                "status": "ok",
+                "error_code": None,
+                "response_text_truncated_200": (
+                    "Daemon is RUNNING. Health rollup green. "
+                    "2 sea tickets active."
+                ),
+            },
+            {
+                "id": "stub-2",
+                "triggered_by": "slack_dm",
+                "started_at": "2026-05-22T17:42:11Z",
+                "duration_ms": 894,
+                "model_used": "claude-sonnet-4-6",
+                "cost_rung_at_call": "warn_75",
+                "input_tokens": 612,
+                "output_tokens": 84,
+                "status": "ok",
+                "error_code": None,
+                "response_text_truncated_200": (
+                    "Got it. Quieter responses since we're at "
+                    "78% of monthly budget."
+                ),
+            },
+            {
+                "id": "stub-3",
+                "triggered_by": "slack_dm",
+                "started_at": "2026-05-22T17:30:55Z",
+                "duration_ms": 32,
+                "model_used": None,
+                "cost_rung_at_call": "hard_stop_100",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "status": "halted",
+                "error_code": "cost_ladder_halted",
+                "response_text_truncated_200": None,
+            },
+            {
+                "id": "stub-4",
+                "triggered_by": "slack_dm",
+                "started_at": "2026-05-22T17:20:18Z",
+                "duration_ms": 5821,
+                "model_used": "claude-opus-4-7",
+                "cost_rung_at_call": "normal",
+                "input_tokens": 423,
+                "output_tokens": 0,
+                "status": "failed",
+                "error_code": "sdk_timeout",
+                "response_text_truncated_200": None,
+            },
+        ],
+        "stub": True,
+        "generated_at": "2026-05-22T18:00:00Z",
+        "total_recent_24h": 47,
+        "by_model_24h": {
+            "claude-opus-4-7": 31,
+            "claude-sonnet-4-6": 14,
+            "claude-haiku-4-5-20251001": 0,
+            "halted_no_model": 2,
+        },
+        "by_status_24h": {"ok": 41, "failed": 4, "halted": 2},
+        "tokens_total_24h": {"input": 18420, "output": 3104},
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

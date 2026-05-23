@@ -7,6 +7,7 @@ import {
   Archive,
   ArrowRight,
   BookOpenCheck,
+  Brain,
   CheckCircle2,
   DollarSign,
   Cable,
@@ -61,6 +62,7 @@ import type {
   SlackDMHandledStatus,
   EmailResponse,
   EmailHandledStatus,
+  ReasoningResponse,
 } from "@/lib/api";
 
 type LoadStatus<T> =
@@ -94,6 +96,8 @@ interface DashboardData {
   slackDM: LoadStatus<SlackDMResponse>;
   // KR-EMAIL-PANEL — Kora ↔ Joshua email inbox/outbox (stub)
   email: LoadStatus<EmailResponse>;
+  // KR-REASONING-PANEL — Kora ReasoningEngine activity (stub)
+  reasoning: LoadStatus<ReasoningResponse>;
 }
 
 const INITIAL_DATA: DashboardData = {
@@ -114,6 +118,7 @@ const INITIAL_DATA: DashboardData = {
   agentActivity: { state: "loading" },
   slackDM: { state: "loading" },
   email: { state: "loading" },
+  reasoning: { state: "loading" },
 };
 
 const HEALTH_TONE: Record<HealthStatus, "success" | "warning" | "destructive" | "outline"> = {
@@ -832,6 +837,49 @@ function EmailCardBody({ data }: { data: EmailResponse }) {
   );
 }
 
+function ReasoningCardBody({ data }: { data: ReasoningResponse }) {
+  // Operator-attention contract per bucket §3(c): headline goes
+  // destructive when `halted > 0` in 24h — Kora was budget-locked,
+  // operator should investigate cost-ladder rung. failed > 0 is
+  // worth flagging but not as loudly (transport/SDK noise happens).
+  const okCount = data.by_status_24h["ok"] ?? 0;
+  const failedCount = data.by_status_24h["failed"] ?? 0;
+  const haltedCount = data.by_status_24h["halted"] ?? 0;
+  const tokensTotal =
+    data.tokens_total_24h.input + data.tokens_total_24h.output;
+  const alert = haltedCount > 0;
+  const headlineClass = alert
+    ? "text-destructive"
+    : failedCount > 0
+      ? "text-warning"
+      : "text-foreground";
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={`text-xl font-semibold ${headlineClass}`}>
+        {okCount}
+        <span className="text-xs text-muted-foreground font-normal">
+          /{data.total_recent_24h}
+        </span>
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          call{data.total_recent_24h === 1 ? "" : "s"} ·{" "}
+          {tokensTotal.toLocaleString()} tok
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-1.5 text-xs">
+        {haltedCount > 0 && (
+          <Badge tone="destructive">{haltedCount} halted</Badge>
+        )}
+        {failedCount > 0 && (
+          <Badge tone="destructive">{failedCount} failed</Badge>
+        )}
+        {haltedCount === 0 && failedCount === 0 && okCount > 0 && (
+          <Badge tone="success">healthy</Badge>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Hero ─────────────────────────────────────────────────────────────────
 
 interface HealthHeroProps {
@@ -982,6 +1030,8 @@ export default function DashboardPage() {
         loadOne("slackDM", () => api.getRecentSlackDM()),
         // KR-EMAIL-PANEL
         loadOne("email", () => api.getRecentEmail()),
+        // KR-REASONING-PANEL
+        loadOne("reasoning", () => api.getRecentReasoning()),
       ]);
       if (isManual) {
         setRefreshing(false);
@@ -1017,6 +1067,7 @@ export default function DashboardPage() {
     data.agentActivity,
     data.slackDM,
     data.email,
+    data.reasoning,
   ];
 
   const anyStubbed = ALL_SOURCES.some((s) => isStubbed(s));
@@ -1300,6 +1351,21 @@ export default function DashboardPage() {
         >
           {data.email.state === "ready" && (
             <EmailCardBody data={data.email.data} />
+          )}
+        </DashboardCard>
+
+        <DashboardCard
+          title="Reasoning"
+          icon={Brain}
+          to="/reasoning"
+          status={data.reasoning}
+          stubbed={isStubbed(data.reasoning)}
+          onRetry={() =>
+            void loadOne("reasoning", () => api.getRecentReasoning())
+          }
+        >
+          {data.reasoning.state === "ready" && (
+            <ReasoningCardBody data={data.reasoning.data} />
           )}
         </DashboardCard>
       </div>
