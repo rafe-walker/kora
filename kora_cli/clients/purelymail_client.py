@@ -247,6 +247,19 @@ class PurelymailClient:
         in_reply_to: Optional[str] = None,
         attachments: Optional[list[Attachment]] = None,
         caller_actor_kind: Optional[str] = None,
+        # KR-EMAIL-OUTBOUND-REASONING-META — additive + backwards-
+        # compatible reasoning meta fields. Threaded through to the
+        # outbound JSONL log so the reasoning-panel email-xref bucket
+        # can correlate audit ↔ outbound entries by caller_session_id.
+        # All default None; non-reasoning callers (notifications,
+        # operator scripts, MCP send tool) leave them unset and the
+        # JSONL omits the keys entirely (mirrors slack_dm's pattern).
+        model_used: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        reasoning_duration_ms: Optional[int] = None,
+        reasoning_error: Optional[str] = None,
+        caller_session_id: Optional[str] = None,
     ) -> SendResult:
         """Send one email. Returns a :class:`SendResult` always —
         failures are surfaced via ``status="failed"`` + ``error``
@@ -259,6 +272,14 @@ class PurelymailClient:
         ``Message-ID`` header value (SMTP doesn't return a
         server-assigned ID); operator threading + audit log
         index on it.
+
+        Reasoning-meta kwargs (KR-EMAIL-OUTBOUND-REASONING-META):
+        threaded through to the outbound JSONL log when the send
+        is driven by a reasoning-engine reply (handler's
+        AUTO_REPLY path). Symmetric with slack_dm's PR #131
+        pattern — fields appear in JSONL only when non-None so
+        the panel-xref bucket can correlate audit entries by
+        ``caller_session_id``.
         """
         # 1. Client-side validation (BEFORE any SMTP traffic).
         self._validate_allowed_from(from_addr)
@@ -289,6 +310,12 @@ class PurelymailClient:
             in_reply_to=in_reply_to,
             result=result,
             caller_actor_kind=caller_actor_kind,
+            model_used=model_used,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_duration_ms=reasoning_duration_ms,
+            reasoning_error=reasoning_error,
+            caller_session_id=caller_session_id,
         )
 
         return result
@@ -527,6 +554,16 @@ class PurelymailClient:
         in_reply_to: Optional[str],
         result: SendResult,
         caller_actor_kind: Optional[str] = None,
+        # KR-EMAIL-OUTBOUND-REASONING-META — same opt-in shape as
+        # slack_dm's outbound JSONL post-PR #131. Fields appear in
+        # the JSONL ONLY when non-None; non-reasoning callers get
+        # the original entry shape verbatim (backwards-compat).
+        model_used: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        reasoning_duration_ms: Optional[int] = None,
+        reasoning_error: Optional[str] = None,
+        caller_session_id: Optional[str] = None,
     ) -> None:
         """Append one line to the outbound JSONL. Body NEVER logged.
 
@@ -537,8 +574,23 @@ class PurelymailClient:
         ``caller_actor_kind`` (KR-MCP-SEND-TOOLS): when a send is
         driven by an MCP tool call, the caller's actor_kind appears
         here for audit attribution. ``None`` for internal/runtime-
-        driven sends (e.g. KR-FEAT-AI-RESPONSE-LOOP email replies).
-        Backwards-compatible — consumers handle absence.
+        driven sends. Backwards-compatible — consumers handle absence.
+
+        Reasoning-meta fields (KR-EMAIL-OUTBOUND-REASONING-META):
+        present in the entry ONLY when non-None. Mirrors the
+        slack_dm outbound pattern from PR #131:
+
+          - ``model_used``: e.g. ``"claude-opus-4-7"``
+          - ``input_tokens`` / ``output_tokens``: from SDK usage
+          - ``reasoning_duration_ms``: engine-side wall-clock
+          - ``reasoning_error``: stable error code from
+            ``ResponseResult.error`` (``cost_ladder_halted`` /
+            ``sdk_5xx`` / ``engine_unavailable`` / etc.) — None on
+            successful reasoning calls
+          - ``caller_session_id``: stable correlation key shared
+            with the audit JSONL. For email: ``"email:{message_id}"``
+            (matches ``_derive_caller_session_id`` in
+            ``kora_cli/reasoning/anthropic_engine.py:844``).
         """
         entry = {
             "sent_at": result.sent_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -553,6 +605,22 @@ class PurelymailClient:
             "retry_count": result.retry_count,
             "caller_actor_kind": caller_actor_kind,
         }
+        # KR-EMAIL-OUTBOUND-REASONING-META — opt-in inclusion so the
+        # JSONL stays lean for non-reasoning sends. Mirrors
+        # slack_dm_handler._append_outbound_log_entry's pattern.
+        if model_used is not None:
+            entry["model_used"] = model_used
+        if input_tokens is not None:
+            entry["input_tokens"] = int(input_tokens)
+        if output_tokens is not None:
+            entry["output_tokens"] = int(output_tokens)
+        if reasoning_duration_ms is not None:
+            entry["reasoning_duration_ms"] = int(reasoning_duration_ms)
+        if reasoning_error is not None:
+            entry["reasoning_error"] = reasoning_error
+        if caller_session_id is not None:
+            entry["caller_session_id"] = caller_session_id
+
         try:
             log_path = _outbound_log_path()
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -582,6 +650,15 @@ async def send_email_internal(
     in_reply_to: Optional[str] = None,
     attachments: Optional[list[Attachment]] = None,
     caller_actor_kind: Optional[str] = None,
+    # KR-EMAIL-OUTBOUND-REASONING-META — forwarded for symmetry with
+    # PurelymailClient.send_email so one-shot callers (notifications,
+    # operator scripts) can attach reasoning meta when relevant.
+    model_used: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    reasoning_duration_ms: Optional[int] = None,
+    reasoning_error: Optional[str] = None,
+    caller_session_id: Optional[str] = None,
 ) -> SendResult:
     """One-shot send for callers inside Kora's runtime.
 
@@ -597,6 +674,10 @@ async def send_email_internal(
     accessor (``current_purelymail_client``) over this one-shot
     helper to share a single client instance + reduce env-read
     overhead.
+
+    KR-EMAIL-OUTBOUND-REASONING-META: reasoning-meta kwargs are
+    forwarded verbatim — see ``PurelymailClient.send_email`` for
+    the full contract.
     """
     client = PurelymailClient()
     return await client.send_email(
@@ -608,4 +689,10 @@ async def send_email_internal(
         in_reply_to=in_reply_to,
         attachments=attachments,
         caller_actor_kind=caller_actor_kind,
+        model_used=model_used,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        reasoning_duration_ms=reasoning_duration_ms,
+        reasoning_error=reasoning_error,
+        caller_session_id=caller_session_id,
     )

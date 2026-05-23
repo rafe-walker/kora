@@ -598,3 +598,142 @@ async def test_send_email_internal_constructs_client_and_sends(_isolate):
         )
     assert result.status == "ok"
     fake.send_message.assert_awaited_once()
+
+
+# ===========================================================================
+# KR-EMAIL-OUTBOUND-REASONING-META — opt-in JSONL fields
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_outbound_log_omits_reasoning_meta_when_kwargs_unset(_isolate):
+    """Backwards-compat: callers that don't pass the new kwargs get
+    an entry without the reasoning-meta keys (matches pre-bucket
+    shape)."""
+    client = PurelymailClient()
+    smtp_patch, _ = _patch_smtp(response="250 OK")
+    with smtp_patch:
+        await client.send_email(
+            from_addr="kora@stormhavenenterprises.com",
+            to=["joshua@stormhavenenterprises.com"],
+            subject="hello",
+            body_text="hi",
+        )
+    entry = json.loads(_log_path(_isolate).read_text().splitlines()[-1])
+    for key in (
+        "model_used",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_duration_ms",
+        "reasoning_error",
+        "caller_session_id",
+    ):
+        assert key not in entry, (
+            f"non-reasoning send unexpectedly wrote {key} to JSONL"
+        )
+
+
+@pytest.mark.asyncio
+async def test_outbound_log_includes_reasoning_meta_when_kwargs_set(_isolate):
+    """Reasoning-driven send: all 6 new fields land in the JSONL
+    entry. Mirrors slack_dm's post-#131 shape exactly."""
+    client = PurelymailClient()
+    smtp_patch, _ = _patch_smtp(response="250 OK")
+    with smtp_patch:
+        await client.send_email(
+            from_addr="kora@stormhavenenterprises.com",
+            to=["joshua@stormhavenenterprises.com"],
+            subject="hello",
+            body_text="hi",
+            model_used="claude-opus-4-7",
+            input_tokens=100,
+            output_tokens=50,
+            reasoning_duration_ms=1500,
+            reasoning_error=None,
+            caller_session_id="email:<msg-1@example.com>",
+        )
+    entry = json.loads(_log_path(_isolate).read_text().splitlines()[-1])
+    assert entry["model_used"] == "claude-opus-4-7"
+    assert entry["input_tokens"] == 100
+    assert entry["output_tokens"] == 50
+    assert entry["reasoning_duration_ms"] == 1500
+    assert entry["caller_session_id"] == "email:<msg-1@example.com>"
+    # reasoning_error None → still omitted (opt-in inclusion pattern;
+    # only non-None fields land in JSONL).
+    assert "reasoning_error" not in entry
+
+
+@pytest.mark.asyncio
+async def test_outbound_log_partial_meta_only_writes_non_none_fields(
+    _isolate,
+):
+    """Engine-unavailable path: reasoning_error set, all other meta
+    fields None → only reasoning_error appears in JSONL."""
+    client = PurelymailClient()
+    smtp_patch, _ = _patch_smtp(response="250 OK")
+    with smtp_patch:
+        await client.send_email(
+            from_addr="kora@stormhavenenterprises.com",
+            to=["joshua@stormhavenenterprises.com"],
+            subject="canned",
+            body_text="(canned)",
+            reasoning_error="engine_unavailable",
+            caller_session_id="email:<m@e>",
+        )
+    entry = json.loads(_log_path(_isolate).read_text().splitlines()[-1])
+    assert entry["reasoning_error"] == "engine_unavailable"
+    assert entry["caller_session_id"] == "email:<m@e>"
+    assert "model_used" not in entry
+    assert "input_tokens" not in entry
+
+
+@pytest.mark.asyncio
+async def test_outbound_log_includes_meta_on_smtp_failure_too(_isolate):
+    """The reasoning meta is written based on what the CALLER passed,
+    independent of whether SMTP succeeded — so a failed send still
+    records the model/tokens used (the inference happened even if
+    delivery didn't)."""
+    client = PurelymailClient()
+    smtp_patch, _ = _patch_smtp(
+        send_exc=aiosmtplib.SMTPResponseException(550, "permanent reject")
+    )
+    with smtp_patch:
+        await client.send_email(
+            from_addr="kora@stormhavenenterprises.com",
+            to=["joshua@stormhavenenterprises.com"],
+            subject="x",
+            body_text="y",
+            model_used="claude-haiku-4-5",
+            input_tokens=10,
+            output_tokens=5,
+            reasoning_duration_ms=300,
+            caller_session_id="email:<failed@e>",
+        )
+    entry = json.loads(_log_path(_isolate).read_text().splitlines()[-1])
+    assert entry["send_status"] == "failed"
+    # Meta still recorded — useful for the panel to show "we tried
+    # this model + spent these tokens, then SMTP rejected".
+    assert entry["model_used"] == "claude-haiku-4-5"
+    assert entry["input_tokens"] == 10
+    assert entry["caller_session_id"] == "email:<failed@e>"
+
+
+@pytest.mark.asyncio
+async def test_send_email_internal_forwards_reasoning_meta(_isolate):
+    """The module-level convenience must forward the new kwargs too
+    so one-shot callers (notifications) can attach meta if relevant."""
+    from kora_cli.clients.purelymail_client import send_email_internal
+
+    smtp_patch, _ = _patch_smtp(response="250 OK")
+    with smtp_patch:
+        await send_email_internal(
+            from_addr="kora@stormhavenenterprises.com",
+            to=["joshua@stormhavenenterprises.com"],
+            subject="hi",
+            body_text="body",
+            model_used="claude-opus-4-7",
+            caller_session_id="email:<via-internal@e>",
+        )
+    entry = json.loads(_log_path(_isolate).read_text().splitlines()[-1])
+    assert entry["model_used"] == "claude-opus-4-7"
+    assert entry["caller_session_id"] == "email:<via-internal@e>"

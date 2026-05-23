@@ -686,3 +686,238 @@ async def test_auto_reply_empty_subject_uses_placeholder(
     await handler.handle_event(parsed)
     kw = fake_client.send_email.await_args.kwargs
     assert kw["subject"] == "Re: (no subject)"
+
+
+# ===========================================================================
+# KR-EMAIL-OUTBOUND-REASONING-META — reasoning-meta threading
+# ===========================================================================
+
+
+def _make_engine_result(
+    *,
+    text: str = "reply",
+    error=None,
+    model_used: str = "claude-opus-4-7",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    reasoning_duration_ms: int = 1500,
+):
+    r = MagicMock()
+    r.text = text
+    r.error = error
+    r.model_used = model_used
+    r.input_tokens = input_tokens
+    r.output_tokens = output_tokens
+    r.reasoning_duration_ms = reasoning_duration_ms
+    return r
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_success_threads_full_reasoning_meta(
+    monkeypatch, tmp_path
+):
+    """Happy path: engine returns a real ResponseResult → send_email
+    receives model_used + tokens + duration + caller_session_id +
+    reasoning_error=None."""
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    parsed = _make_parsed(message_id="<m-success@e.com>")
+    await handler.handle_event(parsed)
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["model_used"] == "claude-opus-4-7"
+    assert kw["input_tokens"] == 100
+    assert kw["output_tokens"] == 50
+    assert kw["reasoning_duration_ms"] == 1500
+    assert kw["reasoning_error"] is None
+    assert kw["caller_session_id"] == "email:<m-success@e.com>"
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_engine_unavailable_meta_carries_error_code(
+    monkeypatch, tmp_path
+):
+    """Engine None → send_email receives reasoning_error=
+    'engine_unavailable' + all SDK fields None + caller_session_id
+    still derived from the inbound message_id."""
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=None
+    )
+    with patch(
+        "kora_cli.listeners.reasoning_engine_listener.current_reasoning_engine",
+        return_value=None,
+    ):
+        await handler.handle_event(_make_parsed(message_id="<m-noeng@e.com>"))
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["reasoning_error"] == "engine_unavailable"
+    assert kw["model_used"] is None
+    assert kw["input_tokens"] is None
+    assert kw["output_tokens"] is None
+    assert kw["reasoning_duration_ms"] is None
+    assert kw["caller_session_id"] == "email:<m-noeng@e.com>"
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_engine_raises_meta_carries_exception_code(
+    monkeypatch, tmp_path
+):
+    """engine.respond raises → reasoning_error is
+    'engine_exception:<type>'."""
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(side_effect=RuntimeError("boom"))
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    await handler.handle_event(_make_parsed())
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["reasoning_error"] == "engine_exception:RuntimeError"
+    assert kw["model_used"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_engine_result_error_preserves_sdk_meta(
+    monkeypatch, tmp_path
+):
+    """result.error set (e.g., cost_ladder_halted) → reasoning_error
+    is the engine's error code; SDK-side fields (model_used /
+    tokens) MAY still be populated by the engine even on error
+    paths (e.g., cost-halt after partial token consumption).
+    Mirrors slack_dm post-#131."""
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(
+        return_value=_make_engine_result(
+            text="",
+            error="cost_ladder_halted",
+            model_used="claude-opus-4-7",
+            input_tokens=50,
+            output_tokens=0,
+            reasoning_duration_ms=200,
+        )
+    )
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    await handler.handle_event(_make_parsed())
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["reasoning_error"] == "cost_ladder_halted"
+    assert kw["model_used"] == "claude-opus-4-7"
+    assert kw["input_tokens"] == 50
+    assert kw["output_tokens"] == 0
+    assert kw["body_text"] == CANNED_FALLBACK_TEXT
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_engine_empty_text_overrides_error_code(
+    monkeypatch, tmp_path
+):
+    """Engine returned text="" with error=None → handler overrides
+    reasoning_error to 'empty_response_text' AND preserves SDK
+    meta (the engine ran, it just produced nothing usable)."""
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(
+        return_value=_make_engine_result(text="   ", error=None)
+    )
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    await handler.handle_event(_make_parsed())
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["reasoning_error"] == "empty_response_text"
+    # SDK-side meta from the actual engine run survives.
+    assert kw["model_used"] == "claude-opus-4-7"
+    assert kw["input_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_caller_session_id_matches_engine_derivation_shape(
+    monkeypatch, tmp_path
+):
+    """The handler-side derivation must produce the SAME literal
+    string as ``_derive_caller_session_id`` in
+    ``kora_cli/reasoning/anthropic_engine.py`` so audit ↔ outbound
+    JSONL rows can be joined by caller_session_id."""
+    from kora_cli.reasoning.anthropic_engine import (
+        _derive_caller_session_id,
+    )
+    from kora_cli.reasoning.engine import IncomingMessage
+    from datetime import datetime, timezone
+
+    parsed = _make_parsed(message_id="<m-xref@e.com>")
+    # Build an IncomingMessage exactly the way the handler does
+    # internally to verify the engine's derive matches our literal.
+    msg = IncomingMessage(
+        text=parsed.body_text,
+        source="email",
+        received_at=parsed.received_at,
+        metadata={
+            "from": parsed.from_address,
+            "subject": parsed.subject,
+            "message_id": parsed.message_id,
+            "in_reply_to": parsed.message_id,
+        },
+    )
+    engine_derived = _derive_caller_session_id(msg)
+
+    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    await handler.handle_event(parsed)
+
+    kw = fake_client.send_email.await_args.kwargs
+    assert kw["caller_session_id"] == engine_derived
+    assert kw["caller_session_id"] == "email:<m-xref@e.com>"
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_off_no_reasoning_meta_threaded(
+    monkeypatch, tmp_path
+):
+    """AUTO_REPLY default OFF → send_email never called; ensures
+    the reasoning-meta threading is gated on AUTO_REPLY (not on
+    every reply path)."""
+    monkeypatch.delenv(AUTO_REPLY_ENV, raising=False)
+    fake_engine = MagicMock()
+    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
+    fake_client = MagicMock()
+    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
+
+    handler = EmailInboundHandler(
+        purelymail_client=fake_client, reasoning_engine=fake_engine
+    )
+    await handler.handle_event(_make_parsed())
+
+    fake_engine.respond.assert_not_called()
+    fake_client.send_email.assert_not_awaited()

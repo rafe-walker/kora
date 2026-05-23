@@ -231,6 +231,53 @@ def _auto_reply_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Reasoning-meta helpers (KR-EMAIL-OUTBOUND-REASONING-META)
+# ---------------------------------------------------------------------------
+
+
+def _empty_reasoning_meta(
+    *, reasoning_error: Optional[str] = None
+) -> Dict[str, Any]:
+    """Build a meta dict for paths where the engine didn't run (or
+    couldn't be reached). All SDK-side fields are ``None``; only
+    ``reasoning_error`` carries a stable code if supplied."""
+    return {
+        "model_used": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "reasoning_duration_ms": None,
+        "reasoning_error": reasoning_error,
+    }
+
+
+def _reasoning_meta_from_result(result: Any) -> Dict[str, Any]:
+    """Project a ResponseResult into the 5-key meta dict.
+
+    Tolerates partial / missing attributes via ``getattr`` so a
+    test-double minimal MagicMock still produces a well-shaped
+    meta. ``result.error`` is included verbatim — caller decides
+    whether to surface it (success path) or override it
+    (empty-text path).
+    """
+    return {
+        "model_used": getattr(result, "model_used", None) or None,
+        "input_tokens": getattr(result, "input_tokens", None),
+        "output_tokens": getattr(result, "output_tokens", None),
+        "reasoning_duration_ms": getattr(result, "reasoning_duration_ms", None),
+        "reasoning_error": getattr(result, "error", None),
+    }
+
+
+def _email_caller_session_id(message_id: str) -> str:
+    """Deterministic correlation key for the audit ↔ outbound JSONL
+    xref. Must match the reasoning engine's own derivation in
+    :func:`kora_cli.reasoning.anthropic_engine._derive_caller_session_id`
+    for the ``email`` source: ``f"email:{message_id}"`` (with
+    ``"unknown"`` fallback when the id is empty)."""
+    return f"email:{message_id or 'unknown'}"
+
+
+# ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
 
@@ -561,25 +608,20 @@ class EmailInboundHandler:
         Engine unavailable / engine error → canned fallback text +
         send anyway. Send failures DO NOT propagate beyond a WARN
         log — outbound JSONL captures the SendResult separately.
+
+        KR-EMAIL-OUTBOUND-REASONING-META: ``_call_reasoning_engine``
+        now returns the full reasoning-meta dict (model_used /
+        tokens / duration / error) alongside the reply text; the
+        meta + a deterministic ``caller_session_id`` get threaded
+        through to ``client.send_email`` so the outbound JSONL row
+        carries the same correlation key the reasoning audit emit
+        already uses. The reasoning-panel email-xref consumes both
+        sides via this key.
         """
-        from datetime import datetime, timezone
-
         engine = self._resolve_reasoning_engine()
-        reasoning_error: Optional[str] = None
-        reply_text: str
-
-        if engine is None:
-            reasoning_error = "engine_unavailable"
-            reply_text = CANNED_FALLBACK_TEXT
-            logger.warning(
-                "[kora.email_inbound.reasoning_skipped] reason=engine_unavailable "
-                "uid=%d",
-                parsed.imap_uid,
-            )
-        else:
-            reply_text, reasoning_error = await self._call_reasoning_engine(
-                engine=engine, parsed=parsed
-            )
+        reply_text, reasoning_meta = await self._build_reply_and_meta(
+            engine=engine, parsed=parsed
+        )
 
         client = self._resolve_purelymail_client()
         if client is None:
@@ -587,7 +629,7 @@ class EmailInboundHandler:
                 "[kora.email_inbound.reply_failed] reason=purelymail_unavailable "
                 "uid=%d reasoning_error=%s",
                 parsed.imap_uid,
-                reasoning_error,
+                reasoning_meta.get("reasoning_error"),
             )
             return
 
@@ -607,6 +649,14 @@ class EmailInboundHandler:
         if not subject.lower().startswith("re:"):
             subject = f"Re: {subject}"
 
+        # Deterministic correlation key — must match the engine's own
+        # _derive_caller_session_id for ``email`` source
+        # (anthropic_engine.py:869-871: ``f"email:{message_id}"``).
+        # Keeping both sides on the same literal string lets the
+        # KR-REASONING-PANEL-EMAIL-XREF bucket join audit ↔ outbound
+        # JSONL rows by a single field.
+        caller_session_id = _email_caller_session_id(parsed.message_id)
+
         try:
             await client.send_email(
                 from_addr=from_addr,
@@ -614,6 +664,8 @@ class EmailInboundHandler:
                 subject=subject,
                 body_text=reply_text,
                 in_reply_to=parsed.message_id,
+                caller_session_id=caller_session_id,
+                **reasoning_meta,
             )
         except Exception as exc:
             logger.warning(
@@ -622,6 +674,33 @@ class EmailInboundHandler:
                 parsed.imap_uid,
                 exc,
             )
+
+    async def _build_reply_and_meta(
+        self, *, engine: Optional[Any], parsed: ParsedIncomingEmail
+    ) -> tuple[str, Dict[str, Any]]:
+        """Resolve reply text + reasoning-meta dict.
+
+        Three paths:
+          - Engine unavailable: canned text + meta with
+            ``reasoning_error="engine_unavailable"`` and all other
+            fields ``None``.
+          - Engine call: delegate to :meth:`_call_reasoning_engine`,
+            which returns the full meta dict (model_used / tokens /
+            duration / error or fallback-error).
+        """
+        if engine is None:
+            logger.warning(
+                "[kora.email_inbound.reasoning_skipped] reason=engine_unavailable "
+                "uid=%d",
+                parsed.imap_uid,
+            )
+            return (
+                CANNED_FALLBACK_TEXT,
+                _empty_reasoning_meta(reasoning_error="engine_unavailable"),
+            )
+        return await self._call_reasoning_engine(
+            engine=engine, parsed=parsed
+        )
 
     def _resolve_reasoning_engine(self) -> Optional[Any]:
         if self._reasoning_engine is not None:
@@ -647,15 +726,23 @@ class EmailInboundHandler:
 
     async def _call_reasoning_engine(
         self, *, engine: Any, parsed: ParsedIncomingEmail
-    ) -> tuple[str, Optional[str]]:
-        """Call engine.respond + return ``(reply_text, reasoning_error)``.
+    ) -> tuple[str, Dict[str, Any]]:
+        """Call engine.respond + return ``(reply_text, reasoning_meta)``.
 
-        On engine error / exception returns the canned fallback +
-        a stable error code. On success returns the engine text +
-        ``None``.
+        ``reasoning_meta`` is a dict with the 5 fields PurelymailClient's
+        outbound log mirrors from the slack_dm post-#131 shape:
+
+          - ``model_used`` (str | None)
+          - ``input_tokens`` (int | None)
+          - ``output_tokens`` (int | None)
+          - ``reasoning_duration_ms`` (int | None)
+          - ``reasoning_error`` (str | None)
+
+        On engine error / exception / empty-text → reply_text is
+        the canned fallback + meta carries the error code; the
+        SDK-side fields are best-effort (populated from result when
+        available, otherwise None).
         """
-        from datetime import datetime, timezone
-
         from kora_cli.reasoning.context_loader import load_email_context
         from kora_cli.reasoning.engine import (
             ConversationContext,
@@ -699,8 +786,12 @@ class EmailInboundHandler:
             )
             return (
                 CANNED_FALLBACK_TEXT,
-                f"engine_exception:{type(exc).__name__}",
+                _empty_reasoning_meta(
+                    reasoning_error=f"engine_exception:{type(exc).__name__}",
+                ),
             )
+
+        meta = _reasoning_meta_from_result(result)
 
         if result.error is not None:
             logger.warning(
@@ -708,7 +799,7 @@ class EmailInboundHandler:
                 result.error,
                 parsed.imap_uid,
             )
-            return (CANNED_FALLBACK_TEXT, result.error)
+            return (CANNED_FALLBACK_TEXT, meta)
 
         if not (result.text or "").strip():
             logger.warning(
@@ -716,6 +807,10 @@ class EmailInboundHandler:
                 "success uid=%d — canned fallback",
                 parsed.imap_uid,
             )
-            return (CANNED_FALLBACK_TEXT, "empty_response_text")
+            # Preserve SDK-side meta from the result (model + tokens
+            # ran, just produced empty text) but mark the error code
+            # so the panel can distinguish from a happy-path send.
+            meta["reasoning_error"] = "empty_response_text"
+            return (CANNED_FALLBACK_TEXT, meta)
 
-        return (result.text, None)
+        return (result.text, meta)
