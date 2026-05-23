@@ -1,16 +1,21 @@
-"""Types for the Purelymail SMTP outbound client (KR-FEAT-EMAIL ST1).
+"""Types for the Purelymail SMTP outbound + IMAP inbound clients.
 
-Pydantic models + dataclasses describing the send-side surface.
-Kept thin — the client module imports these but they don't depend
-on ``aiosmtplib`` so they can be re-exported / mocked in tests
-without dragging the SMTP transport in.
+Pydantic models + dataclasses describing both the send-side and
+receive-side surfaces. Kept thin — the client modules import these
+but they don't depend on ``aiosmtplib`` / ``aioimaplib`` so they
+can be re-exported / mocked in tests without dragging transports
+in.
+
+Originated in KR-FEAT-EMAIL ST1 (outbound); extended in
+KR-FEAT-EMAIL-INBOUND-IMAP ST1 (inbound: ``AttachmentMeta`` +
+``ParsedIncomingEmail``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,3 +61,47 @@ class SendResult(BaseModel):
     smtp_code: Optional[int] = None
     sent_at: datetime
     retry_count: int = Field(ge=0, le=1)
+
+
+# ---------------------------------------------------------------------------
+# Inbound — KR-FEAT-EMAIL-INBOUND-IMAP ST1
+# ---------------------------------------------------------------------------
+
+
+class AttachmentMeta(BaseModel):
+    """One inbound attachment — metadata only (bytes out of scope).
+
+    Operator pulls the raw payload from Purelymail's webmail when
+    they need the contents; the daemon's JSONL log records just
+    enough to triage (name + size + content-type).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1)
+    size_bytes: int = Field(ge=0)
+    content_type: str = Field(min_length=1)
+
+
+class ParsedIncomingEmail(BaseModel):
+    """One inbound message extracted from an IMAP FETCH RFC822 response.
+
+    Body fields decoded to text where possible; binary or oddly-
+    encoded parts surface as the encoded form (operator triages via
+    webmail). ``imap_uid`` is the per-mailbox uid the inbound
+    handler later passes back to :meth:`PurelymailIMAPClient.mark_seen`
+    after successful processing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: str = Field(min_length=1)
+    from_address: str = Field(min_length=1)
+    to: List[str]
+    subject: str
+    body_text: str
+    body_html: Optional[str] = None
+    has_html: bool = False
+    received_at: datetime
+    attachments: List[AttachmentMeta] = Field(default_factory=list)
+    imap_uid: int = Field(ge=0)

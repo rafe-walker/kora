@@ -89,6 +89,11 @@ dependencies = [
   # listener imports it unconditionally at boot. Previously under
   # [anthropic] + [web] extras; consolidated here.
   "anthropic==0.86.0",
+  # Async IMAP4 client for KR-FEAT-EMAIL-INBOUND-IMAP. Same runtime-
+  # placement discipline as aiosmtplib / slowapi / anthropic above —
+  # the email_inbound_imap_listener imports it unconditionally at
+  # daemon boot; under an extra it would break base installs.
+  "aioimaplib==2.0.1",
 ]
 
 [project.urls]

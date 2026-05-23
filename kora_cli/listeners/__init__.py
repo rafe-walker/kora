@@ -43,3 +43,9 @@ from kora_cli.listeners import reasoning_engine_listener  # noqa: F401
 # constructed-fallback pattern is established.
 from kora_cli.listeners import slack_client_listener  # noqa: F401
 from kora_cli.listeners import purelymail_client_listener  # noqa: F401
+# KR-FEAT-EMAIL-INBOUND-IMAP ST1 — Purelymail inbound via IMAP polling.
+# Same fail-soft contract as the SMTP client listener (missing IMAP
+# auth env → singleton stays None, daemon boots, periodic poll task
+# short-circuits cleanly). Registered AFTER the SMTP client listener
+# so the symmetric `current_*_client()` accessors line up.
+from kora_cli.listeners import email_inbound_imap_listener  # noqa: F401
