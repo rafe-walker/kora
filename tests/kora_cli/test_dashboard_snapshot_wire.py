@@ -1,17 +1,29 @@
-"""Source-pin tests for KR-FE-DASHBOARD-SNAPSHOT-WIRE.
+"""Source-pin tests for KR-FE-DASHBOARD-SNAPSHOT-WIRE +
+KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED.
 
-Backend /api/snapshot endpoint was already covered by the
-snapshot-infrastructure bucket (PR #157). This file pins the FE
-wiring + the explicit choice of which snapshot fields project
-into which dashboard cards.
+PR #162 (snapshot-wire) shipped 2-of-4 hero fields to snapshot +
+PINNED the other 2 (cost + health) on fan-out because the snapshot
+substrate lacked the necessary fields at the time. PR #169
+(snapshot v3 cost_ladder.spent_to_date_usd + credit_pool_usd) +
+PR #170 (snapshot v4 daemon_health) closed those data gaps. This
+bucket shifts cost + health TO snapshot — so the anti-projection
+pins from #162 (tests 4-a + 4-b) flip to assert the INVERSE
+invariant: snapshot is now the source-of-truth for the hero
+cards on the warm-cache path; fan-out is the per-field fallback.
 
 Scenarios:
   1. api.getSnapshot wrapper exists + posts to /api/snapshot
   2. SnapshotResponse + SnapshotUnavailable TS types declared
+     (incl. cost_ladder v3 + daemon_health v4 fields)
   3. FreshnessBadge component exists + supports the 3 modes
      (snapshot / live / unavailable) + mixed sub-mode
-  4. DashboardPage projects ONLY operational + alerts from snapshot;
-     cost + health stay on fan-out (anti-coercion discipline)
+  4. DashboardPage projects ALL FOUR hero fields from snapshot:
+     a. operational
+     b. alerts
+     c. cost  (FLIPPED — was anti-pinned in PR #162; now projected
+        when snapshot.cost_ladder has populated USD fields)
+     d. health (FLIPPED — was anti-pinned in PR #162; now projected
+        when snapshot.daemon_health has populated overall_status)
   5. DashboardPage initial path tries snapshot first (loadInitial,
      not direct fan-out)
   6. forceFullLiveRefresh bypasses snapshot
@@ -19,6 +31,13 @@ Scenarios:
      rather than alerts.length
   8. AlertsBanner dismissal hash gracefully degrades to aggregate
      shape when per-alert array is empty
+  9. Anti-coercion preserved per-field: projection helpers return
+     null when snapshot underlying is "unknown" → caller fans out
+     for THAT field. Pins the null-return contract so a future
+     refactor doesn't accidentally project misleading zeros.
+ 10. FreshnessBadge surfaces N-of-M hero-fields-from-snapshot
+     count (KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED). Operator can
+     tell "all 4 from snapshot" from "2 of 4 from snapshot".
 """
 
 import re
@@ -46,7 +65,10 @@ def test_api_get_snapshot_wrapper_exists():
 def test_snapshot_response_type_declared():
     src = _API_TS.read_text()
     assert "export interface SnapshotResponse" in src
-    # Must include the 4 snapshot-covered field roots
+    # Must include the snapshot-covered field roots, incl. the v3
+    # cost_ladder additions (PR #169) + v4 daemon_health section
+    # (PR #170). The dashboard projection helpers depend on these
+    # being typed — TS compile fails otherwise.
     for field in (
         "operational_state",
         "alerts",
@@ -54,6 +76,12 @@ def test_snapshot_response_type_declared():
         "service_health",
         "computed_at",
         "schema_version",
+        # PR #169 cost_ladder v3 additions
+        "spent_to_date_usd",
+        "credit_pool_usd",
+        # PR #170 daemon_health v4 section
+        "daemon_health",
+        "overall_status",
     ):
         assert field in src, (
             f"SnapshotResponse must declare the `{field}` field"
@@ -108,7 +136,52 @@ def test_freshness_badge_mixed_mode_indicates_overrides():
     assert "force-refreshed" in src
 
 
-# ---- 4. DashboardPage projection: ops + alerts only ----------
+def test_freshness_badge_surfaces_hero_field_count():
+    """KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — the badge must
+    visually distinguish "all 4 hero fields fresh" from "2 of 4
+    fresh" (= partial-snapshot path where cost or health fell
+    back to fan-out per-field).
+
+    Operator question being answered: "is the warm-cache path
+    delivering everything, or did the cost holder not initialize
+    yet?" Without this surface the operator can't tell, and the
+    incremental value of #169 + #170 isn't visible.
+    """
+    src = _BADGE.read_text()
+    assert "snapshotProjectedHeroCount" in src, (
+        "badge must accept a snapshot-projected hero-field count"
+    )
+    assert "totalHeroFields" in src
+    # The "all N from snapshot" copy when N >= total.
+    assert "all" in src.lower() and "hero fields from snapshot" in src
+    # The "K of N from snapshot" copy when K < total.
+    assert "of " in src and "hero fields from snapshot" in src
+
+
+def test_dashboard_passes_hero_count_to_freshness_badge():
+    """Pin the wiring: DashboardPage must pass the projected-hero
+    count to the badge. The literal `DASHBOARD_HERO_FIELD_COUNT`
+    must equal 4 (operational + alerts + cost + health) so the
+    badge's "all 4" copy matches the spec."""
+    src = _DASHBOARD.read_text()
+    assert "DASHBOARD_HERO_FIELD_COUNT" in src
+    assert re.search(
+        r"DASHBOARD_HERO_FIELD_COUNT\s*=\s*4",
+        src,
+    ), "literal hero count must equal 4 (the 4 spec'd hero fields)"
+    assert "snapshotProjectedHeroCount=" in src
+    assert "totalHeroFields={DASHBOARD_HERO_FIELD_COUNT}" in src
+    # The hero-field keys must be exactly the 4 spec'd ones; this
+    # prevents a future refactor from silently expanding the set
+    # to e.g. "boot" + "dr" (which aren't snapshot-driven) and
+    # making the "of 4" count meaningless.
+    assert re.search(
+        r'\["operational",\s*"alerts",\s*"cost",\s*"health"\]\s*as\s*const',
+        src,
+    ), "hero-field keys for the projection count must be the 4 spec'd fields"
+
+
+# ---- 4. DashboardPage projection: all 4 hero fields ----------
 
 
 def test_dashboard_projects_operational_from_snapshot():
@@ -131,29 +204,93 @@ def test_dashboard_projects_alerts_from_snapshot():
     )
 
 
-def test_dashboard_does_not_project_cost_from_snapshot():
-    """SPEC §2(b): leave fan-out rather than coerce. Snapshot's
-    cost_ladder lacks spent_to_date_usd / credit_pool_usd which
-    CostCardBody renders prominently — coercion would display
-    misleading $0 figures.
+def test_dashboard_projects_cost_from_snapshot():
+    """KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — FLIPPED from
+    test_dashboard_does_not_project_cost_from_snapshot (PR #162).
 
-    Pin: no projectCostFromSnapshot helper; cost still fans out
-    via api.getCostState in the snapshot-success path."""
+    PR #169 closed the spent_to_date_usd + credit_pool_usd gap
+    that kept cost on fan-out. The helper now exists; it returns
+    a CostStateResponse when snapshot's cost_ladder has populated
+    USD fields (no $0 coercion), or null when fields are still
+    "unknown" — caller fans out for cost in that case (per-field
+    granularity preserves the original anti-coercion discipline).
+    """
     src = _DASHBOARD.read_text()
-    assert "projectCostFromSnapshot" not in src, (
-        "cost must NOT be projected from snapshot — snapshot lacks "
-        "USD values, would mislead operator with $0 figures"
+    assert "projectCostFromSnapshot" in src, (
+        "cost MUST now be projected from snapshot — PR #169 added "
+        "the USD fields, this bucket flips the projection"
+    )
+    # The helper must read spent_to_date_usd + credit_pool_usd
+    # from snap.cost_ladder.
+    assert "spent_to_date_usd" in src
+    assert "credit_pool_usd" in src
+    # Null-return contract: when USD is "unknown", helper returns
+    # null so caller fans out. Without this branch, the projection
+    # would silently render misleading zeros — the very thing
+    # PR #162 wisely refused to do.
+    assert re.search(
+        r'cl\.spent_to_date_usd\s*===\s*"unknown"',
+        src,
+    ), (
+        "projectCostFromSnapshot must return null when USD is "
+        "'unknown' — preserves anti-coercion discipline per-field"
+    )
+    # Caller branches on null to decide fan-out vs no-fan-out.
+    # The conditional push into the remaining-fetches list pins
+    # the call-site fallback path.
+    assert "projectedCost === null" in src, (
+        "loadInitial must fan out for cost only when projection "
+        "returns null"
     )
 
 
-def test_dashboard_does_not_project_health_from_snapshot():
-    """SPEC §2(b): snapshot's service_health is SaaS-dependency
-    health (vercel/sentry/etc), NOT Kora's own control_plane /
-    worker daemons. Semantic mismatch — would conflate dep health
-    with daemon health in HealthHero."""
+def test_dashboard_projects_health_from_snapshot():
+    """KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — FLIPPED from
+    test_dashboard_does_not_project_health_from_snapshot (PR #162).
+
+    PR #170 added the daemon_health section to the snapshot,
+    closing the semantic-mismatch gap. The helper projects
+    overall_status → HealthRollupResponse.overall (with the
+    "unhealthy"→"outage" enum mapping; documented in the helper).
+    Returns null when overall_status is "unknown" so the caller
+    fans out per-field.
+
+    Service_health (SaaS deps) is NOT used for HealthHero per the
+    PR #162 reasoning — daemon_health is the correct snapshot
+    section for Kora's own health.
+    """
     src = _DASHBOARD.read_text()
-    assert "projectHealthFromSnapshot" not in src
-    assert "projectServiceHealthFromSnapshot" not in src
+    assert "projectHealthFromSnapshot" in src, (
+        "health MUST now be projected from snapshot — PR #170 "
+        "added daemon_health, this bucket flips the projection"
+    )
+    # Must read from snap.daemon_health, NOT snap.service_health
+    # (still the wrong section per the original PR #162 analysis).
+    assert "snap.daemon_health" in src
+    # The helper must not project from service_health (the SaaS
+    # deps section) — that would re-introduce the semantic
+    # mismatch PR #162 correctly avoided.
+    assert "projectHealthFromSnapshot" in src
+    helper_body = src.split("projectHealthFromSnapshot")[1].split("\n\n")[0:3]
+    helper_text = "".join(helper_body)
+    assert "service_health" not in helper_text, (
+        "projectHealthFromSnapshot must read daemon_health, NOT "
+        "service_health — service_health is SaaS-deps, semantic "
+        "mismatch with HealthRollupResponse.overall (Kora daemon)"
+    )
+    # Null-return contract for fan-out fallback per-field.
+    assert re.search(
+        r'dh\.overall_status\s*===\s*"unknown"',
+        src,
+    ), (
+        "projectHealthFromSnapshot must return null when "
+        "overall_status is 'unknown' — preserves anti-coercion "
+        "per-field"
+    )
+    assert "projectedHealth === null" in src, (
+        "loadInitial must fan out for health only when projection "
+        "returns null"
+    )
 
 
 # ---- 5. Snapshot-first initial path --------------------------

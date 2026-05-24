@@ -46,6 +46,18 @@ export interface FreshnessBadgeProps {
   /** Per-card refresh count — fields that have been live-overridden
    *  on top of the snapshot baseline. Drives the "mixed" sub-mode. */
   liveOverrideCount: number;
+  /** KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — count of the originally-
+   *  spec'd dashboard hero fields actually projected from snapshot
+   *  on this load (vs falling back to fan-out per-field for
+   *  incomplete snapshot data). Used to render
+   *  "(N of 4 from snapshot)" so the operator can tell at a glance
+   *  whether the full warm-cache path is delivering or only partial.
+   *  Pass 0 / undefined for the pre-fully-wired baseline. */
+  snapshotProjectedHeroCount?: number;
+  /** Total hero fields originally spec'd by KR-FE-DASHBOARD-SNAPSHOT-WIRE.
+   *  Currently 4 (operational + alerts + cost + health). Pinned in
+   *  the dashboard as a literal so the badge text is testable. */
+  totalHeroFields?: number;
   /** Triggered by the badge's Force-refresh button. */
   onForceRefresh: () => void;
   /** Disabled when a refresh is in-flight (prevents re-entrancy). */
@@ -57,6 +69,8 @@ export function FreshnessBadge({
   snapshotAt,
   liveAt,
   liveOverrideCount,
+  snapshotProjectedHeroCount,
+  totalHeroFields,
   onForceRefresh,
   refreshing = false,
 }: FreshnessBadgeProps) {
@@ -77,7 +91,26 @@ export function FreshnessBadge({
         "border-warning/30 bg-warning/5 text-foreground";
     } else {
       headline = `Snapshot from ${formatRelative(snapshotAt)}`;
-      costHint = "$0 cost view";
+      // KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — when the caller
+      // tells us how many hero fields actually came from snapshot
+      // (vs partial-snapshot fan-out fallback), surface that
+      // explicitly so the operator can tell "all 4 fields fresh"
+      // from "snapshot fresh but cost still fanned out because
+      // holder hadn't initialized."
+      const heroN = snapshotProjectedHeroCount;
+      const heroTotal = totalHeroFields;
+      if (
+        typeof heroN === "number" &&
+        typeof heroTotal === "number" &&
+        heroTotal > 0
+      ) {
+        costHint =
+          heroN >= heroTotal
+            ? `$0 cost view · all ${heroTotal} hero fields from snapshot`
+            : `$0 cost view · ${heroN} of ${heroTotal} hero fields from snapshot`;
+      } else {
+        costHint = "$0 cost view";
+      }
       toneClass =
         "border-success/30 bg-success/5 text-foreground";
     }
