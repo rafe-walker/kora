@@ -307,10 +307,24 @@ def test_use_panel_view_swallows_errors():
 def test_every_top_level_page_imports_use_panel_view():
     """Inventory pin: every web/src/pages/*.tsx must import +
     invoke usePanelView with its file's component name. Prevents
-    a future page being added without instrumentation."""
+    a future page being added without instrumentation.
+
+    KR-TEST-STABILITY (#202): exclude component-only modules that
+    happen to live under pages/ but aren't routed as top-level
+    pages (e.g. PhrasebookEditor — a sub-component imported by
+    PhrasebookPage).
+    """
+    # Component modules that don't render as top-level routes.
+    # Excluded from the panel-view instrumentation invariant since
+    # they're never directly navigated to.
+    _NOT_TOP_LEVEL_PAGES = frozenset({"PhrasebookEditor"})
     missing_import = []
     missing_call = []
-    expected_pages = sorted(p.stem for p in _PAGES_DIR.glob("*.tsx"))
+    expected_pages = sorted(
+        p.stem
+        for p in _PAGES_DIR.glob("*.tsx")
+        if p.stem not in _NOT_TOP_LEVEL_PAGES
+    )
 
     for name in expected_pages:
         src = (_PAGES_DIR / f"{name}.tsx").read_text()
@@ -336,11 +350,14 @@ def test_panel_inventory_count_matches_expected():
     audit) or a page was removed (also should be reflected). Pin
     catches both directions."""
     pages = list(_PAGES_DIR.glob("*.tsx"))
-    # Current count is 34 per the instrumentation pass. Update this
-    # number alongside any page-set change so the pin stays accurate.
-    assert len(pages) == 34, (
+    # KR-TEST-STABILITY (#202): bumped 34 → 46. CC#2's PromotionReview
+    # multi-loop extend (#423) + alert investigations viewer (#427) +
+    # multi-tenant nav restructure (#428) + email-intent/snapshot-expand
+    # panels each added 1-3 pages. Update alongside any page-set
+    # change so the pin stays accurate.
+    assert len(pages) == 46, (
         f"top-level page count drifted: found {len(pages)}, "
-        f"expected 34 (KR-PANEL-USE-INSTRUMENTATION snapshot). "
+        f"expected 46 (KR-PANEL-USE-INSTRUMENTATION snapshot). "
         f"Update this assertion when adding/removing pages so the "
         f"instrumentation audit stays accurate."
     )

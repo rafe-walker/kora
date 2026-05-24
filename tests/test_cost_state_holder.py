@@ -454,3 +454,131 @@ def test_reconciliation_result_carries_full_diff_context():
     assert r.diff_usd == 30.0
     assert r.diff_pct == 0.6
     assert r.breaker_re_tripped is True
+
+
+# ===========================================================================
+# KR-PER-TENANT-COST-LADDER-FOUNDATION (#202) — per-tenant holders
+# ===========================================================================
+
+
+def test_default_tenant_backward_compat():
+    """Legacy ``init_cost_holder()`` + ``get_cost_holder()`` (no
+    tenant_id) bind to the DEFAULT_TENANT_ID tenant. Existing
+    callers see no shape change."""
+    from agent.cost_state_holder import DEFAULT_TENANT_ID
+
+    h_legacy = init_cost_holder(billing_period_start=_period_start())
+    h_explicit = get_cost_holder(tenant_id=DEFAULT_TENANT_ID)
+    h_no_arg = get_cost_holder()
+    assert h_legacy is h_explicit
+    assert h_legacy is h_no_arg
+
+
+def test_per_tenant_holders_are_independent():
+    """Two tenants → two distinct holder instances; mutations on
+    one don't bleed into the other."""
+    from agent.usage_pricing import CanonicalUsage
+
+    h_default = init_cost_holder(billing_period_start=_period_start())
+    h_marvin = init_cost_holder(
+        billing_period_start=_period_start(),
+        tenant_id="marvin",
+    )
+    assert h_default is not h_marvin
+
+    # Bill 1 call against default; marvin's spent should stay at 0.
+    h_default.record_inference(
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=0),
+        model_name="claude-opus-4-7",
+        provider="anthropic",
+    )
+    assert h_default._state.spent_to_date_usd > 0
+    assert h_marvin._state.spent_to_date_usd == 0.0
+
+
+def test_init_cost_holder_per_tenant_idempotent():
+    """Re-initializing the same tenant returns the existing
+    instance; arguments are ignored on subsequent calls."""
+    h1 = init_cost_holder(
+        billing_period_start=_period_start(),
+        tenant_id="t-alpha",
+    )
+    h2 = init_cost_holder(
+        billing_period_start=_period_start(year=2030),  # ignored
+        credit_pool_usd=999.99,  # ignored
+        tenant_id="t-alpha",
+    )
+    assert h1 is h2
+
+
+def test_get_cost_holder_unknown_tenant_returns_none():
+    """A tenant whose holder hasn't been initialized returns
+    ``None`` — same contract as the legacy singleton accessor."""
+    init_cost_holder(billing_period_start=_period_start())  # default only
+    assert get_cost_holder(tenant_id="never-initialized") is None
+
+
+def test_per_tenant_credit_pool_env_override(monkeypatch):
+    """``KORA_CREDIT_POOL_USD_<TENANT>`` env override picks up the
+    per-tenant pool when no explicit credit_pool_usd is passed."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD_MARVIN", "750")
+    h_marvin = init_cost_holder(
+        billing_period_start=_period_start(),
+        tenant_id="marvin",
+    )
+    assert h_marvin._state.credit_pool_usd == 750.0
+
+
+def test_per_tenant_env_normalizes_special_chars(monkeypatch):
+    """Tenant_id with non-alnum chars normalizes to env-safe suffix
+    (``ops/main`` → ``KORA_CREDIT_POOL_USD_OPS_MAIN``)."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD_OPS_MAIN", "300")
+    h = init_cost_holder(
+        billing_period_start=_period_start(),
+        tenant_id="ops/main",
+    )
+    assert h._state.credit_pool_usd == 300.0
+
+
+def test_explicit_credit_pool_arg_wins_over_env(monkeypatch):
+    """When the caller passes credit_pool_usd explicitly (non-default),
+    the env override is ignored. Existing tests + the boot pathway
+    that passes the resolved value continue to work."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD_MARVIN", "750")
+    h = init_cost_holder(
+        billing_period_start=_period_start(),
+        tenant_id="marvin",
+        credit_pool_usd=123.45,
+    )
+    assert h._state.credit_pool_usd == 123.45
+
+
+def test_list_cost_holder_tenants_returns_sorted_registered():
+    """list_cost_holder_tenants returns a sorted tuple of every
+    currently-registered tenant_id; useful for the snapshot's
+    per-tenant projection."""
+    from agent.cost_state_holder import list_cost_holder_tenants
+
+    # Initialize out of alphabetical order
+    init_cost_holder(billing_period_start=_period_start(), tenant_id="zeta")
+    init_cost_holder(billing_period_start=_period_start())  # default
+    init_cost_holder(billing_period_start=_period_start(), tenant_id="alpha")
+    assert list_cost_holder_tenants() == ("alpha", "default", "zeta")
+
+
+def test_reset_cost_holder_clears_all_tenants():
+    """The test reset hook drops EVERY tenant's holder so each
+    test starts with a clean slate."""
+    from agent.cost_state_holder import (
+        _reset_cost_holder_for_tests,
+        list_cost_holder_tenants,
+    )
+
+    init_cost_holder(billing_period_start=_period_start())
+    init_cost_holder(billing_period_start=_period_start(), tenant_id="marvin")
+    init_cost_holder(billing_period_start=_period_start(), tenant_id="alice")
+    assert len(list_cost_holder_tenants()) == 3
+    _reset_cost_holder_for_tests()
+    assert list_cost_holder_tenants() == ()
+    assert get_cost_holder() is None
+    assert get_cost_holder("marvin") is None
