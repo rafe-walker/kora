@@ -98,6 +98,20 @@ SeamName = Literal[
     # ships the emission for operator visibility via the audit
     # panel + alerts panel without invoking LLM.
     "probe.wake_requested",
+    # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — outbound counterpart to the
+    # email-to-sea_ticket intent seam. Emitted by
+    # ``kora__send_email_to_operator`` (the reasoning-loop-callable
+    # outbound tool) for every invocation, with ``details``
+    # capturing ``status`` (``sent`` / ``rejected`` /
+    # ``smtp_failure``), rejection reason if applicable, subject /
+    # body / attachment sizes (no body content), and
+    # ``smtp_message_id`` on success. Recipient is always the
+    # operator (pinned to ``KORA_EMAIL_JOSHUA_ADDRESS``) — never
+    # caller-controllable, so the audit row doesn't need a
+    # recipient field. Future KR-FE-EMAIL-INTENT-LOG-PANEL bucket
+    # can render both inbound + outbound seams in the same
+    # cockpit panel.
+    "tool.email_to_operator_sent",
     # KR-INTENT-EMAIL-TO-SEA-TICKET — operator-driven Sea_Ticket
     # creation from inbound email. Emitted from the email-inbound
     # handler when intent recognition runs on a Joshua-authored

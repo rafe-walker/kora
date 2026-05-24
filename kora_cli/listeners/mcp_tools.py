@@ -1929,6 +1929,160 @@ async def _dispatch_send_test_alert(
     )
 
 
+# ===========================================================================
+# KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned email tool
+# ===========================================================================
+#
+# Distinct from ``kora__send_email`` (Tool 11 above) in one critical
+# defensive way: the recipient is PINNED to
+# ``KORA_EMAIL_JOSHUA_ADDRESS`` by the executor — never caller-
+# controlled. This pinning is what makes the tool safe to expose to
+# Kora's own reasoning loop (see ``kora_cli/reasoning/tool_registry.py``
+# for the prior allowlist's deliberate exclusion of caller-recipient
+# email tools, and the scope-expansion rationale).
+#
+# Operator R3 Q8a's outbound use case: "Kora, email me that pdf etc."
+# ===========================================================================
+
+
+SEND_EMAIL_TO_OPERATOR_TOOL: Dict[str, Any] = {
+    "name": "kora__send_email_to_operator",
+    "description": (
+        "Compose and send an email to Joshua (the operator). Use "
+        "when the response is too long, structured, or attachment-"
+        "heavy for Slack DM. **Recipient is always Joshua's "
+        "verified address** (pinned by the executor — you cannot "
+        "specify other recipients). Attachments are "
+        "{filename, content_path} dicts where content_path is a "
+        "local file path Kora has read access to; total combined "
+        "size capped by KORA_EMAIL_OUTBOUND_MAX_ATTACH_MB "
+        "(default 20 MB). Sends per hour capped by "
+        "KORA_EMAIL_OUTBOUND_HOURLY_CAP (default 5). On reject/"
+        "failure the tool returns a structured result with a "
+        "wire-stable ``reason`` code; consider falling back to a "
+        "Slack DM."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200,
+                "description": (
+                    "Email subject. Recommend prefixing with "
+                    "'[Kora]' for inbox filtering."
+                ),
+            },
+            "body": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Email body. Plain text or markdown; sent "
+                    "verbatim as text/plain in v1."
+                ),
+            },
+            "attachments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "minLength": 1},
+                        "content_path": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["filename", "content_path"],
+                    "additionalProperties": False,
+                },
+                "description": (
+                    "Optional list of attachments. "
+                    "content_path is a local file path Kora has "
+                    "read access to. Total <= 20 MB by default."
+                ),
+            },
+        },
+        "required": ["subject", "body"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class SendEmailToOperatorResult(BaseModel):
+    """Pydantic projection of the tool's result dict — used by the
+    reasoning engine to serialize into the ``tool_result`` block."""
+
+    status: str
+    smtp_message_id: Optional[str] = None
+    sent_at: Optional[str] = None
+    attachment_count: Optional[int] = None
+    attachment_total_bytes: Optional[int] = None
+    reason: Optional[str] = None
+    error: Optional[str] = None
+    detail: Optional[Dict[str, Any]] = None
+
+
+async def _execute_send_email_to_operator(
+    *,
+    subject: str,
+    body: str,
+    attachments: Optional[List[Dict[str, Any]]],
+    caller: Caller,
+) -> SendEmailToOperatorResult:
+    from kora_cli.tools.email_to_operator import send_email_to_operator
+
+    # Caller-session correlation: use the actor_kind as the
+    # baseline correlation key when the engine hasn't provided a
+    # finer-grained session id. The reasoning-engine call site
+    # passes a real session id in via a different path (the engine
+    # is responsible for that wiring when it cares); MCP-external
+    # callers correlate by actor_kind.
+    caller_session_id = f"mcp:{caller.actor_kind}"
+    raw = await send_email_to_operator(
+        subject=subject,
+        body=body,
+        attachments=attachments,
+        caller_session_id=caller_session_id,
+    )
+
+    _emit_audit(
+        tool="kora__send_email_to_operator",
+        caller=caller,
+        args={
+            "subject_chars": len(subject or ""),
+            "body_chars": len(body or ""),
+            "attachment_count": len(attachments or []),
+        },
+        result=(
+            f"status={raw.get('status')} "
+            f"reason={raw.get('reason')} "
+            f"message_id={raw.get('smtp_message_id')}"
+        ),
+    )
+
+    return SendEmailToOperatorResult(
+        status=raw.get("status", "unknown"),
+        smtp_message_id=raw.get("smtp_message_id"),
+        sent_at=raw.get("sent_at"),
+        attachment_count=raw.get("attachment_count"),
+        attachment_total_bytes=raw.get("attachment_total_bytes"),
+        reason=raw.get("reason"),
+        error=raw.get("error"),
+        detail=raw.get("detail"),
+    )
+
+
+async def _dispatch_send_email_to_operator(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_send_email_to_operator(
+        subject=params.get("subject", ""),
+        body=params.get("body", ""),
+        attachments=params.get("attachments"),
+        caller=caller,
+    )
+
+
 ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
@@ -1943,6 +2097,8 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STOP_TOOL,
     # KR-ALERT-NOTIFY ST2 — dev-only test alert tool
     SEND_TEST_ALERT_TOOL,
+    # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned email tool
+    SEND_EMAIL_TO_OPERATOR_TOOL,
 ]
 
 
@@ -1964,4 +2120,6 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     "kora__request_stop": _dispatch_request_stop,
     # KR-ALERT-NOTIFY ST2 addition
     "kora__send_test_alert": _dispatch_send_test_alert,
+    # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned send
+    "kora__send_email_to_operator": _dispatch_send_email_to_operator,
 }
