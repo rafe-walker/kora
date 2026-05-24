@@ -6097,6 +6097,38 @@ async def emit_panel_view(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Per-route cost telemetry (KR-CHEAP-COST-TELEMETRY)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/cost_telemetry")
+async def get_cost_telemetry():
+    """Per-route cost counters across all 3 windows.
+
+    Source-of-truth for any Kora-cost decisions (escalation rate,
+    route shape, classifier tuning, etc.). Reads the in-memory
+    telemetry singleton directly — no disk roundtrip, no LLM
+    cost.
+
+    Shape:
+
+    .. code-block:: json
+
+        {
+          "process_lifetime": {"slack_dm": {...}, "unknown": {...}, ...},
+          "rolling_24h":      {"slack_dm": {...}, ...},
+          "monthly":          {"slack_dm": {...}, ...}
+        }
+
+    Per-route counter shape comes from
+    :class:`kora_cli.telemetry.cost_telemetry._RouteCounters.to_dict`.
+    """
+    from kora_cli.telemetry import get_telemetry
+
+    return get_telemetry().snapshot()
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

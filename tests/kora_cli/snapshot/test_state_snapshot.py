@@ -100,6 +100,8 @@ def test_compute_snapshot_has_all_required_top_level_keys(env):
         "cost_ladder",
         "tasks",
         "service_health",
+        # KR-CHEAP-COST-TELEMETRY v2 addition.
+        "cost_telemetry",
     }
 
 

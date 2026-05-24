@@ -46,12 +46,14 @@ async def test_endpoint_returns_snapshot_when_fresh(_isolate):
     write_snapshot(compute_snapshot())
     result = await web_server.get_daemon_snapshot()
     assert "error" not in result
-    assert result["schema_version"] == 1
+    # KR-CHEAP-COST-TELEMETRY bumped schema v1 → v2 (added cost_telemetry).
+    assert result["schema_version"] == 2
     assert "computed_at" in result
     assert "operational_state" in result
     assert "alerts" in result
     assert "cost_ladder" in result
     assert "service_health" in result
+    assert "cost_telemetry" in result
 
 
 @pytest.mark.asyncio
