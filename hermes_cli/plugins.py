@@ -696,6 +696,78 @@ class PluginContext:
             name,
         )
 
+    # -- background-daemon registration ------------------------------------
+
+    def register_background_daemon(
+        self,
+        name: str,
+        startup: Callable,
+        shutdown: Callable,
+        *,
+        periodic_task: Optional[Any] = None,
+        shutdown_timeout: float = 5.0,
+    ) -> None:
+        """Register a background-daemon plugin entry.
+
+        Distinct from :meth:`register_platform` (which is for
+        interactive chat-platform adapters bound to a session-
+        driven main loop) and from :meth:`register_hook` (which
+        is for event-driven lifecycle callbacks). Background
+        daemons run from process boot to shutdown, independent
+        of any chat session.
+
+        Args:
+          name: unique identifier (raises if already registered).
+          startup: callable invoked once at consumer-driven
+            start; receives the consumer's coordinator object.
+            May be sync or async.
+          shutdown: callable invoked once at consumer-driven
+            shutdown. May be sync or async.
+          periodic_task: optional ``PeriodicTaskSpec`` for
+            interval-based callbacks. ``None`` → event-driven only.
+          shutdown_timeout: max seconds to wait on ``shutdown()``
+            before force-cancel. Default 5s.
+
+        The actual lifecycle execution (running startup, driving
+        periodic_task, calling shutdown) is the consumer's
+        responsibility — see ``agent.background_daemon_registry``
+        module docstring for the iteration shape.
+
+        Example::
+
+            from agent.background_daemon_registry import PeriodicTaskSpec
+
+            ctx.register_background_daemon(
+                name="my_collector",
+                startup=lambda coord: my_collector.start(),
+                shutdown=my_collector.stop,
+                periodic_task=PeriodicTaskSpec(
+                    interval_seconds=300.0,
+                    callback=my_collector.tick,
+                    name="my_collector.tick",
+                ),
+            )
+        """
+        from agent.background_daemon_registry import (
+            BackgroundDaemonEntry,
+            background_daemon_registry,
+        )
+
+        entry = BackgroundDaemonEntry(
+            name=name,
+            startup=startup,
+            shutdown=shutdown,
+            periodic_task=periodic_task,
+            shutdown_timeout=shutdown_timeout,
+            plugin_name=self.manifest.name,
+        )
+        background_daemon_registry().register(entry)
+        logger.debug(
+            "Plugin %s registered background daemon: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------

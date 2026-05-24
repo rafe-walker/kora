@@ -335,6 +335,40 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_register_background_daemon_via_plugin_context(self, tmp_path, monkeypatch):
+        """PluginContext.register_background_daemon adds an entry to the
+        background_daemon_registry singleton with plugin_name set from
+        the manifest."""
+        from agent.background_daemon_registry import background_daemon_registry
+
+        # Reset so prior tests don't leak entries into this assertion.
+        background_daemon_registry().reset_for_tests()
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "bg_daemon_plugin",
+            register_body=(
+                'ctx.register_background_daemon('
+                '    name="my_collector",'
+                '    startup=lambda c: None,'
+                '    shutdown=lambda: None,'
+                ')'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entries = background_daemon_registry().list_entries()
+        names = [e.name for e in entries]
+        assert "my_collector" in names
+        entry = background_daemon_registry().by_name("my_collector")
+        assert entry is not None
+        assert entry.plugin_name == "bg_daemon_plugin"
+        assert entry.periodic_task is None
+        assert entry.shutdown_timeout == 5.0
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
