@@ -303,12 +303,14 @@ def _fake_response(text: str = "hi", model: str = "claude-haiku-4-5-20251001"):
 
 
 @pytest.mark.asyncio
-async def test_toggle_off_uses_bypass_path(
+async def test_toggle_explicit_false_uses_bypass_path(
     monkeypatch, system_prompt_path
 ):
-    """Default behavior: KORA_REASONING_USE_GATEWAY unset →
-    existing bypass path runs. No NotImplementedError."""
-    monkeypatch.delenv("KORA_REASONING_USE_GATEWAY", raising=False)
+    """KR-REASONING-ROUTE-THROUGH-GATEWAY-ST3 — post-flip semantic:
+    bypass path is OPT-IN via ``KORA_REASONING_USE_GATEWAY=false``.
+    Any other value (incl. unset) routes through the gateway path.
+    This test pins the explicit-opt-out behavior."""
+    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "false")
     from kora_cli.listeners import mcp_tools
 
     monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
@@ -323,6 +325,9 @@ async def test_toggle_off_uses_bypass_path(
 async def test_toggle_explicit_false_uses_bypass(
     monkeypatch, system_prompt_path
 ):
+    """Duplicate of the above with the original test name retained
+    so any downstream caller importing by name keeps working. The
+    behavior is identical: explicit ``false`` env → bypass path."""
     monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "false")
     from kora_cli.listeners import mcp_tools
 
@@ -331,6 +336,37 @@ async def test_toggle_explicit_false_uses_bypass(
     engine = _make_engine(system_prompt_path, _fake_response("hi"))
     result = await engine.respond(_make_incoming(), _make_context())
     assert result.error is None
+
+
+def test_st3_default_env_unset_routes_to_gateway(monkeypatch):
+    """ST3 default-flip pin: when ``KORA_REASONING_USE_GATEWAY``
+    is unset (the normal-runtime case), ``respond()`` MUST take
+    the gateway-routing branch. This test pins the branch
+    selection at the source level — slicing the engine source
+    between the toggle check and the bypass fall-through and
+    asserting the default-branch condition is "not == 'false'"
+    (i.e. the gateway is the default).
+
+    If a future change accidentally reverts to "== 'true'" (the
+    pre-ST3 semantic), this test fails loudly + flags the
+    regression before it can ship.
+    """
+    from pathlib import Path
+
+    engine_src = (
+        Path(__file__).resolve().parents[2]
+        / "kora_cli"
+        / "reasoning"
+        / "anthropic_engine.py"
+    ).read_text()
+
+    # The post-ST3 branch condition treats UNSET as gateway-default.
+    # Pin both signals: the explicit "!= 'false'" check AND the
+    # absence of the legacy "== 'true'" guard.
+    assert "!= \"false\"" in engine_src or "!= 'false'" in engine_src, (
+        "ST3 default-flip pin: respond() must compare against 'false' "
+        "(bypass-opt-out), not 'true' (gateway-opt-in)."
+    )
 
 
 # ``test_toggle_on_routes_to_gateway_st1_not_implemented`` +

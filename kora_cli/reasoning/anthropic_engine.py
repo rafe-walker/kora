@@ -273,25 +273,38 @@ class AnthropicReasoningEngine:
         ``ResponseResult.input_tokens`` / ``output_tokens`` are
         totals over all roundtrips, NOT just the final one.
 
-        # KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST1 — toggle
+        # KR-REASONING-ROUTE-THROUGH-GATEWAY toggle (ST1 introduced;
+        # ST3 flips the default).
 
-        When the env ``KORA_REASONING_USE_GATEWAY`` is set to
-        ``"true"``, ``respond()`` routes through
-        ``_respond_via_gateway()`` (which uses Hermes's
-        ``AIAgent.run_conversation`` chokepoint + the new
-        ``kora_hermes`` bundled plugin's hook callbacks). Default
-        ``false`` preserves the existing bypass path; ST2 wires
-        the gateway path's tool plumbing + behavior parity tests
-        and flips the default.
+        When the env ``KORA_REASONING_USE_GATEWAY`` is unset or set
+        to a truthy value (``"true"``, ``"1"``, etc.), ``respond()``
+        routes through ``_respond_via_gateway()`` (Hermes's
+        ``AIAgent.run_conversation`` chokepoint + the
+        ``kora_hermes`` bundled plugin's hook callbacks). The
+        bypass path is opt-IN with ``KORA_REASONING_USE_GATEWAY=
+        false`` — kept as an escape hatch for incident response if
+        the gateway path surfaces a regression post-flip.
+
+        # ST3 default-flip rationale
+
+        ST2B (#181) landed the tool-bridge; #189 closed Lock R3-2
+        Phase C with the post-call escalation hook + haiku-router
+        plugin. The 48-72h operator burn-in window saw escalation
+        rate in the predicted 5-15% band with no cost/error-rate
+        divergence vs the bypass path. ST3 flips the default so
+        all Kora reasoning runs through the gateway path by
+        default; the bypass stays available via env opt-out.
         """
         import os
 
-        if (
+        # ST3: default is gateway path. Opt-out by setting
+        # KORA_REASONING_USE_GATEWAY=false (case-insensitive).
+        _gateway_env = (
             os.environ.get("KORA_REASONING_USE_GATEWAY", "")
             .strip()
             .lower()
-            == "true"
-        ):
+        )
+        if _gateway_env != "false":
             return await self._respond_via_gateway(message, context)
 
         started_at = time.monotonic()

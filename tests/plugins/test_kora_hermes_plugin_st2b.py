@@ -552,8 +552,10 @@ async def test_toggle_off_bypass_unchanged_post_st2b(
     monkeypatch, system_prompt_path
 ):
     """ST2B's tool-bridge changes don't leak into the toggle-OFF
-    bypass path. Default behavior: existing bypass runs cleanly."""
-    monkeypatch.delenv("KORA_REASONING_USE_GATEWAY", raising=False)
+    bypass path. Explicit ``false`` env → bypass runs cleanly.
+    (ST3 default-flip: bypass is opt-IN via
+    ``KORA_REASONING_USE_GATEWAY=false``.)"""
+    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "false")
     from kora_cli.listeners import mcp_tools
 
     monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
