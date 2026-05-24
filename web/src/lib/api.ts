@@ -1836,10 +1836,17 @@ export interface SnapshotResponse {
     by_severity: { critical: number; warning: number; info: number };
     by_category: Record<string, number>;
   };
+  // cost_ladder: schema v3 added spent_to_date_usd + credit_pool_usd
+  // (PR #169). Both are number | "unknown" — degraded fields surface
+  // as the "unknown" string literal so consumers can branch on
+  // presence (KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED uses this to
+  // decide whether to project from snapshot or fan-out).
   cost_ladder: {
     current_tier: string;
     monthly_budget_pct_used: number | null;
-    model_default: string; // "unknown" until KR-SNAPSHOT-MODEL-DEFAULT
+    model_default: string;
+    spent_to_date_usd: number | "unknown";
+    credit_pool_usd: number;
   };
   service_health: {
     supabase: string;
@@ -1847,6 +1854,21 @@ export interface SnapshotResponse {
     vercel: string;
     sentry: string;
     doppler: string;
+  };
+  // daemon_health: schema v4 (PR #170). Kora's own runtime health,
+  // distinct from service_health (SaaS-deps). Per-listener detail
+  // for last_event_at + consecutive_errors is "unknown" in v1 —
+  // wire shape is forward-compat for KR-LISTENER-DETAIL-ACCESSORS.
+  daemon_health?: {
+    overall_status: "healthy" | "degraded" | "unhealthy" | "unknown";
+    boot_at: string | "unknown";
+    uptime_seconds: number | "unknown";
+    listeners: Record<string, {
+      status: "up" | "down" | "unknown";
+      last_event_at: string | "unknown";
+      consecutive_errors: number | "unknown";
+    }>;
+    recent_error_count_5min: number;
   };
   tasks?: {
     open_count: number | "unknown";

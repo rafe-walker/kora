@@ -1,0 +1,139 @@
+<!--
+  Static preview of the updated FreshnessBadge variants. The
+  badge gains a "{N} of 4 hero fields from snapshot" hint to
+  surface the KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED milestone —
+  operator can tell "warm-cache delivering everything" from
+  "warm-cache delivering 2 of 4 (cost/health fell back)" at a
+  glance. Rendered to badge.png via headless Chrome.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kora — FreshnessBadge variants (KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED)</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --fg: #ededed; --muted: #8b8b8b; --muted-bg: #1a1a1a;
+      --card: #131313; --border: #2a2a2a;
+      --success: #4ade80; --warning: #facc15; --primary: #60a5fa;
+    }
+    body { background: var(--bg); color: var(--fg);
+           font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+           padding: 32px; max-width: 1000px; margin: 0; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 6px; }
+    h2 { font-size: 12px; font-weight: 500; color: var(--muted);
+         margin: 28px 0 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .preamble { color: var(--muted); font-size: 12px; max-width: 760px;
+                line-height: 1.5; margin-bottom: 16px; }
+    /* Mirror of the FreshnessBadge render shape (TS:105-126) */
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 4px 10px; border-radius: 6px; border: 1px solid;
+      font-size: 12px;
+    }
+    .badge.success {
+      border-color: rgba(74,222,128,0.3);
+      background: rgba(74,222,128,0.05);
+      color: var(--fg);
+    }
+    .badge.muted {
+      border-color: rgba(143,143,143,0.3);
+      background: rgba(50,50,50,0.3);
+      color: var(--muted);
+    }
+    .badge.live {
+      border-color: var(--border);
+      background: var(--card);
+      color: var(--fg);
+    }
+    .badge.warning {
+      border-color: rgba(250,204,21,0.3);
+      background: rgba(250,204,21,0.05);
+      color: var(--fg);
+    }
+    .badge .headline { font-weight: 500; }
+    .badge .sep { color: var(--muted); }
+    .badge .hint { color: var(--muted); font-style: italic; }
+    .force-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; font-size: 11px; background: transparent;
+      border: 1px solid transparent; color: var(--fg); cursor: pointer;
+      border-radius: 4px;
+    }
+    .force-btn:hover { background: rgba(255,255,255,0.05); }
+    .variant-block { padding: 12px 14px; background: var(--card);
+                     border: 1px solid var(--border); border-radius: 6px;
+                     margin-bottom: 8px; }
+    .variant-block .label {
+      display: block; font-size: 10px; color: var(--muted);
+      margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.04em;
+    }
+  </style>
+</head>
+<body>
+  <h1>FreshnessBadge — KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED</h1>
+  <p class="preamble">
+    Updated cost-hint copy distinguishes "all 4 hero fields from snapshot"
+    (warm cache delivering everything) from "K of 4 from snapshot" (snapshot
+    fresh but some hero fields fanned out per-field due to cost-holder /
+    daemon-health "unknown"). 4 = operational + alerts + cost + health
+    (KR-FE-DASHBOARD-SNAPSHOT-WIRE's original spec list).
+  </p>
+
+  <h2>1. NEW — All 4 hero fields from snapshot (warm cache, fully delivering)</h2>
+  <div class="variant-block">
+    <span class="label">snapshotProjectedHeroCount = 4, totalHeroFields = 4</span>
+    <div class="badge success">
+      <span class="headline">Snapshot from 2 min ago</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="hint">$0 cost view · all 4 hero fields from snapshot</span>
+      <button class="force-btn">↻ Force live refresh</button>
+    </div>
+  </div>
+
+  <h2>2. NEW — Partial: 2 of 4 hero fields from snapshot</h2>
+  <div class="variant-block">
+    <span class="label">snapshotProjectedHeroCount = 2, totalHeroFields = 4 (cost-holder + daemon-coordinator still booting → cost + health fell back to fan-out per-field)</span>
+    <div class="badge success">
+      <span class="headline">Snapshot from 1 min ago</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="hint">$0 cost view · 2 of 4 hero fields from snapshot</span>
+      <button class="force-btn">↻ Force live refresh</button>
+    </div>
+  </div>
+
+  <h2>3. Mixed (operator force-refreshed a single card)</h2>
+  <div class="variant-block">
+    <span class="label">liveOverrideCount = 1</span>
+    <div class="badge warning">
+      <span class="headline">Snapshot from 3 min ago · 1 field force-refreshed</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="hint">mixed cost view</span>
+      <button class="force-btn">↻ Force live refresh</button>
+    </div>
+  </div>
+
+  <h2>4. Pre-existing — Live mode (force-refresh just happened)</h2>
+  <div class="variant-block">
+    <span class="label">mode = live</span>
+    <div class="badge live">
+      <span class="headline">Live (refreshed just now)</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="hint">live fetch</span>
+      <button class="force-btn">↻ Force live refresh</button>
+    </div>
+  </div>
+
+  <h2>5. Pre-existing — Snapshot unavailable</h2>
+  <div class="variant-block">
+    <span class="label">mode = unavailable (snapshot file missing / corrupt → full fan-out fallback)</span>
+    <div class="badge muted">
+      <span class="headline">Live fetch</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="hint">backend snapshot unavailable</span>
+      <button class="force-btn">↻ Force live refresh</button>
+    </div>
+  </div>
+
+</body>
+</html>

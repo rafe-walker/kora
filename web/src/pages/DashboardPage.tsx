@@ -975,23 +975,38 @@ function isStubbed(s: LoadStatus<unknown>): boolean {
   return data.stub === true;
 }
 
-// KR-FE-DASHBOARD-SNAPSHOT-WIRE projection helpers — map the
-// daemon snapshot's flat summary fields into the rich
-// per-endpoint TS interfaces the dashboard cards consume.
+// KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — total count of dashboard
+// hero fields originally spec'd by KR-FE-DASHBOARD-SNAPSHOT-WIRE:
+// operational + alerts + cost + health. All 4 are snapshot-driven
+// on the warm-cache path after this bucket. Exported as a literal
+// constant so the FreshnessBadge text can say "all 4 fields from
+// snapshot" and tests can pin against the literal.
+const DASHBOARD_HERO_FIELD_COUNT = 4;
+
+// KR-FE-DASHBOARD-SNAPSHOT-WIRE + KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED
+// — projection helpers that map the daemon snapshot's flat summary
+// fields into the rich per-endpoint TS interfaces the dashboard
+// cards consume.
 //
-// Only project fields where the snapshot carries enough info to
-// avoid misleading the operator. The other ~6 fields stay on
-// fan-out (loadOne paths below) per spec §2(b) "prefer to leave
-// fan-out rather than coerce."
+// Coverage (after this bucket): operational + alerts + cost + health
+// — the 4 fields the originating dashboard-snapshot spec called out.
+// PR #169 (snapshot v3 cost_ladder.spent_to_date_usd +
+// credit_pool_usd) + PR #170 (snapshot v4 daemon_health) closed the
+// data gaps that kept cost + health on fan-out in PR #162. The
+// remaining ~6 cards (boot / dr / capabilities / sea / control /
+// charter / recentEvents / runbooks / heartbeat / mcpClients /
+// webhookEvents / agentActivity / slackDM / email / reasoning) stay
+// on fan-out — most don't have snapshot equivalents at all; the
+// few that do (e.g. heartbeat ≈ service_health) are panel-level
+// surfaces consumed by full-fidelity panels, not the dashboard
+// hero cards.
 //
-// Specifically NOT projected (snapshot incomplete for the card's
-// rendered fields):
-//   * cost — snapshot lacks spent_to_date_usd + credit_pool_usd
-//     (CostCardBody renders USD figures; defaulting to $0 would
-//     mislead operator)
-//   * health — snapshot's service_health is SaaS-deps health
-//     (vercel/sentry/etc), NOT Kora's own control_plane/worker
-//     daemon health (semantic mismatch with HealthHero)
+// Anti-coercion discipline preserved per-field: each projection
+// helper returns `null` when the snapshot's underlying field is
+// "unknown" / incomplete, and the caller falls back to fan-out for
+// THAT field specifically. Mixed-state outcomes (operational +
+// alerts projected; cost falls back; health projected) are
+// supported by tracking the projected-field set independently.
 
 function projectOperationalFromSnapshot(
   snap: SnapshotResponse,
@@ -1024,6 +1039,128 @@ function projectAlertsFromSnapshot(snap: SnapshotResponse): AlertsResponse {
     generated_at: snap.computed_at,
     total_active: snap.alerts.active_count,
     by_severity: snap.alerts.by_severity,
+  };
+}
+
+// KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — cost projection from
+// snapshot v3 cost_ladder. Returns null if any field CostCardBody
+// renders is "unknown" — caller falls back to fan-out. This
+// preserves the anti-coercion discipline at the field level (no
+// $0.00 USD render when the holder hasn't initialized).
+//
+// CostCardBody reads: spent_to_date_usd, credit_pool_usd,
+// active_rung (CostRung enum), effective_model_tier (ModelTier
+// enum). All four must be present + mappable for the projection
+// to succeed. Other CostStateResponse fields (rate_limit_pulse,
+// deferred_tickets, reconciliation_history) aren't read by
+// CostCardBody — filled with sentinel-empty values so the type
+// contract holds; the CostStatePage still fans out for the full
+// panel.
+function projectCostFromSnapshot(
+  snap: SnapshotResponse,
+): CostStateResponse | null {
+  const cl = snap.cost_ladder;
+  // USD fields — "unknown" sentinel means the cost holder hasn't
+  // initialized + we can't faithfully render. Fall back to
+  // fan-out for cost rather than show misleading zeros.
+  if (cl.spent_to_date_usd === "unknown") return null;
+  // current_tier "unknown" can happen pre-router. Same call: don't
+  // project; fan-out gives an accurate "not yet" via the live
+  // holder's defaults.
+  if (cl.current_tier === "unknown") return null;
+  // Map snapshot's current_tier string → CostRung enum the FE
+  // renders. Holder is the source-of-truth for these names
+  // (agent/cost_state_holder.py CostRung).
+  const KNOWN_RUNGS = new Set([
+    "normal",
+    "warn_75",
+    "downshift_90",
+    "hard_stop_100",
+  ]);
+  if (!KNOWN_RUNGS.has(cl.current_tier)) return null;
+  // Map snapshot's model_default → ModelTier. The model_default
+  // string may be a full model id (e.g. "claude-opus-4-7"); slim
+  // to the tier word.
+  let tier: "haiku" | "sonnet" | "opus" = "opus";
+  const md = cl.model_default.toLowerCase();
+  if (md === "unknown" || !md) return null;
+  if (md.includes("haiku")) tier = "haiku";
+  else if (md.includes("sonnet")) tier = "sonnet";
+  else if (md.includes("opus")) tier = "opus";
+  else return null;
+  return {
+    current: {
+      // Period dates aren't carried in snapshot; CostCardBody
+      // doesn't render them. Use the snapshot's computed_at as a
+      // best-effort timestamp so consumers that DO read these get
+      // a sensible date rather than the unix epoch.
+      billing_period_start: snap.computed_at,
+      billing_period_end: snap.computed_at,
+      days_remaining: 0,
+      credit_pool_usd: cl.credit_pool_usd,
+      spent_to_date_usd: cl.spent_to_date_usd,
+      burn_rate_usd_per_day: 0,
+      projected_end_of_period_usd: 0,
+      active_rung: cl.current_tier as CostStateResponse["current"]["active_rung"],
+      active_rung_threshold_pct: 0,
+      current_pct_used: cl.monthly_budget_pct_used ?? 0,
+      effective_model_tier: tier,
+      downshift_active: cl.current_tier === "downshift_90",
+      downshift_reason: null,
+      extra_usage_off: false,
+    },
+    rate_limit_pulse: {
+      captured_at: snap.computed_at,
+      requests: { limit: 0, remaining: 0, reset_at: snap.computed_at },
+      tokens: { limit: 0, remaining: 0, reset_at: snap.computed_at },
+    },
+    deferred_tickets: [],
+    reconciliation_history: [],
+    stub: false,
+  };
+}
+
+// KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — health projection from
+// snapshot v4 daemon_health. Returns null when overall_status is
+// "unknown" — caller falls back to fan-out.
+//
+// daemon_health doesn't separate control_plane / worker the way
+// HealthRollupResponse does; the dashboard's HealthHero shows
+// overall + control_plane + worker badges as one piece. Snapshot
+// only knows overall, so we mirror it to both control_plane +
+// worker (a deliberate "snapshot can't tell these apart yet"
+// signal). The full HealthRollupPage panel keeps its fan-out
+// path for the per-axis detail. Per spec §4: per-field
+// granularity within the projection is acceptable when the card
+// renders gracefully — the operator clicks through to the full
+// panel for the breakdown anyway.
+function projectHealthFromSnapshot(
+  snap: SnapshotResponse,
+): HealthRollupResponse | null {
+  const dh = snap.daemon_health;
+  if (!dh) return null;
+  if (dh.overall_status === "unknown") return null;
+  // Snapshot enum ("healthy" | "degraded" | "unhealthy") → FE
+  // HealthStatus ("healthy" | "degraded" | "stopped" | "outage").
+  // "unhealthy" maps to "outage" since the daemon is failing to
+  // serve; the FE's outage tone is the right operator signal.
+  const overall: HealthStatus =
+    dh.overall_status === "healthy"
+      ? "healthy"
+      : dh.overall_status === "degraded"
+        ? "degraded"
+        : "outage";
+  return {
+    overall,
+    // Snapshot doesn't distinguish control_plane vs worker yet;
+    // mirror overall to both (semantic fidelity is preserved at
+    // the hero level — operator click-through to /health-rollup
+    // gives the full fan-out breakdown).
+    control_plane: overall,
+    worker: overall,
+    stopped_reason: null,
+    subsignals: {},
+    stub: false,
   };
 }
 
@@ -1144,11 +1281,19 @@ export default function DashboardPage() {
         return;
       }
 
-      // Project the fields we can cleanly map.
+      // Project the fields we can cleanly map. Cost + health
+      // project conditionally — null return ≡ "snapshot says
+      // unknown, fan out for this field instead." Operational +
+      // alerts always project (snapshot always carries their
+      // shapes, fail-soft to empty defaults at the holder layer).
+      const projectedCost = projectCostFromSnapshot(snap);
+      const projectedHealth = projectHealthFromSnapshot(snap);
       const projectedFields = new Set<keyof DashboardData>([
         "operational",
         "alerts",
       ]);
+      if (projectedCost !== null) projectedFields.add("cost");
+      if (projectedHealth !== null) projectedFields.add("health");
       setSnapshotMode("snapshot");
       setSnapshotAt(snap.computed_at);
       setSnapshotProjectedFields(projectedFields);
@@ -1163,14 +1308,18 @@ export default function DashboardPage() {
           state: "ready",
           data: projectAlertsFromSnapshot(snap),
         },
+        ...(projectedCost !== null
+          ? { cost: { state: "ready", data: projectedCost } as const }
+          : {}),
+        ...(projectedHealth !== null
+          ? { health: { state: "ready", data: projectedHealth } as const }
+          : {}),
       }));
 
       // Fan out everything NOT covered by the snapshot projection.
-      // cost + health stay on fan-out per coercion-would-mislead
-      // analysis (see projection-helper comments above).
-      await Promise.allSettled([
-        loadOne("health", () => api.getHealthRollup()),
-        loadOne("cost", () => api.getCostState()),
+      // cost + health are conditional — fan out only if the snapshot
+      // didn't have enough to project them.
+      const remainingFetches: Promise<unknown>[] = [
         loadOne("sea", () => api.getKoraAssignedSeaTickets()),
         loadOne("control", () => api.getKoraControlObservedState()),
         loadOne("boot", () => api.getBootStatus()),
@@ -1186,7 +1335,14 @@ export default function DashboardPage() {
         loadOne("slackDM", () => api.getRecentSlackDM()),
         loadOne("email", () => api.getRecentEmail()),
         loadOne("reasoning", () => api.getRecentReasoning()),
-      ]);
+      ];
+      if (projectedCost === null) {
+        remainingFetches.push(loadOne("cost", () => api.getCostState()));
+      }
+      if (projectedHealth === null) {
+        remainingFetches.push(loadOne("health", () => api.getHealthRollup()));
+      }
+      await Promise.allSettled(remainingFetches);
     } catch {
       // Snapshot fetch raised (network / 5xx). Treat same as
       // unavailable; full fan-out fallback.
@@ -1289,6 +1445,18 @@ export default function DashboardPage() {
             snapshotAt={snapshotAt}
             liveAt={liveAt}
             liveOverrideCount={liveOverrides.size}
+            // KR-FE-DASHBOARD-SNAPSHOT-FULLY-WIRED — count the
+            // originally-spec'd hero fields (operational + alerts
+            // + cost + health = 4) that actually projected from
+            // snapshot on this load. Drives "all 4 from snapshot"
+            // vs "2 of 4 from snapshot" badge variants.
+            snapshotProjectedHeroCount={
+              (["operational", "alerts", "cost", "health"] as const).filter(
+                (k) =>
+                  snapshotProjectedFields.has(k) && !liveOverrides.has(k),
+              ).length
+            }
+            totalHeroFields={DASHBOARD_HERO_FIELD_COUNT}
             onForceRefresh={() => void forceFullLiveRefresh()}
             refreshing={refreshing}
           />
