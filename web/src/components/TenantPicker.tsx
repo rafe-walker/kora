@@ -59,17 +59,43 @@ export function TenantPicker() {
     isAllTenants,
     isMultiTenant,
     loadingTenants,
+    recentTenants,
   } = useActiveTenant();
   const [urlToggle, setUrlToggle] = useTenantUrlToggle();
   const [open, setOpen] = useState(false);
 
-  // Render order mirrors the dropdown: real tenants in the order
-  // /api/tenants/list returned (default-first), then the aggregate
-  // sentinel as the final pseudo-row.
-  const options = useMemo(
-    () => [...availableTenants, ALL_TENANTS_SENTINEL],
-    [availableTenants],
-  );
+  // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — Recent section
+  // visible only when there are ≥ 3 tenants available (i.e.
+  // enough to warrant a fast-access surface; on 2 tenants the
+  // flat list is faster to scan than two sections of one). Take
+  // up to 3 entries from recentTenants. Currently-active tenant
+  // is excluded from Recent — it's already labelled "active" in
+  // the All section so showing it twice is noise.
+  const recentSection = useMemo<string[]>(() => {
+    if (availableTenants.length < 3) return [];
+    return recentTenants
+      .filter((t) => t !== activeTenant)
+      .slice(0, 3);
+  }, [recentTenants, availableTenants.length, activeTenant]);
+
+  // Flat option list for keyboard nav. Each entry carries its
+  // section so the visible header can render between sections;
+  // tenantId duplicates are fine (same id may appear once in
+  // Recent and once in All — keyboard nav indexes operate on
+  // the flat list so each visible row has a unique position).
+  type Option = { kind: "recent" | "all"; tenantId: string };
+  const options = useMemo<Option[]>(() => {
+    const all: Option[] = availableTenants.map((t) => ({
+      kind: "all" as const,
+      tenantId: t,
+    }));
+    all.push({ kind: "all", tenantId: ALL_TENANTS_SENTINEL });
+    const recent: Option[] = recentSection.map((t) => ({
+      kind: "recent" as const,
+      tenantId: t,
+    }));
+    return [...recent, ...all];
+  }, [availableTenants, recentSection]);
 
   // Index of the highlighted option for keyboard nav. -1 ≡ none
   // highlighted (closed-state default; reset when picker closes).
@@ -99,7 +125,14 @@ export function TenantPicker() {
   // return focus to the trigger so keyboard flow continues.
   useEffect(() => {
     if (open) {
-      const activeIdx = options.indexOf(activeTenant);
+      // Prefer the All-section instance of the active tenant for
+      // the initial highlight — that section is the canonical
+      // ordering operators expect. Recent-section duplicate also
+      // matches activeTenant but never selects (currently-active
+      // is filtered out of recentSection upstream).
+      const activeIdx = options.findIndex(
+        (o) => o.kind === "all" && o.tenantId === activeTenant,
+      );
       setHighlight(activeIdx >= 0 ? activeIdx : 0);
     } else {
       setHighlight(-1);
@@ -146,9 +179,11 @@ export function TenantPicker() {
     (letter: string) => {
       const lower = letter.toLowerCase();
       const matches: number[] = [];
-      options.forEach((id, idx) => {
+      options.forEach((opt, idx) => {
         const label =
-          id === ALL_TENANTS_SENTINEL ? "all" : id.toLowerCase();
+          opt.tenantId === ALL_TENANTS_SENTINEL
+            ? "all"
+            : opt.tenantId.toLowerCase();
         if (label.startsWith(lower)) matches.push(idx);
       });
       if (matches.length === 0) return;
@@ -203,7 +238,7 @@ export function TenantPicker() {
       if (e.key === "Enter") {
         e.preventDefault();
         if (highlight >= 0 && highlight < options.length) {
-          onPick(options[highlight]);
+          onPick(options[highlight].tenantId);
         }
         return;
       }
@@ -239,7 +274,11 @@ export function TenantPicker() {
         onKeyDown={onTriggerKeyDown}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Active tenant: ${label}`}
+        // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — clarify the
+        // listbox affordance in the accessible name so screen
+        // readers announce both the current value and the
+        // interaction model on focus.
+        aria-label={`Active tenant: ${label}. Press Enter to choose a different tenant.`}
         className={cn(
           "flex w-full items-center justify-between gap-2",
           "rounded border border-current/20 bg-card/60 px-2 py-1.5",
@@ -286,20 +325,37 @@ export function TenantPicker() {
             "focus-visible:outline-none",
           )}
         >
-          {options.map((id, idx) => (
-            <TenantOption
-              key={id}
-              id={`tenant-option-${idx}`}
-              tenantId={id}
-              active={id === activeTenant}
-              highlighted={idx === highlight}
-              onPick={onPick}
-              onHover={() => setHighlight(idx)}
-              optionRef={(node) => {
-                optionRefs.current[idx] = node;
-              }}
-            />
-          ))}
+          {options.map((opt, idx) => {
+            // Render a section header above the first "all" option
+            // when a Recent section is present (recentSection.length > 0).
+            // The header is decorative (role="presentation") so it
+            // doesn't get counted as a listbox option.
+            const showAllHeader =
+              recentSection.length > 0 &&
+              opt.kind === "all" &&
+              (idx === 0 || options[idx - 1].kind !== "all");
+            const showRecentHeader =
+              recentSection.length > 0 && opt.kind === "recent" && idx === 0;
+            return (
+              <div key={`${opt.kind}:${opt.tenantId}`}>
+                {showRecentHeader && <PickerSectionHeader label="Recent" />}
+                {showAllHeader && <PickerSectionHeader label="All tenants" />}
+                <TenantOption
+                  id={`tenant-option-${idx}`}
+                  tenantId={opt.tenantId}
+                  active={
+                    opt.kind === "all" && opt.tenantId === activeTenant
+                  }
+                  highlighted={idx === highlight}
+                  onPick={onPick}
+                  onHover={() => setHighlight(idx)}
+                  optionRef={(node) => {
+                    optionRefs.current[idx] = node;
+                  }}
+                />
+              </div>
+            );
+          })}
 
           {/* KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
               opt-in URL-toggle. Persisted via useTenantUrlToggle;
@@ -345,6 +401,26 @@ interface TenantOptionProps {
   onPick: (id: string) => void;
   onHover: () => void;
   optionRef: (node: HTMLButtonElement | null) => void;
+}
+
+// KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — decorative section
+// header rendered between Recent + All sections. Role
+// "presentation" keeps screen readers from counting it as a
+// listbox option (the listbox aria-activedescendant pattern relies
+// on each role="option" having a stable index).
+function PickerSectionHeader({ label }: { label: string }) {
+  return (
+    <div
+      role="presentation"
+      className={cn(
+        "px-3 pt-2 pb-0.5",
+        "text-[9px] uppercase tracking-wider text-muted-foreground",
+        "border-t border-current/10 first:border-t-0",
+      )}
+    >
+      {label}
+    </div>
+  );
 }
 
 function TenantOption({

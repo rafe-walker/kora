@@ -289,3 +289,66 @@ def test_fe_keyboard_nav_and_url_toggle_and_tab_title_pins():
     # Format pins: `[<tenant>] <title> · Hermes Agent`.
     assert "[all tenants]" in pageheader_src
     assert "document.title = formatBrowserTabTitle(" in pageheader_src
+
+
+def test_fe_a11y_and_recent_tenants_pins():
+    """KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — pin the recent-
+    tenants storage key + the tenant-change live-region role/
+    politeness + the skip-to-main anchor target. Each is part of
+    the operator/assistive-tech-facing contract.
+    """
+    repo = Path(__file__).parent.parent
+
+    # B — recent-tenants storage key + RECENT_TENANTS_CAP.
+    hook_src = (
+        repo / "web" / "src" / "hooks" / "useActiveTenant.ts"
+    ).read_text(encoding="utf-8")
+    assert (
+        'RECENT_TENANTS_STORAGE_KEY = "kora_recent_tenants"' in hook_src
+    ), (
+        "recent-tenants localStorage key must be 'kora_recent_tenants' — "
+        "operator-facing key, stable across releases"
+    )
+    assert "RECENT_TENANTS_CAP = 5" in hook_src
+    # pushRecentTenant pure helper exported so callers/tests can
+    # reuse the dedupe+cap semantics without round-tripping storage.
+    assert "export function pushRecentTenant" in hook_src
+    # Picker reads the new field on the hook.
+    picker_src = (
+        repo / "web" / "src" / "components" / "TenantPicker.tsx"
+    ).read_text(encoding="utf-8")
+    assert "recentTenants" in picker_src
+    # Decorative section header renders for the two-section layout.
+    assert "PickerSectionHeader" in picker_src
+
+    # A.3 — aria-live announcer role + politeness + sr-only class.
+    announcer_src = (
+        repo / "web" / "src" / "components" / "TenantChangeAnnouncer.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'TENANT_ANNOUNCER_LIVE_REGION_ROLE = "status"' in announcer_src
+    assert 'TENANT_ANNOUNCER_ARIA_LIVE = "polite"' in announcer_src
+    assert 'className="sr-only"' in announcer_src
+    # App mounts the announcer once at the shell layer.
+    app_src = (repo / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+    assert "<TenantChangeAnnouncer />" in app_src
+
+    # A.1 — skip-to-main link targets #kora-main; PageHeaderProvider
+    # carries the matching id on <main>.
+    assert 'href="#kora-main"' in app_src
+    assert "Skip to main content" in app_src
+    pageheader_src = (
+        repo / "web" / "src" / "contexts" / "PageHeaderProvider.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'id="kora-main"' in pageheader_src
+
+    # C — wizard skip routes through ConfirmDialog; per-step link
+    # text is operator-facing so pin it.
+    wizard_src = (
+        repo / "web" / "src" / "pages" / "WizardPage.tsx"
+    ).read_text(encoding="utf-8")
+    assert "ConfirmDialog" in wizard_src
+    assert "Skip wizard, configure manually" in wizard_src
+    # Both header skip + per-step link route through requestSkip;
+    # the actual completeWizard call lives behind confirmSkip.
+    assert "requestSkip" in wizard_src
+    assert "confirmSkip" in wizard_src

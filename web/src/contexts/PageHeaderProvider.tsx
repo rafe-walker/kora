@@ -182,6 +182,12 @@ export function PageHeaderProvider({
         </header>
 
         <main
+          id="kora-main"
+          // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — target for
+          // the App-shell skip-to-main link. tabIndex=-1 makes the
+          // element programmatically focusable so the anchor jump
+          // moves keyboard focus, not just the viewport.
+          tabIndex={-1}
           className={cn(
             "min-h-0 w-full min-w-0 flex-1 flex flex-col",
             // Bottom inset for scrolled pages lives on the route outlet wrapper in

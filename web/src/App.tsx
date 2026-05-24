@@ -78,6 +78,7 @@ import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
 import { TenantPicker } from "@/components/TenantPicker";
+import { TenantChangeAnnouncer } from "@/components/TenantChangeAnnouncer";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -738,6 +739,30 @@ export default function App() {
       data-layout-variant={layoutVariant}
       className="font-mondwest flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black uppercase text-midground antialiased"
     >
+      {/* KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — skip-to-main
+          link. Visually hidden until focused; first tab-stop on the
+          page. Targets the <main> element inside PageHeaderProvider
+          (id="kora-main"). Standard a11y pattern; keyboard users
+          skip the entire sidebar nav. */}
+      <a
+        href="#kora-main"
+        className={cn(
+          "sr-only focus:not-sr-only",
+          "focus:fixed focus:top-2 focus:left-2 focus:z-[100]",
+          "focus:rounded focus:border focus:border-current/30",
+          "focus:bg-background-base focus:px-3 focus:py-2",
+          "focus:text-xs focus:font-mono focus:text-midground",
+          "focus:outline-none focus:ring-2 focus:ring-midground/60",
+        )}
+      >
+        Skip to main content
+      </a>
+
+      {/* KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — single
+          aria-live region in the app shell that announces tenant
+          changes to assistive tech. */}
+      <TenantChangeAnnouncer />
+
       <SelectionSwitcher />
       <Backdrop />
       <PluginSlot name="backdrop" />

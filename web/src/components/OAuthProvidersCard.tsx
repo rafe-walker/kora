@@ -211,8 +211,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       rel="noopener noreferrer"
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
+                      // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH —
+                      // accessible name on the link (title alone
+                      // doesn't reach every assistive tech reliably).
+                      aria-label={`Open ${p.name} documentation in a new tab`}
                     >
-                      <Button ghost size="icon">
+                      <Button ghost size="icon" aria-hidden tabIndex={-1}>
                         <ExternalLink />
                       </Button>
                     </a>

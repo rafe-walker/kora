@@ -50,6 +50,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { usePanelView } from "@/hooks/usePanelView";
 import { api } from "@/lib/api";
 import {
@@ -904,6 +905,12 @@ export default function WizardPage() {
   const [config, setConfig] = useState<WizardConfig>(emptyConfig());
   const [stepIdx, setStepIdx] = useState(0);
   const [skipError, setSkipError] = useState<string | null>(null);
+  // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — every skip path
+  // (header button + per-step link) routes through this flag so
+  // the operator gets a confirmation modal before the wizard
+  // dismisses. Avoids accidental dismissal on multi-step setups.
+  const [skipPending, setSkipPending] = useState(false);
+  const [skipBusy, setSkipBusy] = useState(false);
   const navigate = useNavigate();
 
   // Persist every config / step change. Creds + validation results
@@ -941,7 +948,17 @@ export default function WizardPage() {
 
   const currentStep = STEP_DEFS[stepIdx];
 
-  const skip = useCallback(async () => {
+  // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — open the confirmation
+  // modal. The actual skip work happens in confirmSkip after the
+  // operator acknowledges (or here-and-now if they cancel — no work
+  // done at all).
+  const requestSkip = useCallback(() => {
+    setSkipError(null);
+    setSkipPending(true);
+  }, []);
+
+  const confirmSkip = useCallback(async () => {
+    setSkipBusy(true);
     setSkipError(null);
     try {
       await api.completeWizard({
@@ -953,11 +970,21 @@ export default function WizardPage() {
       // KR-FE-WIZARD-RESUME-FROM-PARTIAL — clear the resume blob
       // on skip; the wizard is done for this session.
       clearPersisted();
+      setSkipPending(false);
       navigate("/");
     } catch (e) {
       setSkipError(e instanceof Error ? e.message : String(e));
+      // Keep the modal open on error so the operator sees what
+      // went wrong instead of being silently redirected.
+    } finally {
+      setSkipBusy(false);
     }
   }, [config.tenantId, currentStep.key, navigate]);
+
+  const cancelSkip = useCallback(() => {
+    if (skipBusy) return;
+    setSkipPending(false);
+  }, [skipBusy]);
 
   const advance = useCallback(() => {
     setStepIdx((idx) => Math.min(idx + 1, STEP_DEFS.length - 1));
@@ -1035,7 +1062,7 @@ export default function WizardPage() {
           <WandSparkles className="h-5 w-5" />
           First-run setup
         </H2>
-        <Button size="sm" ghost onClick={() => void skip()}>
+        <Button size="sm" ghost onClick={requestSkip}>
           Skip — I&apos;ll configure manually
         </Button>
       </div>
@@ -1063,6 +1090,21 @@ export default function WizardPage() {
             setConfig={setConfig}
             onAdvance={advance}
           />
+          {/* KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — per-step
+              "Skip wizard" link at the bottom-left of each card.
+              Subtle (not a Button) so it doesn't compete with the
+              step's primary "Next" CTA. Routes through requestSkip
+              → ConfirmDialog so operators don't lose context by
+              accident. */}
+          <div className="pt-2 border-t border-current/10">
+            <button
+              type="button"
+              onClick={requestSkip}
+              className="text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              Skip wizard, configure manually
+            </button>
+          </div>
         </CardContent>
       </Card>
 
@@ -1079,6 +1121,28 @@ export default function WizardPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — skip-confirmation
+          modal. Reuses the cockpit's shared ConfirmDialog (focus
+          management + Escape + portal already correct). Operator
+          can still download a partial .env from StepPromotionIntro
+          before triggering skip — that surface is reached via the
+          per-step body; this confirm only governs the marker write
+          + navigate-to-Dashboard. */}
+      <ConfirmDialog
+        open={skipPending}
+        title="Skip the wizard?"
+        description={
+          skipError
+            ? `Skip failed: ${skipError}. Try again or cancel to stay in the wizard.`
+            : "Kora will load with whatever you've configured so far. You can still configure the remaining settings via your .env file manually."
+        }
+        confirmLabel="Skip wizard"
+        cancelLabel="Cancel"
+        loading={skipBusy}
+        onConfirm={() => void confirmSkip()}
+        onCancel={cancelSkip}
+      />
     </div>
   );
 }
