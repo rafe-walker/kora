@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Outbound Email Log — populated</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Outbound Email Log — populated state</h1>
+  <p class="preamble">
+    Audit stream of emails Kora composed via the
+    <code>kora__send_email_to_operator</code> tool (PR #179).
+    <strong>Privacy-preserved:</strong> subject + body text are NOT recorded — only
+    sizes, status, and triage metadata. 3-source drift-guarded status enum
+    (sent / rejected / smtp_failure).
+  </p>
+
+  <div class="page-header">
+    <div class="title">Outbound Email Log</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Summary card -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span><strong>5</strong> <span class="italic-muted">composed · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">✓ <strong>3</strong> <span class="italic-muted">sent</span></div>
+      <div class="summary-chip" style="color: var(--warning);">⛔ <strong>1</strong> <span class="italic-muted">rejected</span></div>
+      <div class="summary-chip" style="color: var(--destructive);">⚠ <strong>1</strong> <span class="italic-muted">smtp-failure</span></div>
+    </div>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36" aria-label="Daily sent counts over the last 14 days">
+        <rect x="0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="31.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="47.1" y="18" width="14.7" height="18" style="fill: var(--success);" />
+        <rect x="62.8" y="10" width="14.7" height="26" style="fill: var(--success);" />
+        <rect x="78.5" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="94.2" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="109.9" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="125.6" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="141.3" y="18" width="14.7" height="18" style="fill: var(--success);" />
+        <rect x="157.0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="172.7" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="188.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="204.1" y="14" width="14.7" height="22" style="fill: var(--success);" />
+      </svg>
+      <span class="label">23 sent · 14d</span>
+    </div>
+  </div>
+
+  <!-- Filter chips card -->
+  <div class="card">
+    <div class="row">
+      <button class="btn primary">All (5)</button>
+      <button class="btn outlined">✓ Sent (3)</button>
+      <button class="btn outlined">⛔ Rejected (1)</button>
+      <button class="btn outlined">⚠ SMTP-failure (1)</button>
+    </div>
+  </div>
+
+  <!-- Event rows -->
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">3m ago</span>
+          <span class="subject">Email to operator</span>
+          <span class="badge success">✓ Sent</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px; color: var(--muted);">
+          <span title="subject character count (subject string is NOT in audit)">subject: 32 chars</span>
+          <span>·</span>
+          <span title="body character count (body content is NOT in audit)">body: 1.8k chars</span>
+          <span>·</span>
+          <span>📎 1 attachment · 184.3 KB</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="italic-muted">sent 3m ago</span>
+          <span class="pattern" style="font-size: 9px;">SMTP-id: &lt;20260523221409.kora@stormhavenenterprises.com&gt;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">12m ago</span>
+          <span class="subject">Email to operator</span>
+          <span class="badge success">✓ Sent</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px; color: var(--muted);">
+          <span>subject: 47 chars</span>
+          <span>·</span>
+          <span>body: 894 chars</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="italic-muted">sent 12m ago</span>
+          <span class="pattern" style="font-size: 9px;">SMTP-id: &lt;20260523220018.kora@stormhavenenterprises.com&gt;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">1h ago</span>
+          <span class="subject">Email to operator</span>
+          <span class="badge warning">⛔ Rejected</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px; color: var(--muted);">
+          <span>subject: 58 chars</span>
+          <span>·</span>
+          <span>body: 421 chars</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span style="color: var(--warning);">⬆ reason: <code>hourly_cap_exceeded</code></span>
+        </div>
+        <div class="error-line" style="color: var(--muted); font-size: 10px; margin-top: 4px;">detail: {"hourly_cap": 10}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">2h ago</span>
+          <span class="subject">Email to operator</span>
+          <span class="badge destructive">⚠ SMTP-failure</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px; color: var(--muted);">
+          <span>subject: 38 chars</span>
+          <span>·</span>
+          <span>body: 1.2k chars</span>
+        </div>
+        <div class="error-line">ConnectionRefusedError <span style="color: var(--muted);">(smtp_status: failed)</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">3h ago</span>
+          <span class="subject">Email to operator</span>
+          <span class="badge success">✓ Sent</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px; color: var(--muted);">
+          <span>subject: 24 chars</span>
+          <span>·</span>
+          <span>body: 612 chars</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="italic-muted">sent 3h ago</span>
+          <span class="pattern" style="font-size: 9px;">SMTP-id: &lt;20260523190245.kora@stormhavenenterprises.com&gt;</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>
