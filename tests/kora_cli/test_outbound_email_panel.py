@@ -540,19 +540,39 @@ def test_route_and_nav_registered():
 
 
 def test_filter_chips_iterate_canonical_status_values():
+    """After the KR-FE-PANEL-KIT retrofit, FilterChips comes from
+    AuditPanelKit and iterates a CategoryDef[] array
+    (OUTBOUND_EMAIL_CATEGORIES) instead of mapping over
+    OUTBOUND_EMAIL_STATUS_VALUES directly. Pin both the array
+    keys + the kit FilterChips usage + the canonical FE constant
+    still imported (drift-guard test greps for it)."""
     src = _PAGE.read_text()
-    assert "OUTBOUND_EMAIL_STATUS_VALUES.map" in src
+    assert "OUTBOUND_EMAIL_CATEGORIES" in src
+    assert "FilterChips" in src
+    for status in ("sent", "rejected", "smtp_failure"):
+        assert f'key: "{status}"' in src, (
+            f"OUTBOUND_EMAIL_CATEGORIES missing key: '{status}'"
+        )
+    assert "OUTBOUND_EMAIL_STATUS_VALUES" in src
 
 
 def test_sparkline_uses_plain_svg():
-    src = _PAGE.read_text()
-    assert "<svg" in src
-    assert "<rect" in src
+    """Plain-SVG discipline. After the KR-FE-PANEL-KIT retrofit
+    Sparkline lives in AuditPanelKit; verify both kit-import +
+    kit-source (belt + suspenders)."""
+    page_src = _PAGE.read_text()
+    kit_src = (
+        _REPO_ROOT / "web" / "src" / "components" / "AuditPanelKit" / "Sparkline.tsx"
+    ).read_text()
+    assert "Sparkline" in page_src
+    assert "@/components/AuditPanelKit" in page_src
+    assert "<svg" in kit_src
+    assert "<rect" in kit_src
     for lib in ("recharts", "chart.js", "d3", "@nivo", "victory"):
-        assert lib not in src, (
-            f"chart library '{lib}' import detected — Sparkline must "
-            f"stay in plain SVG per the CC#2 discipline"
-        )
+        for src, label in [(page_src, "page"), (kit_src, "kit")]:
+            assert lib not in src, (
+                f"chart library '{lib}' import detected in {label}"
+            )
 
 
 def test_page_does_not_render_subject_or_body_text():

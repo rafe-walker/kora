@@ -6853,6 +6853,497 @@ async def list_recent_outbound_email(limit: int = 100) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Probe-autofix audit lens (KR-FE-AUTOFIX-LOG-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Surfaces the tool.probe_autofix_attempted audit seam (PR #182 —
+# the kora__attempt_probe_autofix reasoning-loop tool that lets
+# Kora restart Fly machines / similar bounded fixes after a probe
+# detects unhealthy state). Operator sees what Kora attempted,
+# why she attempted it, and the before→after state transition.
+#
+# SECURITY discipline:
+#   * before_state / after_state are dicts projected from the Fly
+#     machine API; we expose ONLY the `state` string field
+#     (e.g. "started" → "stopped") to the panel. The full dict
+#     (region, instance_id, etc) stays in the audit JSONL but
+#     doesn't leak through this projection — same anti-leak
+#     posture as PR #180 / #183.
+#   * reason_from_reasoning is recorded VERBATIM in the audit per
+#     PR #182 discipline — surfaced truncated to 300 chars
+#     (operator-decision-relevant; longer reasons get summarized
+#     in their first sentence).
+#   * rejection_detail is JSON-serialized + truncated to 200.
+#   * error (execution_failed branch) is the exception type name
+#     — bounded by construction; truncated to 200 anyway.
+#   * Unknown status values coerced to "unknown" defensively.
+
+
+_PROBE_AUTOFIX_STATUS_VALUES = (
+    "attempted",
+    "rejected",
+    "execution_failed",
+)
+
+
+def _project_probe_autofix_audit(
+    entry: "AuditEntry", lineno: int
+) -> Dict[str, Any]:
+    """Project a tool.probe_autofix_attempted audit row to the
+    FE's ProbeAutofixEvent shape. Per-status field whitelist.
+
+    SECURITY: before_state/after_state dicts are projected to just
+    their `state` string — the full machine dict (with region /
+    instance_id / etc) is NOT exposed."""
+    d = entry.details
+    status_raw = str(d.get("status", "unknown"))
+    status = (
+        status_raw if status_raw in _PROBE_AUTOFIX_STATUS_VALUES else "unknown"
+    )
+
+    out: Dict[str, Any] = {
+        "id": f"autofix-{lineno}",
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": status,
+        "probe": str(d.get("probe", ""))[:64],
+        "action": str(d.get("action", ""))[:64],
+        "target_id": str(d.get("target_id", ""))[:128],
+        # reason_from_reasoning is the operator-decision-relevant
+        # narrative. Truncate at 300 — longer than other
+        # truncations because the panel uses this for "why did
+        # Kora do this?" triage.
+        "reason_from_reasoning": str(
+            d.get("reason_from_reasoning", "")
+        )[:300],
+        "caller_session_id": entry.caller_session_id or "",
+    }
+
+    action_canonical = d.get("action_canonical")
+    if action_canonical is not None:
+        out["action_canonical"] = str(action_canonical)[:64]
+
+    if status == "attempted":
+        executor_ms = d.get("executor_duration_ms")
+        if isinstance(executor_ms, (int, float)):
+            out["executor_duration_ms"] = int(executor_ms)
+        before_state = d.get("before_state")
+        if isinstance(before_state, dict):
+            bs = before_state.get("state")
+            if bs is not None:
+                out["before_state_label"] = str(bs)[:48]
+        after_state = d.get("after_state")
+        if isinstance(after_state, dict):
+            as_ = after_state.get("state")
+            if as_ is not None:
+                out["after_state_label"] = str(as_)[:48]
+        action_taken = d.get("action_taken")
+        if action_taken is not None:
+            out["action_taken"] = str(action_taken)[:64]
+    elif status == "rejected":
+        reason = d.get("rejection_reason")
+        if reason is not None:
+            out["rejection_reason"] = str(reason)[:120]
+        detail = d.get("rejection_detail")
+        if detail is not None:
+            try:
+                serialized = json.dumps(detail, default=str)
+            except Exception:
+                serialized = str(detail)
+            out["rejection_detail"] = serialized[:200]
+    elif status == "execution_failed":
+        err = d.get("error")
+        if err is not None:
+            out["error"] = str(err)[:200]
+        executor_ms = d.get("executor_duration_ms")
+        if isinstance(executor_ms, (int, float)):
+            out["executor_duration_ms"] = int(executor_ms)
+        # Even on execution_failed we get a before_state usually
+        # (the executor recorded state before the failed API call).
+        before_state = d.get("before_state")
+        if isinstance(before_state, dict):
+            bs = before_state.get("state")
+            if bs is not None:
+                out["before_state_label"] = str(bs)[:48]
+
+    return out
+
+
+@app.get("/api/probe-autofix/recent")
+async def list_recent_probe_autofix(limit: int = 100) -> Dict[str, Any]:
+    """Return recent tool.probe_autofix_attempted audit events.
+
+    Pattern mirror of /api/email-intent/recent (PR #180) +
+    /api/outbound-email/recent (PR #183).
+
+    Query params:
+      limit — newest entries to return; default 100, capped 500.
+    """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(int(limit or 100), 500))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="tool.probe_autofix_attempted")
+
+    in_24h = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    by_status_24h: Dict[str, int] = {
+        s: 0 for s in _PROBE_AUTOFIX_STATUS_VALUES
+    }
+    by_status_24h["unknown"] = 0
+    for e in in_24h:
+        s = str(e.details.get("status", "unknown"))
+        if s not in by_status_24h:
+            s = "unknown"
+        by_status_24h[s] = by_status_24h.get(s, 0) + 1
+
+    # Daily-attempted counts over 14 days for the sparkline.
+    # Same windowing math as email-intent / outbound-email.
+    daily_attempted: Dict[str, int] = {}
+    for d_offset in range(14):
+        bucket = (now - timedelta(days=13 - d_offset)).strftime("%Y-%m-%d")
+        daily_attempted[bucket] = 0
+    cutoff_14d = now - timedelta(days=14)
+    for e in all_rows:
+        if e.emitted_at < cutoff_14d:
+            continue
+        if str(e.details.get("status", "")) != "attempted":
+            continue
+        key = e.emitted_at.strftime("%Y-%m-%d")
+        if key in daily_attempted:
+            daily_attempted[key] += 1
+
+    projected = [
+        _project_probe_autofix_audit(e, lineno=i + 1)
+        for i, e in enumerate(all_rows[:capped_limit])
+    ]
+
+    return {
+        "events": projected,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_24h),
+        "by_status_24h": by_status_24h,
+        "daily_attempted_14d": [
+            {"date": k, "count": v}
+            for k, v in sorted(daily_attempted.items())
+        ],
+        "status_values": list(_PROBE_AUTOFIX_STATUS_VALUES),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Kora-actions aggregated panel (KR-FE-KORA-ACTIONS-AGGREGATED-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Apex operator-trust surface: joins ALL mutating-action audit
+# seams into one chronological timeline. "What did Kora do
+# today?" in one view. Reads existing per-seam streams; no new
+# audit/JSONL plumbing — orchestration + summary composition only.
+#
+# Joined seams (with per-seam filters):
+#
+#   * email_sent              ← tool.email_to_operator_sent (#179)
+#   * sea_ticket_created      ← intent.email_to_sea_ticket (#176),
+#                               filtered to details.action == "created"
+#                               (logged_only / dry_run / failed go to
+#                               the per-seam panel, not the
+#                               kora-DID-something timeline)
+#   * autofix_attempted       ← tool.probe_autofix_attempted (#182),
+#                               filtered to details.status == "attempted"
+#                               (rejected / execution_failed go to the
+#                               per-seam panel)
+#   * investigation_completed ← probe.investigation_completed (pending
+#                               #406); reads the seam if available so
+#                               this PR is forward-compatible; until
+#                               #406 lands the loop produces 0 rows
+#   * phrasebook_proposal_approved ← phrasebook.updated (#177),
+#                               filtered to details.actor != "operator".
+#                               In v1 ALL phrasebook updates have
+#                               actor="operator" (no kora-proposal
+#                               loop yet); future KR-PROMOTE-PHRASEBOOK
+#                               bucket emits with actor="kora_proposal_
+#                               approved" and this category populates.
+#
+# SECURITY: each per-category summary composer uses the same
+# anti-leak whitelist discipline as the per-seam panels. No raw
+# audit-details dicts pass through to the response.
+
+
+_KORA_ACTION_CATEGORIES = (
+    "email_sent",
+    "sea_ticket_created",
+    "autofix_attempted",
+    "investigation_completed",
+    "phrasebook_proposal_approved",
+    "other",  # forward-compat catch-all for future seams
+)
+
+
+def _kora_action_summary_email_sent(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Compose a one-liner + status badge for an outbound-email row.
+    Privacy-preserved per PR #179 — only sizes."""
+    status_raw = str(d.get("status", "unknown"))
+    parts = []
+    sc = d.get("subject_chars")
+    bc = d.get("body_chars")
+    ac = d.get("attachment_count")
+    if isinstance(sc, (int, float)):
+        parts.append(f"{int(sc)}-char subject")
+    if isinstance(bc, (int, float)):
+        parts.append(f"{int(bc)}-char body")
+    if isinstance(ac, (int, float)) and ac > 0:
+        parts.append(f"{int(ac)} attachment{'s' if ac != 1 else ''}")
+    summary = "Sent email to operator"
+    if parts:
+        summary += " · " + " · ".join(parts)
+    return {
+        "summary": summary,
+        "status": status_raw,
+        "deep_link": "/outbound-email-log",
+    }
+
+
+def _kora_action_summary_sea_ticket_created(d: Dict[str, Any]) -> Dict[str, Any]:
+    ticket_id = d.get("ticket_id")
+    pattern = str(d.get("pattern_matched", ""))[:64]
+    summary = "Saved Sea_Ticket"
+    if ticket_id:
+        summary += f" #{ticket_id}"
+    if pattern:
+        summary += f" from email · {pattern}"
+    out: Dict[str, Any] = {
+        "summary": summary,
+        "status": "created",
+    }
+    if ticket_id:
+        out["deep_link"] = (
+            f"/sea-tickets?focus={ticket_id}"
+        )
+    else:
+        out["deep_link"] = "/email-intent-log"
+    return out
+
+
+def _kora_action_summary_autofix_attempted(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    probe = str(d.get("probe", ""))[:48]
+    action = str(
+        d.get("action_canonical") or d.get("action_taken") or d.get("action", "")
+    )[:64]
+    target = str(d.get("target_id", ""))[:48]
+    bs = ""
+    as_ = ""
+    if isinstance(d.get("before_state"), dict):
+        bs = str(d["before_state"].get("state", ""))[:32]
+    if isinstance(d.get("after_state"), dict):
+        as_ = str(d["after_state"].get("state", ""))[:32]
+    summary = f"{action} on {probe}/{target}"
+    if bs and as_:
+        summary += f" · {bs}→{as_}"
+    elif bs:
+        summary += f" · before: {bs}"
+    return {
+        "summary": summary,
+        "status": "attempted",
+        "deep_link": "/probe-autofix-log",
+    }
+
+
+def _kora_action_summary_phrasebook_proposal_approved(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    before = d.get("entry_count_before")
+    after = d.get("entry_count_after")
+    if isinstance(before, (int, float)) and isinstance(after, (int, float)):
+        summary = (
+            f"Phrasebook updated · {int(before)}→{int(after)} entries"
+        )
+    else:
+        summary = "Phrasebook updated"
+    return {
+        "summary": summary,
+        "status": "approved",
+        "deep_link": "/phrasebook",
+    }
+
+
+def _kora_action_summary_investigation_completed(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    probe = str(d.get("probe", ""))[:48]
+    summary = "Probe investigation completed"
+    if probe:
+        summary += f" · {probe}"
+    return {
+        "summary": summary,
+        "status": "completed",
+        "deep_link": "/probe-investigations",
+    }
+
+
+@app.get("/api/kora-actions/recent")
+async def list_recent_kora_actions(
+    limit: int = 100,
+) -> Dict[str, Any]:
+    """Apex "what did Kora do" timeline. Joins all mutating-action
+    audit seams into one chronological list.
+
+    Query params:
+      limit — total newest events returned; default 100, capped
+              500. Cross-seam merge is in-memory + bounded by the
+              per-seam list lengths (each per-seam read_audit_entries
+              call is already bounded by the JSONL file size).
+
+    See module-level comment for the per-seam filter rules.
+    """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(int(limit or 100), 500))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    # Read each contributing seam. Order doesn't matter; we sort
+    # all results by emitted_at desc at the end.
+    email_rows = read_audit_entries(seam="tool.email_to_operator_sent")
+    intent_rows = read_audit_entries(seam="intent.email_to_sea_ticket")
+    autofix_rows = read_audit_entries(seam="tool.probe_autofix_attempted")
+    phrasebook_rows = read_audit_entries(seam="phrasebook.updated")
+    # Forward-compat: probe.investigation_completed isn't in the
+    # SeamName Literal yet (lands with PR #406). read_audit_entries
+    # silently returns [] when no entries match — safe to call.
+    try:
+        investigation_rows = read_audit_entries(
+            seam="probe.investigation_completed"
+        )
+    except Exception:
+        investigation_rows = []
+
+    items: List[Dict[str, Any]] = []
+    lineno = 0
+
+    for e in email_rows:
+        lineno += 1
+        s = _kora_action_summary_email_sent(e.details)
+        items.append(
+            {
+                "id": f"action-email-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "email_sent",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in intent_rows:
+        lineno += 1
+        if str(e.details.get("action", "")) != "created":
+            continue
+        s = _kora_action_summary_sea_ticket_created(e.details)
+        items.append(
+            {
+                "id": f"action-intent-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "sea_ticket_created",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in autofix_rows:
+        lineno += 1
+        if str(e.details.get("status", "")) != "attempted":
+            continue
+        s = _kora_action_summary_autofix_attempted(e.details)
+        items.append(
+            {
+                "id": f"action-autofix-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "autofix_attempted",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in phrasebook_rows:
+        lineno += 1
+        # v1: ALL phrasebook.updated rows have actor="operator"
+        # (no kora-proposal loop yet). The actor != "operator"
+        # filter therefore yields zero in v1 — that's correct.
+        # Future KR-PROMOTE-PHRASEBOOK emits actor="kora_
+        # proposal_approved" and this category begins to populate.
+        if str(e.details.get("actor", "")) == "operator":
+            continue
+        s = _kora_action_summary_phrasebook_proposal_approved(e.details)
+        items.append(
+            {
+                "id": f"action-phrasebook-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "phrasebook_proposal_approved",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in investigation_rows:
+        lineno += 1
+        s = _kora_action_summary_investigation_completed(e.details)
+        items.append(
+            {
+                "id": f"action-investigation-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "investigation_completed",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    # Sort newest-first by emitted_at + serialize timestamps.
+    items.sort(key=lambda it: it["emitted_at"], reverse=True)
+    items_serialized = [
+        {**it, "emitted_at": it["emitted_at"].strftime("%Y-%m-%dT%H:%M:%SZ")}
+        for it in items[:capped_limit]
+    ]
+
+    # 24h-window by_category aggregation. Iterate the raw items
+    # (pre-serialization, so emitted_at comparisons work).
+    by_category_24h: Dict[str, int] = {c: 0 for c in _KORA_ACTION_CATEGORIES}
+    in_24h = [it for it in items if it["emitted_at"] >= cutoff_24h]
+    for it in in_24h:
+        cat = it["action_category"]
+        if cat not in by_category_24h:
+            cat = "other"
+        by_category_24h[cat] = by_category_24h.get(cat, 0) + 1
+
+    # 14-day daily-actions sparkline (across all categories).
+    daily_actions: Dict[str, int] = {}
+    for d_offset in range(14):
+        bucket = (now - timedelta(days=13 - d_offset)).strftime("%Y-%m-%d")
+        daily_actions[bucket] = 0
+    cutoff_14d = now - timedelta(days=14)
+    for it in items:
+        if it["emitted_at"] < cutoff_14d:
+            continue
+        key = it["emitted_at"].strftime("%Y-%m-%d")
+        if key in daily_actions:
+            daily_actions[key] += 1
+
+    return {
+        "items": items_serialized,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_24h),
+        "by_category_24h": by_category_24h,
+        "daily_actions_14d": [
+            {"date": k, "count": v}
+            for k, v in sorted(daily_actions.items())
+        ],
+        "action_categories": list(_KORA_ACTION_CATEGORIES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Probe investigations xref — KR-FE-PROBE-INVESTIGATION-VIEWER
 # ---------------------------------------------------------------------------
 #

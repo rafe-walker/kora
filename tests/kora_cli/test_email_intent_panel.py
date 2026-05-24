@@ -562,12 +562,28 @@ def test_route_and_nav_registered():
 
 
 def test_filter_chips_iterate_all_action_values():
+    """After the KR-FE-PANEL-KIT retrofit, FilterChips comes from
+    AuditPanelKit and iterates a CategoryDef[] array
+    (EMAIL_INTENT_CATEGORIES) instead of mapping over
+    EMAIL_INTENT_ACTION_VALUES directly. Pin both:
+      * the CategoryDef array exists + carries every action value
+        from EMAIL_INTENT_ACTION_VALUES as a `key`
+      * the FilterChips component receives that array
+    Without this, adding a new action wouldn't auto-add a chip
+    and operator couldn't filter on it."""
     src = _PAGE.read_text()
-    # FilterChips maps over EMAIL_INTENT_ACTION_VALUES so the
-    # canonical drift-guarded list drives the chips. Without
-    # this, adding a new action wouldn't auto-add a chip and
-    # operator couldn't filter on it.
-    assert "EMAIL_INTENT_ACTION_VALUES.map" in src
+    assert "EMAIL_INTENT_CATEGORIES" in src
+    assert "FilterChips" in src
+    # Every action value must appear as a category key.
+    for action in ("created", "logged_only", "dry_run", "cap_exceeded", "failed"):
+        assert f'key: "{action}"' in src, (
+            f"EMAIL_INTENT_CATEGORIES missing key: '{action}' — "
+            f"FilterChips will silently drop this filter"
+        )
+    # And the kit-source-of-truth list is still referenced from
+    # the page (drift-guard test_action_values_drift_guard greps
+    # for the FE constant import).
+    assert "EMAIL_INTENT_ACTION_VALUES" in src
 
 
 def test_deep_link_uses_focus_query_param():
@@ -581,17 +597,33 @@ def test_deep_link_uses_focus_query_param():
 
 def test_sparkline_uses_plain_svg():
     """Per CC#2 discipline (CostTelemetryPage / etc): no chart
-    libraries; build with plain SVG + Tailwind. Pin so a future
-    refactor doesn't sneak in recharts / chart.js."""
-    src = _PAGE.read_text()
-    assert "<svg" in src
-    assert "<rect" in src
-    # No common chart-library imports
+    libraries; build with plain SVG + Tailwind.
+
+    After the KR-FE-PANEL-KIT retrofit, Sparkline lives in
+    AuditPanelKit and is shared across panels. Pin both:
+      * the page imports Sparkline from the kit (NOT a third-
+        party chart lib alias)
+      * the kit's Sparkline source itself uses plain SVG
+    Belt + suspenders so neither layer sneaks in a chart-lib dep.
+    """
+    page_src = _PAGE.read_text()
+    kit_src = (
+        _REPO_ROOT / "web" / "src" / "components" / "AuditPanelKit" / "Sparkline.tsx"
+    ).read_text()
+    # Page imports from the kit (NOT some external lib named
+    # "Sparkline" — guarded by the canonical import path below).
+    assert "Sparkline" in page_src
+    assert "@/components/AuditPanelKit" in page_src
+    # Kit's Sparkline source uses plain SVG.
+    assert "<svg" in kit_src
+    assert "<rect" in kit_src
+    # No chart-library imports in EITHER file.
     for lib in ("recharts", "chart.js", "d3", "@nivo", "victory"):
-        assert lib not in src, (
-            f"chart library '{lib}' import detected — Sparkline must "
-            f"stay in plain SVG per the CC#2 discipline"
-        )
+        for src, label in [(page_src, "page"), (kit_src, "kit")]:
+            assert lib not in src, (
+                f"chart library '{lib}' import detected in {label} — "
+                f"Sparkline must stay in plain SVG per the CC#2 discipline"
+            )
 
 
 def test_empty_state_copy_committed():

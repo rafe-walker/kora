@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>AuditPanelKit — storybook fixtures</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>AuditPanelKit — components in isolation (storybook view)</h1>
+  <p class="preamble">
+    Extracted from EmailIntentLogPage (PR #180) + OutboundEmailLogPage (PR #183).
+    Used by AutofixLogPage + KoraActionsPage (3rd + 4th consumers in this megabucket).
+    See <code>web/src/components/AuditPanelKit/README.md</code> for the props contract.
+  </p>
+
+  <h2 style="font-size: 12px; color: var(--muted); text-transform: uppercase; margin-top: 24px;">1. Sparkline (plain SVG)</h2>
+  <div class="card">
+    <p style="font-size: 11px; color: var(--muted); margin: 0 0 8px;">14 daily bars; ghost-bars for zero-count days; totalSuffix prop composed by caller</p>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36">
+        <rect x="0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="31.4" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="47.1" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="62.8" y="2" width="14.7" height="34" style="fill: var(--success);" />
+        <rect x="78.5" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="94.2" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="109.9" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="125.6" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="141.3" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="157.0" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="172.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="188.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="204.1" y="8" width="14.7" height="28" style="fill: var(--success);" />
+      </svg>
+      <span class="label">42 actions · 14d</span>
+    </div>
+  </div>
+
+  <h2 style="font-size: 12px; color: var(--muted); text-transform: uppercase; margin-top: 24px;">2. SummaryChips (zero-count categories skipped)</h2>
+  <div class="card">
+    <p style="font-size: 11px; color: var(--muted); margin: 0 0 8px;">Total + per-category counts. Skips zero-count categories so visual scales with what's happening. totalNoun prop: "events" / "composed" / "actions".</p>
+    <div class="summary-chip-row">
+      <span><strong>12</strong> <span class="italic-muted">actions · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">✓ <strong>8</strong> <span class="italic-muted">sent</span></div>
+      <div class="summary-chip" style="color: var(--warning);">⛔ <strong>1</strong> <span class="italic-muted">rejected</span></div>
+      <div class="summary-chip" style="color: var(--destructive);">⚠ <strong>1</strong> <span class="italic-muted">failed</span></div>
+      <div class="summary-chip">🔧 <strong>2</strong> <span class="italic-muted">autofix</span></div>
+    </div>
+  </div>
+
+  <h2 style="font-size: 12px; color: var(--muted); text-transform: uppercase; margin-top: 24px;">3. FilterChips (always renders every category, even zero-count)</h2>
+  <div class="card">
+    <p style="font-size: 11px; color: var(--muted); margin: 0 0 8px;">"All" + per-category buttons with counts. Default selection: All.</p>
+    <div class="row">
+      <button class="btn primary">All actions (12)</button>
+      <button class="btn outlined">✓ Sent (8)</button>
+      <button class="btn outlined">⛔ Rejected (1)</button>
+      <button class="btn outlined">⚠ Failed (1)</button>
+      <button class="btn outlined">🔧 Autofix (2)</button>
+      <button class="btn outlined">📥 Logged-only (0)</button>
+    </div>
+  </div>
+
+  <h2 style="font-size: 12px; color: var(--muted); text-transform: uppercase; margin-top: 24px;">4. EmptyFilteredMessage (calm reassurance, not "no data")</h2>
+  <div class="card success" style="padding: 40px 20px; text-align: center;">
+    <div style="font-size: 32px; color: var(--success); line-height: 1; margin-bottom: 12px;">✦</div>
+    <div style="font-size: 16px; font-weight: 500; margin-bottom: 10px;">
+      Kora has been quiet today
+    </div>
+    <div style="font-size: 13px; color: var(--muted); max-width: 480px; margin: 0 auto; line-height: 1.5;">
+      No mutating actions across any tracked seam. This page populates whenever Kora sends an email, creates a Sea_Ticket from email, attempts a probe autofix, or completes an investigation.
+    </div>
+  </div>
+  <div class="card" style="margin-top: 8px; padding: 8px 14px; font-size: 11px; color: var(--muted); font-style: italic;">
+    The same component also renders the per-filter empty state:
+    "No 'Rejected' events match this filter in the current window — Try switching to a different filter, or click <a href="#" style="color: var(--primary);">All</a> to see every event."
+  </div>
+
+</body></html>
