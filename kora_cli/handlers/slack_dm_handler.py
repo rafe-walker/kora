@@ -680,6 +680,13 @@ class SlackDMHandler:
                 ),
                 model_name=str(model_name),
                 provider="anthropic",
+                # KR-CHEAP-COST-TELEMETRY — tag this Kora reply-bill
+                # under the slack_dm route. First iteration of a
+                # tool-use loop is attributed to the originating
+                # route (here slack_dm); iteration 2+ would attribute
+                # to ``tool_loop_iteration`` once the reasoning
+                # engine surfaces that signal (deferred follow-on).
+                route="slack_dm",
             )
         except Exception as exc:
             logger.warning(

@@ -55,7 +55,7 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v1 → v2: added cost_telemetry section (KR-CHEAP-COST-TELEMETRY)
 SNAPSHOT_FRESH_THRESHOLD_SECONDS = 600  # 10 min — spec §2(a) is_snapshot_fresh
 
 # Probe names the snapshot exposes. Matches the 5 default probes in
@@ -318,6 +318,47 @@ def _collect_tasks() -> Dict[str, Any]:
     return {"open_count": "unknown", "in_progress_count": "unknown"}
 
 
+def _collect_cost_telemetry() -> Dict[str, Any]:
+    """Per-route cost counters projection — KR-CHEAP-COST-TELEMETRY.
+
+    Schema v2 addition. Exposes the two operator-facing windows
+    (``rolling_24h`` + ``monthly``); the ``process_lifetime``
+    window is intentionally excluded from the snapshot to keep the
+    on-disk file size bounded (operator can hit ``/api/cost_telemetry``
+    directly for the full window set).
+
+    Fail-soft: missing telemetry singleton (e.g., the cost_telemetry
+    listener hasn't booted yet) degrades to empty per-window dicts
+    so the snapshot shape is stable.
+    """
+    try:
+        from kora_cli.telemetry import (
+            WINDOW_MONTHLY,
+            WINDOW_ROLLING_24H,
+            get_telemetry,
+        )
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] cost_telemetry import failed: %r — "
+            "degrading section",
+            exc,
+        )
+        return {"rolling_24h": {}, "monthly": {}}
+    try:
+        all_windows = get_telemetry().snapshot()
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot] telemetry.snapshot() raised %r — "
+            "degrading section",
+            exc,
+        )
+        return {"rolling_24h": {}, "monthly": {}}
+    return {
+        "rolling_24h": all_windows.get(WINDOW_ROLLING_24H, {}),
+        "monthly": all_windows.get(WINDOW_MONTHLY, {}),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
@@ -329,6 +370,9 @@ def compute_snapshot() -> Dict[str, Any]:
     Per-source failures degrade in-place (per the collector
     contracts); this top-level function never raises. Caller can
     treat the returned dict as a safe-to-serialize wire payload.
+
+    Schema v2 (KR-CHEAP-COST-TELEMETRY) adds ``cost_telemetry``
+    alongside the v1 sections.
     """
     from kora_time import now
 
@@ -342,6 +386,7 @@ def compute_snapshot() -> Dict[str, Any]:
         "cost_ladder": _collect_cost_ladder(),
         "tasks": _collect_tasks(),
         "service_health": _collect_service_health(),
+        "cost_telemetry": _collect_cost_telemetry(),
     }
 
 

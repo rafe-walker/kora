@@ -276,6 +276,8 @@ class CostStateHolder:
         model_name: str,
         provider: Optional[str] = None,
         base_url: Optional[str] = None,
+        route: str = "unknown",
+        escalated_to_opus: bool = False,
     ) -> None:
         """Per-call estimator update.
 
@@ -305,6 +307,21 @@ class CostStateHolder:
             base_url: Optional base URL override; used when the SDK
                 is configured against a custom endpoint
                 (provider-fronted Anthropic, etc.).
+            route: KR-CHEAP-COST-TELEMETRY route label per
+                ``kora_cli.telemetry.cost_telemetry`` taxonomy
+                (``slack_dm``, ``email_inbound``, ``mcp_tool``,
+                ``alert_investigation``, ``probe_investigation``,
+                ``tool_loop_iteration``, ``scheduled_task``,
+                ``email_outbound_compose``, or ``unknown``).
+                Defaults to ``"unknown"`` so existing callers keep
+                working unchanged; they bucket into the unknown
+                route until tagged explicitly. Telemetry is a
+                READ-side observer of pricing; it does NOT affect
+                whether/how much is billed.
+            escalated_to_opus: Per-call escalation signal — Lock R3-3
+                tunable. When True, the telemetry counters increment
+                ``escalation_count`` for this route in addition to
+                the normal call+token counters.
         """
         cost_result = estimate_usage_cost(
             model_name,
@@ -312,6 +329,36 @@ class CostStateHolder:
             provider=provider,
             base_url=base_url,
         )
+
+        # KR-CHEAP-COST-TELEMETRY: tag the per-route counters. This
+        # is read-only telemetry — does NOT affect billing accumulation
+        # below. Fail-soft import + record so an unwired test path or
+        # an import-cycle scenario can't crash the inference handler.
+        cost_estimate_for_telemetry: Optional[float]
+        if cost_result.amount_usd is None:
+            cost_estimate_for_telemetry = None
+        else:
+            try:
+                cost_estimate_for_telemetry = float(cost_result.amount_usd)
+            except (TypeError, ValueError):
+                cost_estimate_for_telemetry = None
+        try:
+            from kora_cli.telemetry import get_telemetry
+
+            get_telemetry().record_call(
+                route=route,
+                model=model_name,
+                canonical_usage=canonical_usage,
+                cost_estimate_usd=cost_estimate_for_telemetry,
+                escalated_to_opus=escalated_to_opus,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[kora.cost_ladder] telemetry record_call failed: %r — "
+                "billing accumulation continues",
+                exc,
+            )
+
         if cost_result.amount_usd is None:
             logger.debug(
                 "[kora.cost_ladder] no pricing for model=%s provider=%s "

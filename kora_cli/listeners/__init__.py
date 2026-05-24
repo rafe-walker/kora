@@ -65,3 +65,9 @@ from kora_cli.listeners import alert_notifier_listener  # noqa: F401
 # upstream holders + the periodic-task scheduler are guaranteed
 # registered before the snapshot task gets enqueued.
 from kora_cli.listeners import snapshot_listener  # noqa: F401
+# KR-CHEAP-COST-TELEMETRY — per-route cost-counter persistence +
+# window-reset tasks. Imported AFTER snapshot_listener so the
+# heartbeat scheduler picks up the snapshot task first (snapshot
+# reads telemetry; persist task writes telemetry — order doesn't
+# matter for correctness, only for boot-log readability).
+from kora_cli.listeners import cost_telemetry_listener  # noqa: F401
