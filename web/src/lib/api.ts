@@ -257,6 +257,22 @@ export const api = {
     fetchJSON<InvestigationDrillDownResponse>(
       `/api/investigations/${encodeURIComponent(callerSessionId)}`,
     ),
+  // KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) — mirror
+  // of getProbeInvestigations for the alert-wake variant. Returns
+  // ``items=[]`` cleanly until #420's alert wake consumer starts
+  // writing the alert seams.
+  getAlertInvestigations: (opts?: {
+    window?: "24h" | "7d" | "all";
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (opts?.window) qs.set("window", opts.window);
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    const q = qs.toString();
+    return fetchJSON<AlertInvestigationsResponse>(
+      `/api/alert-investigations${q ? "?" + q : ""}`,
+    );
+  },
   // KR-FE-PROMOTION-REVIEW-PANEL — list pending phrasebook promotion
   // proposals (sorted highest-confidence first by the BE).
   getPhrasebookPromotionProposals: () =>
@@ -289,6 +305,55 @@ export const api = {
         body: JSON.stringify({ review_notes: reviewNotes }),
       },
     ),
+  // KR-FE-PROMOTION-REVIEW-MULTI-LOOP-EXTEND — generic per-loop
+  // wrappers (CC#1's #186/#193 establishment of the
+  // /api/promotions/<loop>/pending|approve|reject pattern).
+  // ``loop`` is the URL slug (hyphenated form: "router-tuning",
+  // "tool-trimming", "probe-envelopes"). For phrasebook the
+  // typed wrappers above stay as the canonical entrypoint —
+  // they enforce the override field allowlist + return the
+  // phrasebook-specific approve response shape.
+  getPromotionProposals: (loopSlug: string) =>
+    fetchJSON<PromotionProposalsResponse>(
+      `/api/promotions/${encodeURIComponent(loopSlug)}/pending`,
+    ),
+  approvePromotion: (
+    loopSlug: string,
+    proposalId: string,
+    reviewNotes?: string,
+  ) =>
+    fetchJSON<PromotionGenericTransitionResponse>(
+      `/api/promotions/${encodeURIComponent(loopSlug)}/${encodeURIComponent(proposalId)}/approve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reviewNotes ? { review_notes: reviewNotes } : {}),
+      },
+    ),
+  rejectPromotion: (
+    loopSlug: string,
+    proposalId: string,
+    reviewNotes: string,
+  ) =>
+    fetchJSON<PromotionGenericTransitionResponse>(
+      `/api/promotions/${encodeURIComponent(loopSlug)}/${encodeURIComponent(proposalId)}/reject`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_notes: reviewNotes }),
+      },
+    ),
+  // Snapshot-expand is audit-derived (no /pending lifecycle) —
+  // read the most recent ``promotion.snapshot_field_added`` rows
+  // for the informational card variant.
+  getSnapshotExpandPromotions: () =>
+    fetchJSON<SnapshotExpandPromotionsResponse>(
+      "/api/promotions/snapshot-expand/recent",
+    ),
+  // Aggregate counts for the tab navigation — one round-trip
+  // instead of N fan-out reads.
+  getPromotionCounts: () =>
+    fetchJSON<PromotionCountsResponse>("/api/promotions/counts"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -2344,11 +2409,17 @@ export interface ProbeAutofixEventsResponse {
 // PR #186 promotion-loop audit rows in the timeline. The
 // ``investigation_completed`` row already existed (PR #184 made it
 // productive — see PROBE-INVESTIGATION-DATA-COMPLETION).
+//
+// KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420):
+// ``alert_investigation_completed`` surfaces alert-side investigation
+// rows. Today zero rows; once CC#1's #420 ships the alert wake
+// consumer the timeline populates automatically.
 export type KoraActionCategory =
   | "email_sent"
   | "sea_ticket_created"
   | "autofix_attempted"
   | "investigation_completed"
+  | "alert_investigation_completed"
   | "phrasebook_proposal_approved"
   | "promotion_proposed"
   | "promotion_approved"
@@ -2360,6 +2431,7 @@ export const KORA_ACTION_CATEGORIES: readonly KoraActionCategory[] = [
   "sea_ticket_created",
   "autofix_attempted",
   "investigation_completed",
+  "alert_investigation_completed",
   "phrasebook_proposal_approved",
   "promotion_proposed",
   "promotion_approved",
@@ -2502,6 +2574,57 @@ export interface ProbeInvestigationsResponse {
   by_dm_status_24h: Record<string, number>;
 }
 
+// KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) — mirror
+// of probe investigations for alert-driven wakes. The wake +
+// investigation_completed seams + caller_session_id substrate match
+// the probe pattern; CC#1 #420 ships the emitter. ``AlertSeverity``
+// is already exported above for the alerts panel — we don't
+// re-export here; the alert-investigations payload uses ``string``
+// since the wake-emitter may produce sentinel values like
+// ``"unknown"`` for malformed rows.
+
+export interface AlertInvestigationCompleted {
+  emitted_at: string;
+  summary_text: string;
+  model_used: string | null;
+  total_cost_usd: number | null;
+  investigation_duration_ms: number | null;
+  // dm_status uses the same 4-value enum as probe investigations.
+  // The FE PROBE_DM_STATUS_VALUES constant is the source of truth.
+  dm_status: ProbeDmStatus;
+  // Alert variant of ``autofix_attempted`` — generic alert-driven
+  // action flag (false in v1; forward-compat for future
+  // alert-driven fix envelopes).
+  autoaction_attempted: boolean;
+  reasoning_error: string | null;
+}
+
+export interface AlertInvestigationItem {
+  wake_event_id: string;
+  wake_timestamp: string;
+  alert_category: string;
+  severity: string;
+  title: string;
+  detail: string;
+  caller_session_id: string;
+  investigation_completed: AlertInvestigationCompleted | null;
+  dm_entry: ProbeInvestigationDmEntry | null;
+}
+
+export interface AlertInvestigationsResponse {
+  window: "24h" | "7d" | "all";
+  since: string | null;
+  generated_at: string;
+  total_count: number;
+  items: AlertInvestigationItem[];
+  by_severity_24h: Record<string, number>;
+  by_dm_status_24h: Record<string, number>;
+  // Echoed canonical allowlist — paired with the FE
+  // PROBE_DM_STATUS_VALUES constant (alert investigations reuse
+  // the probe dm_status enum verbatim).
+  dm_status_values: string[];
+}
+
 // KR-FE-PROMOTION-REVIEW-PANEL — phrasebook promotion proposal
 // shape (mirror of kora_cli/promote/phrasebook/proposer.py
 // :PromotionProposal serialized via proposal_to_dict). The four
@@ -2520,7 +2643,48 @@ export const PROMOTION_STATUS_VALUES: readonly PromotionStatus[] = [
   "expired",
 ];
 
-export interface PromotionProposal {
+// KR-FE-PROMOTION-REVIEW-MULTI-LOOP-EXTEND — canonical loop-type
+// discriminator. Mirrors BE _PROMOTION_LOOP_TYPES in web_server.py;
+// drift-guarded by test_promotion_loop_types_drift_guard. Order
+// matches the FE tab order (phrasebook first since it's the
+// established loop; ``email_intent`` last as it's forward-compat
+// for CC#1's #420).
+export type PromotionLoopName =
+  | "phrasebook"
+  | "router_tuning"
+  | "tool_trimming"
+  | "probe_fix_envelopes"
+  | "snapshot_expand"
+  | "email_intent";
+
+export const PROMOTION_LOOP_NAMES: readonly PromotionLoopName[] = [
+  "phrasebook",
+  "router_tuning",
+  "tool_trimming",
+  "probe_fix_envelopes",
+  "snapshot_expand",
+  "email_intent",
+];
+
+// URL-slug form of the loop name (hyphenated). Used as the path
+// component in /api/promotions/<slug>/... endpoints. The mapping
+// is one-way (FE → BE) — the BE response always carries
+// underscored ``loop_name`` per the proposer dataclass naming.
+export const PROMOTION_LOOP_SLUGS: Record<PromotionLoopName, string> = {
+  phrasebook: "phrasebook",
+  router_tuning: "router-tuning",
+  tool_trimming: "tool-trimming",
+  probe_fix_envelopes: "probe-envelopes",
+  snapshot_expand: "snapshot-expand",
+  email_intent: "email-intent",
+};
+
+// Per-loop proposal shapes. Each loop's proposal payload is
+// distinct (see kora_cli/promote/<loop>/proposer.py). FE uses
+// discriminator-narrowed types so each Card variant gets the
+// exact fields it needs without `any`.
+
+export interface PhrasebookProposalPayload {
   proposal_id: string;
   cluster_size: number;
   sample_questions: string[];
@@ -2535,12 +2699,102 @@ export interface PromotionProposal {
   haiku_synthesized: boolean;
 }
 
+export interface RouterTuningProposalPayload {
+  proposal_id: string;
+  route: string;
+  calls_count: number;
+  escalation_count: number;
+  escalation_rate: number; // 0..1
+  cost_estimate_usd_total: number;
+  recommendation_kind: "tighten_review" | "loosen_review";
+  rationale: string;
+  confidence: number;
+  created_at: string;
+  status: PromotionStatus;
+  review_notes: string;
+}
+
+export interface ToolTrimProposalPayload {
+  proposal_id: string;
+  route: string;
+  unused_tools: string[];
+  total_calls_for_route: number;
+  observation_window_days: number;
+  confidence: number;
+  created_at: string;
+  status: PromotionStatus;
+  review_notes: string;
+}
+
+export interface ProbeEnvelopeProposalPayload {
+  proposal_id: string;
+  probe: string;
+  issue_category: string;
+  fix_name_suggestion: string;
+  cluster_size: number;
+  sample_caller_session_ids: string[];
+  recurring_recommendation_text: string;
+  blast_radius_summary: string;
+  confidence: number;
+  created_at: string;
+  status: PromotionStatus;
+  review_notes: string;
+}
+
+// Snapshot-expand is audit-derived (no /pending lifecycle); the
+// FE card variant is read-only + flags AUTO-APPLY mode when on.
+export interface SnapshotExpandRecentProposal {
+  proposal_id: string;
+  action: "proposed" | "auto_applied" | string;
+  cluster_size: number | null;
+  proposed_field_path: string;
+  proposed_collector_summary: string;
+  source_tool_name: string;
+  sample_caller_session_ids: string[];
+  confidence: number | null;
+  created_at: string;
+  emitted_at: string;
+}
+
+export interface SnapshotExpandPromotionsResponse {
+  proposals: SnapshotExpandRecentProposal[];
+  loop_name: "snapshot_expand";
+  auto_apply_enabled: boolean;
+}
+
+// Forward-compat for CC#1's #420 — email-intent loop shape mirrors
+// phrasebook (cluster_size + sample emails + pattern + category).
+// FE renders the card the same way phrasebook does today; the
+// loop's BE plumbing fills in beneath. Once #420 lands and the
+// shape is finalized, this type widens to whatever the proposer
+// emits — leave a future-compat note on the card variant.
+export interface EmailIntentProposalPayload {
+  proposal_id: string;
+  cluster_size: number;
+  sample_emails: string[];
+  proposed_pattern: string;
+  proposed_category: string;
+  confidence: number;
+  created_at: string;
+  status: PromotionStatus;
+  review_notes: string;
+}
+
+// PromotionProposal — backward-compat alias for the original phrasebook
+// shape (existing PromotionReviewPage consumers). New per-loop code
+// uses the discriminated types above.
+export type PromotionProposal = PhrasebookProposalPayload;
+
 export interface PromotionProposalsResponse {
   proposals: PromotionProposal[];
   // Echoed from the BE so the FE doesn't need to hardcode the list
   // a SECOND time — single source of truth at the wire. The
   // drift-guard test pins both BE source + FE constant.
   status_values: string[];
+  // KR-FE-PROMOTION-REVIEW-MULTI-LOOP-EXTEND — loop discriminator
+  // echoed by EVERY /api/promotions/<loop>/pending response per
+  // the BE symmetry added in this bucket.
+  loop_name?: string;
 }
 
 export interface PromotionApproveOverrides {
@@ -2567,6 +2821,27 @@ export interface PromotionRejectResponse {
   proposal_id: string;
   status: "rejected";
   review_notes: string;
+}
+
+// Shape returned by the shared approve/reject endpoints for the
+// non-phrasebook loops (router-tuning / tool-trimming / probe-
+// envelopes). No `committed_entry` field — those loops do not
+// mutate live config at approve-time (operator scaffolds manually).
+export interface PromotionGenericTransitionResponse {
+  proposal_id: string;
+  status: "approved" | "rejected";
+  review_notes: string;
+}
+
+export interface PromotionCountsResponse {
+  // Map of loop_name → pending count. Counts for backward-compat:
+  // ``snapshot_expand`` reports the count of recent (24h)
+  // ``promotion.snapshot_field_added`` audit rows since that loop
+  // has no /pending semantics.
+  counts: Record<string, number>;
+  // Sum across actionable loops (excludes snapshot_expand).
+  total_pending: number;
+  loop_names: string[];
 }
 
 // KR-FE-INVESTIGATION-DRILL-DOWN — unified per-caller_session_id

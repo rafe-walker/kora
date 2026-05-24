@@ -1,13 +1,18 @@
 // KR-FE-PROMOTION-REVIEW-PANEL — sidebar PendingBadge data source.
 //
-// Polls /api/promotions/phrasebook/pending every 60s and returns the
-// count of proposals (BE returns pending-only today). Returns null
-// while loading or on persistent failure — the SidebarNavLink skips
-// the chip rather than rendering "?".
+// Polls /api/promotions/counts every 60s and returns the total
+// pending count across all actionable loops (excludes
+// snapshot_expand per the BE's aggregate definition — that loop
+// is informational only). Returns null while loading or on
+// persistent failure — the SidebarNavLink skips the chip rather
+// than rendering "?".
 //
-// 60s cadence is the same pattern the rest of the cockpit uses for
-// no-WebSocket polling (cost-state, kora-actions). The endpoint is
-// fast (file-backed JSON read of pending/ directory).
+// KR-FE-PROMOTION-REVIEW-MULTI-LOOP-EXTEND update: the badge now
+// reflects all actionable loops at once (phrasebook + router-
+// tuning + tool-trimming + probe-envelopes — and email-intent
+// when CC#1's #420 lands). Pre-extension it polled the phrasebook
+// /pending endpoint directly; the counts endpoint added in this
+// bucket aggregates server-side so we still do one round-trip.
 
 import { useEffect, useState } from "react";
 
@@ -23,9 +28,9 @@ export function usePromotionPendingCount(): number | null {
 
     async function poll(): Promise<void> {
       try {
-        const resp = await api.getPhrasebookPromotionProposals();
+        const resp = await api.getPromotionCounts();
         if (cancelled) return;
-        setCount(resp.proposals.length);
+        setCount(resp.total_pending);
       } catch {
         // Best-effort: keep the existing count on transient failure
         // (typically a one-off restart) rather than flicker null.

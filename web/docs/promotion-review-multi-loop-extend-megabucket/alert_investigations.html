@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Alert Investigations</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Alert Investigations · empty + populated (Deliverable B)</h1>
+  <p class="preamble">
+    Mirror of ProbeInvestigationsPage but for alerts. Joins
+    <code>alert.wake_requested</code> + <code>alert.investigation_completed</code> + slack_dm_log
+    on <code>caller_session_id="alert:{category}:{severity}"</code>.
+    Empty until CC#1's #420 ships the wake consumer; the populated
+    layout below shows what an active install looks like.
+  </p>
+
+  <h2 style="font-size: 14px; color: var(--muted);">Empty state (today — pre-#420)</h2>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">🔔 Alert Investigations</div>
+    <div class="row">
+      <div style="display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+        <button class="btn" style="background: var(--primary); color: #001; border-radius: 0; border: none;">24h</button>
+        <button class="btn" style="border-radius: 0; border: none;">7d</button>
+        <button class="btn" style="border-radius: 0; border: none;">All</button>
+      </div>
+      <button class="btn outlined">↻ Refresh</button>
+    </div>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Alert-wake events joined with the per-investigation summary (cost / model / DM status / autoaction)
+    + operator DM confirmation. Joined on
+    <code>caller_session_id="alert:{category}:{severity}"</code>. Forward-compat for CC#1's #420.
+  </p>
+
+  <div class="card">
+    <div class="row" style="font-size: 13px;">
+      <span>🔔 <strong>0</strong> <span class="italic-muted">alert wakes</span></span>
+      <span class="italic-muted" style="margin-left: auto; font-size: 11px;">generated 2026-05-24 14:32:01</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="font-size: 11px;">
+      <span class="italic-muted">All DM statuses</span>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✉⊗ Failed <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--success); border-color: rgba(74,222,128,0.4);">💬 Sent <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined">? Unknown <strong style="margin-left: 4px;">0</strong></button>
+    </div>
+  </div>
+
+  <div class="card" style="border-color: rgba(74,222,128,0.3); background: rgba(74,222,128,0.05); text-align: center; padding: 32px;">
+    <div style="font-size: 16px; font-weight: 500;">Kora hasn't been woken by alerts in the last 24 hours</div>
+    <div style="margin-top: 8px; font-size: 12px; color: var(--muted); max-width: 600px; margin-left: auto; margin-right: auto;">
+      Either no alert escalated the wake threshold, or the alert wake consumer hasn't shipped yet
+      (forward-compat for CC#1 #420). This page will populate when <code>alert.wake_requested</code> rows
+      start landing in the audit log.
+    </div>
+  </div>
+
+  <h2 style="margin-top: 32px; font-size: 14px; color: var(--muted);">Populated layout (preview — once #420 ships)</h2>
+
+  <div class="card">
+    <div class="row" style="font-size: 13px;">
+      <span>🔔 <strong>3</strong> <span class="italic-muted">alert wakes</span></span>
+      <span class="italic-muted">·</span>
+      <span style="color: var(--destructive);">⊗ <strong>1</strong> <span class="italic-muted">critical</span></span>
+      <span style="color: var(--warning);">⚠ <strong>2</strong> <span class="italic-muted">warning</span></span>
+    </div>
+  </div>
+
+  <div class="card" style="border-color: rgba(248,113,113,0.4);">
+    <div class="row" style="align-items: flex-start;">
+      <span style="color: var(--destructive); font-size: 16px; margin-top: 2px;">🔔</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">cost_anomaly</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-24 14:28:11</span>
+          <span class="badge destructive">critical</span>
+          <span class="badge warning" style="font-size: 10px;">🚨 auto-action</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 13px; font-weight: 500;">Daily burn 3x baseline</div>
+        <div style="margin-top: 4px; font-size: 11px; color: var(--muted);">Today: $42; baseline: $14.</div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge warning">⚡ 🚨 auto-action attempted</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5</span>
+          <span class="italic-muted">$ $0.0021</span>
+          <span class="italic-muted">· 2.1s</span>
+          <span class="italic-muted">· DM 4m ago</span>
+        </div>
+        <div style="margin-top: 6px;">
+          Burn spike correlated with a stuck cron retry loop in the IsoKron task syncer. Auto-action
+          paused the offending cron entry; expecting baseline burn within 1 cycle.
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);" class="row">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: alert:cost_anomaly:critical</span>
+        <a style="color: var(--primary); display: inline-flex; align-items: center; gap: 4px;">🔍 drill</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row" style="align-items: flex-start;">
+      <span style="color: var(--warning); font-size: 16px; margin-top: 2px;">🔔</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">vercel_deploy_failure</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-24 13:14:00</span>
+          <span class="badge warning">warning</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 13px; font-weight: 500;">Build #2387 failed on main</div>
+        <div style="margin-top: 4px; font-size: 11px; color: var(--muted);">Type error: cannot find name 'PromotionLoopName'.</div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5</span>
+          <span class="italic-muted">$ $0.0018</span>
+          <span class="italic-muted">· 1.4s</span>
+        </div>
+        <div style="margin-top: 6px;">
+          The error suggests a stale type import after the multi-loop refactor; recommend the operator
+          rebuild api.ts types or re-run tsc -b.
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);" class="row">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: alert:vercel_deploy_failure:warning</span>
+        <a style="color: var(--primary); display: inline-flex; align-items: center; gap: 4px;">🔍 drill</a>
+      </div>
+    </div>
+  </div>
+
+</body></html>

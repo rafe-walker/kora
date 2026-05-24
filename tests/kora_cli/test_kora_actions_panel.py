@@ -445,12 +445,17 @@ def test_action_categories_drift_guard():
     KR-FE-KORA-ACTIONS-EXTENDED-SEAMS extension: + promotion_proposed
     / promotion_approved / promotion_rejected for the PR #186
     promotion-loop audit rows.
+
+    KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) extension:
+    + alert_investigation_completed for the alert.investigation_
+    completed audit seam.
     """
     expected = {
         "email_sent",
         "sea_ticket_created",
         "autofix_attempted",
         "investigation_completed",
+        "alert_investigation_completed",
         "phrasebook_proposal_approved",
         "promotion_proposed",
         "promotion_approved",
@@ -497,6 +502,8 @@ def test_seam_literal_includes_all_source_seams():
         "promotion.proposed",
         "promotion.approved",
         "promotion.rejected",
+        # KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420)
+        "alert.investigation_completed",
     ):
         assert f'"{seam}"' in sink_src, (
             f"SeamName missing '{seam}' — KoraActionsPage will "

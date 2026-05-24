@@ -6624,6 +6624,25 @@ _PROMOTION_STATUS_VALUES: Tuple[str, ...] = (
 )
 
 
+# KR-FE-PROMOTION-REVIEW-MULTI-LOOP-EXTEND — canonical allowlist of
+# the propose-then-approve loop types the cockpit surfaces. Order
+# matches the FE tab order. Drift-guarded by
+# test_promotion_loop_types_drift_guard against the FE constant in
+# api.ts. ``snapshot_expand`` is read-only (audit-derived; no
+# /pending endpoint); ``email_intent`` is forward-compat (BE
+# endpoint lands with CC#1's #420). Both still belong in the
+# allowlist so the FE tab nav stays stable as the BE plumbing
+# fills in beneath it.
+_PROMOTION_LOOP_TYPES: Tuple[str, ...] = (
+    "phrasebook",
+    "router_tuning",
+    "tool_trimming",
+    "probe_fix_envelopes",
+    "snapshot_expand",
+    "email_intent",
+)
+
+
 @app.get("/api/promotions/phrasebook/pending")
 async def list_pending_phrasebook_proposals() -> Dict[str, Any]:
     """Return all pending phrasebook proposals, highest-confidence
@@ -6641,6 +6660,12 @@ async def list_pending_phrasebook_proposals() -> Dict[str, Any]:
     return {
         "proposals": [proposal_to_dict(p) for p in proposals],
         "status_values": list(_PROMOTION_STATUS_VALUES),
+        # ``loop_name`` mirrors the shape ``_promotion_loop_pending``
+        # returns for the other 3 loops — the FE multi-loop refactor
+        # discriminates on this field. Keeping the phrasebook
+        # response symmetric lets the FE use one normalized read
+        # path across all loops.
+        "loop_name": "phrasebook",
     }
 
 
@@ -7203,6 +7228,151 @@ async def reject_email_intent_proposal(
         audit_seam="promotion.rejected",
         payload=payload,
     )
+
+# --- Snapshot-expand (audit-derived; no /pending endpoint) ----------------
+#
+# Snapshot-expand is propose-only-via-audit (see
+# kora_cli/promote/snapshot_expand/applier.py docstring). It does
+# NOT hit the proposal_store + has no /approve | /reject lifecycle —
+# the loop either auto-applies (when KORA_PROMOTE_SNAPSHOT_EXPAND_
+# AUTO_APPLY=true) or just emits an audit row with action="proposed".
+#
+# CC#2's multi-loop PromotionReviewPage surfaces these as read-only
+# cards alongside the actionable loops so operator sees the FULL
+# promotion-loop picture in one place. The endpoint projects the
+# most-recent ``promotion.snapshot_field_added`` audit rows into
+# the proposals-like shape the FE expects.
+
+
+@app.get("/api/promotions/snapshot-expand/recent")
+async def list_recent_snapshot_expand_proposals(
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Project recent ``promotion.snapshot_field_added`` audit rows
+    into a proposals-like response for the multi-loop review panel.
+
+    Read-only — the snapshot_expand loop self-applies (audit-only
+    in v1 with ``KORA_PROMOTE_SNAPSHOT_EXPAND_AUTO_APPLY=false``,
+    audit+stub persist when ``=true``). Operator approval is NOT
+    part of this loop's lifecycle; the cards are informational so
+    the cockpit's promotion view is complete.
+
+    Returns:
+      proposals: List of {proposal_id, action, cluster_size,
+        proposed_field_path, proposed_collector_summary,
+        source_tool_name, confidence, created_at, emitted_at,
+        sample_caller_session_ids}.
+      auto_apply_enabled: Echo of the env flag at read time so the
+        FE can flag "this loop is currently AUTO-APPLY ON — these
+        cards may already be in the snapshot schema."
+      loop_name: ``snapshot_expand`` discriminator (matches
+        ``_PROMOTION_LOOP_TYPES``).
+    """
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(int(limit or 50), 200))
+    try:
+        rows = read_audit_entries(seam="promotion.snapshot_field_added")
+    except Exception:
+        rows = []
+
+    proposals: List[Dict[str, Any]] = []
+    for entry in rows[:capped_limit]:
+        d = entry.details
+        proposals.append(
+            {
+                "proposal_id": str(d.get("proposal_id", ""))[:80],
+                "action": str(d.get("action", ""))[:32],
+                "cluster_size": d.get("cluster_size"),
+                "proposed_field_path": str(
+                    d.get("proposed_field_path", "")
+                )[:120],
+                "proposed_collector_summary": str(
+                    d.get("proposed_collector_summary", "")
+                )[:400],
+                "source_tool_name": str(d.get("source_tool_name", ""))[:80],
+                "sample_caller_session_ids": [
+                    str(s)[:120]
+                    for s in (d.get("sample_caller_session_ids") or [])[:5]
+                ],
+                "confidence": d.get("confidence"),
+                "created_at": str(d.get("created_at", "")),
+                "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+
+    auto_apply_raw = os.environ.get(
+        "KORA_PROMOTE_SNAPSHOT_EXPAND_AUTO_APPLY", ""
+    ).strip().lower()
+    auto_apply_enabled = auto_apply_raw in ("1", "true", "yes", "on")
+    return {
+        "proposals": proposals,
+        "loop_name": "snapshot_expand",
+        "auto_apply_enabled": auto_apply_enabled,
+    }
+
+
+# --- Aggregate counts ------------------------------------------------------
+
+
+@app.get("/api/promotions/counts")
+async def get_promotion_counts() -> Dict[str, Any]:
+    """Return per-loop pending counts in one round-trip.
+
+    Used by the multi-loop PromotionReviewPage's tab navigation —
+    fanning out to 6 separate ``/pending`` endpoints just to populate
+    the badge counts would be wasteful. ``snapshot_expand`` reports
+    the count of recent (24h) ``promotion.snapshot_field_added``
+    audit rows since that loop has no /pending semantics.
+
+    Response: ``{counts: {loop_name: int, ...}, total_pending: int,
+    loop_names: [...]}``. ``total_pending`` excludes
+    ``snapshot_expand`` (informational only — operator-attention
+    chips should not bump on read-only data).
+    """
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+    from kora_cli.promote._shared.proposal_store import list_by_status
+
+    counts: Dict[str, int] = {}
+    actionable_total = 0
+    for loop_name in _PROMOTION_LOOP_TYPES:
+        if loop_name == "snapshot_expand":
+            try:
+                rows = read_audit_entries(
+                    seam="promotion.snapshot_field_added"
+                )
+            except Exception:
+                rows = []
+            now = _probe_xref_datetime.now(_probe_xref_timezone.utc)
+            cutoff = now - _probe_xref_timedelta(hours=24)
+            count = sum(1 for e in rows if e.emitted_at >= cutoff)
+            counts[loop_name] = count
+            continue
+        if loop_name == "phrasebook":
+            try:
+                from kora_cli.promote.phrasebook.store import list_pending
+
+                count = len(list_pending())
+            except Exception:
+                count = 0
+        else:
+            # Loops backed by the shared proposal_store — includes
+            # email_intent which lands with #420; until then this
+            # silently returns 0 (no promotions/email_intent dir).
+            try:
+                count = len(
+                    list_by_status(loop_name=loop_name, status="pending")
+                )
+            except Exception:
+                count = 0
+        counts[loop_name] = count
+        actionable_total += count
+
+    return {
+        "counts": counts,
+        "total_pending": actionable_total,
+        "loop_names": list(_PROMOTION_LOOP_TYPES),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -7774,11 +7944,18 @@ async def list_recent_probe_autofix(limit: int = 100) -> Dict[str, Any]:
 # operator-driven approve/reject endpoint emissions from PR #186.
 # All three link through to /promotions/phrasebook with a focus=
 # query so the row deep-links to its proposal.
+#
+# KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420):
+# ``alert_investigation_completed`` reads ``alert.investigation_
+# completed``. Today this category produces zero rows; once #420
+# emits the seam the timeline lights up automatically with deep-
+# links to AlertInvestigationsPage + InvestigationDrillDown.
 _KORA_ACTION_CATEGORIES = (
     "email_sent",
     "sea_ticket_created",
     "autofix_attempted",
     "investigation_completed",
+    "alert_investigation_completed",
     "phrasebook_proposal_approved",
     "promotion_proposed",
     "promotion_approved",
@@ -7890,6 +8067,27 @@ def _kora_action_summary_investigation_completed(
         "summary": summary,
         "status": "completed",
         "deep_link": "/probe-investigations",
+    }
+
+
+def _kora_action_summary_alert_investigation_completed(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Symmetric to the probe variant; uses ``autoaction_attempted``
+    (alert-side concept) instead of ``autofix_attempted``. Deep-links
+    to /alert-investigations."""
+    category = str(d.get("category", ""))[:48]
+    severity = str(d.get("severity", ""))[:16]
+    autoaction = bool(d.get("autoaction_attempted", False))
+    summary = "Alert investigation completed"
+    if category or severity:
+        summary += f" · {severity}/{category}".strip(" /")
+    if autoaction:
+        summary += " · 🚨 auto-action attempted"
+    return {
+        "summary": summary,
+        "status": "completed",
+        "deep_link": "/alert-investigations",
     }
 
 
@@ -8011,6 +8209,16 @@ async def list_recent_kora_actions(
         )
     except Exception:
         promotion_rejected_rows = []
+    # KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) — alert
+    # investigation_completed rows surface in the timeline like the
+    # probe variant. Today returns []; once #420 lands the seam
+    # populates automatically.
+    try:
+        alert_investigation_rows = read_audit_entries(
+            seam="alert.investigation_completed"
+        )
+    except Exception:
+        alert_investigation_rows = []
 
     items: List[Dict[str, Any]] = []
     lineno = 0
@@ -8086,6 +8294,19 @@ async def list_recent_kora_actions(
                 "id": f"action-investigation-{lineno}",
                 "emitted_at": e.emitted_at,
                 "action_category": "investigation_completed",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in alert_investigation_rows:
+        lineno += 1
+        s = _kora_action_summary_alert_investigation_completed(e.details)
+        items.append(
+            {
+                "id": f"action-alert-investigation-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "alert_investigation_completed",
                 "caller_session_id": e.caller_session_id or "",
                 **s,
             }
@@ -8615,6 +8836,272 @@ async def get_probe_investigations(
 
 
 # ---------------------------------------------------------------------------
+# Alert investigations — KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat)
+# ---------------------------------------------------------------------------
+#
+# Mirror of /api/probe-investigations for ALERT-driven investigations
+# (CC#1 #420 in flight). The alert wake consumer will write
+# ``alert.wake_requested`` + ``alert.investigation_completed`` audit
+# rows with ``caller_session_id == "alert:{category}:{severity}"``
+# — same JOIN substrate as probes. This endpoint reads the alert
+# seams + dm_log entries with that session-id shape.
+#
+# FORWARD-COMPAT: until #420 lands the seams have zero rows. The
+# endpoint returns ``items=[]`` cleanly + the FE renders the
+# "no alert investigations yet" empty state. The SeamName Literal
+# already includes the alert seams (added in this bucket) so
+# read_audit_entries doesn't ValidationError on them post-#420.
+#
+# ``dm_status`` reuses the same 4-value enum as probe investigations
+# (sent / failed_send / engine_unavailable_fallback /
+# engine_unavailable_failed_send) — the wake-consumer code path is
+# identical; only the source seam differs. A drift-guard alias
+# constant _ALERT_DM_STATUS_VALUES locks this expectation.
+
+
+_ALERT_CALLER_SESSION_RE = _probe_xref_re.compile(
+    r"^alert:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$"
+)
+
+# Drift-guard alias — alert investigations reuse the probe dm_status
+# enum verbatim (same wake_consumer code path). The alias is a
+# rename target if alert investigations ever diverge; today both
+# point to the same source-of-truth tuple.
+_ALERT_DM_STATUS_VALUES: Tuple[str, ...] = _DM_STATUS_VALUES
+
+
+def _alert_caller_session_id(category: str, severity: str) -> str:
+    """Mirror the eventual #420 wake-consumer's caller_session_id
+    derivation. Pinned by the drift-guard test once #420 lands; in
+    the meantime the literal is the contract between BE + FE
+    empty-state rendering."""
+    return f"alert:{category}:{severity}"
+
+
+def _project_alert_completed(entry: "AuditEntry") -> Dict[str, Any]:
+    """Project an ``alert.investigation_completed`` audit row.
+
+    Mirror of ``_project_investigation_completed`` for probes; v1
+    swaps ``autofix_attempted`` (a probe-specific concept) for
+    ``autoaction_attempted`` (a generic alert-driven action flag —
+    populated false in v1, forward-compat for future alert-driven
+    fix envelopes)."""
+    d = entry.details
+    dm_status_raw = str(d.get("dm_status", "")) or "unknown"
+    dm_status = (
+        dm_status_raw if dm_status_raw in _ALERT_DM_STATUS_VALUES else "unknown"
+    )
+    cost_raw = d.get("total_cost_usd")
+    cost_val: Optional[float] = (
+        float(cost_raw) if isinstance(cost_raw, (int, float)) else None
+    )
+    dur_raw = d.get("investigation_duration_ms")
+    dur_val: Optional[int] = (
+        int(dur_raw) if isinstance(dur_raw, (int, float)) else None
+    )
+    model_raw = d.get("model_used")
+    model_val = str(model_raw) if isinstance(model_raw, str) else None
+    summary_raw = str(d.get("investigation_summary_text", "") or "")
+    summary = summary_raw[:600]
+    err_raw = d.get("reasoning_error")
+    err_val = str(err_raw)[:200] if isinstance(err_raw, str) else None
+    return {
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "summary_text": summary,
+        "model_used": model_val,
+        "total_cost_usd": cost_val,
+        "investigation_duration_ms": dur_val,
+        "dm_status": dm_status,
+        "autoaction_attempted": bool(d.get("autoaction_attempted", False)),
+        "reasoning_error": err_val,
+    }
+
+
+def _read_alert_dm_log_entries() -> List[Dict[str, Any]]:
+    """Read slack_dm_log.jsonl outbound entries with an
+    ``alert:{category}:{severity}`` caller_session_id. Mirror of
+    _read_probe_dm_log_entries; defensive against missing file +
+    malformed lines."""
+    import json as _json
+
+    log_path = get_kora_home() / _SLACK_DM_LOG_FILENAME
+    out: List[Dict[str, Any]] = []
+    if not log_path.is_file():
+        return out
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                sid = entry.get("caller_session_id")
+                if not isinstance(sid, str):
+                    continue
+                if not _ALERT_CALLER_SESSION_RE.match(sid):
+                    continue
+                out.append(entry)
+    except OSError as exc:
+        logger.warning(
+            "[kora.alert_investigations] slack_dm_log read failed: %r",
+            exc,
+        )
+    return out
+
+
+@app.get("/api/alert-investigations")
+async def get_alert_investigations(
+    window: str = "24h",
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Alert wake → investigation xref panel feed.
+
+    Joins (KR-FE-ALERT-INVESTIGATIONS-VIEWER, forward-compat #420):
+      * ``alert.wake_requested`` audit rows (the wake itself)
+      * ``alert.investigation_completed`` audit rows (cost / model /
+        dm_status / autoaction_attempted)
+      * slack_dm_log.jsonl outbound entries with caller_session_id
+        matching ``alert:{category}:{severity}``
+
+    Forward-compat: today none of these rows exist (CC#1 #420 ships
+    the emitter). Endpoint returns ``items=[]`` cleanly so the FE
+    renders an empty state rather than 404. Once #420 starts
+    emitting, the join lights up automatically.
+
+    Args:
+      window: ``24h`` | ``7d`` | ``all``. Same semantics as
+        /api/probe-investigations.
+      limit: cap on items returned (1-200; default 50).
+    """
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    if window not in _PROBE_INVESTIGATION_VIEWER_WINDOWS:
+        window = "24h"
+    delta = _PROBE_INVESTIGATION_VIEWER_WINDOWS[window]
+
+    capped_limit = max(1, min(int(limit or 50), 200))
+    now = _probe_xref_datetime.now(_probe_xref_timezone.utc)
+    since = now - delta if delta is not None else None
+
+    try:
+        wake_rows = read_audit_entries(
+            seam="alert.wake_requested", since=since
+        )
+    except Exception:
+        wake_rows = []
+    try:
+        completed_rows = read_audit_entries(
+            seam="alert.investigation_completed", since=since
+        )
+    except Exception:
+        completed_rows = []
+
+    completed_by_session: Dict[str, "AuditEntry"] = {}
+    for entry in completed_rows:
+        sid = entry.caller_session_id or ""
+        if not _ALERT_CALLER_SESSION_RE.match(sid):
+            continue
+        prior = completed_by_session.get(sid)
+        if prior is None or entry.emitted_at > prior.emitted_at:
+            completed_by_session[sid] = entry
+
+    dm_entries_by_session: Dict[str, Dict[str, Any]] = {}
+    for raw_dm in _read_alert_dm_log_entries():
+        sid = str(raw_dm.get("caller_session_id", ""))
+        if not sid:
+            continue
+        prior = dm_entries_by_session.get(sid)
+        if prior is None or str(raw_dm.get("sent_at", "")) > str(
+            prior.get("sent_at", "")
+        ):
+            dm_entries_by_session[sid] = raw_dm
+
+    items: list = []
+    for entry in wake_rows[:capped_limit]:
+        d = entry.details
+        category = str(d.get("category") or "unknown")
+        severity = str(d.get("severity") or "warning")
+        session_id = _alert_caller_session_id(category, severity)
+        wake_iso = entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        completed_entry = completed_by_session.get(session_id)
+        investigation_completed = (
+            _project_alert_completed(completed_entry)
+            if completed_entry is not None
+            and completed_entry.emitted_at >= entry.emitted_at
+            else None
+        )
+
+        dm_raw = dm_entries_by_session.get(session_id)
+        dm_entry = (
+            _project_probe_dm_entry(dm_raw)
+            if dm_raw is not None
+            and str(dm_raw.get("sent_at", "")) >= wake_iso
+            else None
+        )
+
+        items.append(
+            {
+                "wake_event_id": f"{wake_iso}:{category}:{severity}",
+                "wake_timestamp": wake_iso,
+                "alert_category": category,
+                "severity": severity,
+                "title": str(d.get("title") or "")[:200],
+                "detail": str(d.get("detail") or "")[:600],
+                "caller_session_id": session_id,
+                "investigation_completed": investigation_completed,
+                "dm_entry": dm_entry,
+            }
+        )
+
+    total_count = len(items)
+    # 24h by-severity + by-dm-status aggregations for the FE
+    # summary band + chip-filter counts.
+    by_severity_24h: Dict[str, int] = {
+        "critical": 0,
+        "warning": 0,
+        "info": 0,
+    }
+    by_dm_status_24h: Dict[str, int] = {v: 0 for v in _ALERT_DM_STATUS_VALUES}
+    cutoff_24h = now - _probe_xref_timedelta(hours=24)
+    for it in items:
+        try:
+            it_dt = _probe_xref_datetime.fromisoformat(
+                str(it.get("wake_timestamp", "")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if it_dt < cutoff_24h:
+            continue
+        sev = str(it.get("severity", ""))
+        if sev in by_severity_24h:
+            by_severity_24h[sev] += 1
+        ic = it.get("investigation_completed")
+        if isinstance(ic, dict):
+            status = str(ic.get("dm_status", ""))
+            if status in by_dm_status_24h:
+                by_dm_status_24h[status] += 1
+
+    return {
+        "window": window,
+        "since": since.strftime("%Y-%m-%dT%H:%M:%SZ") if since else None,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_count": total_count,
+        "items": items,
+        "by_severity_24h": by_severity_24h,
+        "by_dm_status_24h": by_dm_status_24h,
+        # Echoed canonical allowlist. Mirrors the probe-investigations
+        # pattern + the FE PROBE_DM_STATUS_VALUES drift-guard.
+        "dm_status_values": list(_ALERT_DM_STATUS_VALUES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Investigation drill-down — KR-FE-INVESTIGATION-DRILL-DOWN
 # ---------------------------------------------------------------------------
 #
@@ -8650,6 +9137,12 @@ _DRILL_DOWN_SUPPORTED_SEAMS: Tuple[str, ...] = (
     "promotion.proposed",
     "promotion.approved",
     "promotion.rejected",
+    # KR-FE-ALERT-INVESTIGATIONS-VIEWER — forward-compat for #420.
+    # Alert wake + completed seams; today they return zero rows.
+    # Once #420 lands the drill-down surfaces alert investigations
+    # the same way it surfaces probe investigations.
+    "alert.wake_requested",
+    "alert.investigation_completed",
 )
 
 
@@ -8683,6 +9176,18 @@ def _drilldown_project_audit_row(
         base["details"] = _project_probe_autofix_audit(entry, lineno)
     elif seam == "probe.investigation_completed":
         base["details"] = _project_investigation_completed(entry)
+    elif seam == "alert.investigation_completed":
+        base["details"] = _project_alert_completed(entry)
+    elif seam == "alert.wake_requested":
+        # Mirror of probe.wake_requested projection; envelope_enabled
+        # / envelope_fix_name are probe-specific so the alert variant
+        # omits them.
+        base["details"] = {
+            "alert_category": str(d.get("category") or "unknown"),
+            "severity": str(d.get("severity") or "warning"),
+            "title": str(d.get("title") or "")[:200],
+            "detail": str(d.get("detail") or "")[:400],
+        }
     elif seam == "probe.wake_requested":
         base["details"] = {
             "probe": str(d.get("probe") or "unknown"),

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>PhrasebookCard + EmailIntentCard variants</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  .tab-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+  .tab { padding: 6px 12px; border-radius: 4px; font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .tab.active { background: var(--primary); color: #001; }
+  .tab .count { background: rgba(250,204,21,0.3); color: #fde68a; padding: 0 4px; border-radius: 2px; font-family: ui-monospace, monospace; font-size: 10px; }
+  .tab.active .count { background: rgba(0,0,0,0.2); color: #001; }
+  .tab .marker { font-size: 9px; opacity: 0.6; }
+</style>
+</head><body>
+
+  <h1>PhrasebookCard + EmailIntentCard variants (Deliverable A · 2 of 6)</h1>
+  <p class="preamble">
+    Two more loop variants: the established PhrasebookCard (full edit-
+    before-approve + SnapshotPreview, preserved from #194), and the
+    forward-compat EmailIntentCard mirror for CC#1's #420.
+  </p>
+
+  <!-- LoopTypeTabs (Phrasebook active here for the top section) -->
+  <div class="card" style="padding: 0;">
+    <div class="tab-row">
+      <div class="tab active"><span>📖</span><span>Phrasebook</span><span class="count">3</span></div>
+      <div class="tab"><span>📊</span><span>Router</span><span class="count">2</span></div>
+      <div class="tab"><span>🔧</span><span>Tools</span><span class="count">1</span></div>
+      <div class="tab"><span>🛡</span><span>Envelopes</span><span class="count">1</span></div>
+      <div class="tab"><span>👁</span><span>Snapshot</span><span class="count">4</span><span class="marker">i</span></div>
+      <div class="tab"><span>✉</span><span>Email</span><span class="marker">⏳</span></div>
+    </div>
+  </div>
+
+  <!-- PhrasebookCard with snapshot preview -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.94 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 6</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 2h ago</span>
+      <span class="badge secondary">✨ Kora wrote this</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">cost_query</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">(?i)(burn|cost|spend)</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">reply template</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-top: 2px;">Burn is ${'{snapshot.cost_ladder.spent_to_date_usd}'} today.</div>
+    </div>
+    <!-- SnapshotPreview band -->
+    <div style="margin-top: 10px; background: rgba(30,30,30,0.3); border: 1px solid var(--border); border-radius: 4px; padding: 8px;">
+      <div class="row" style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">
+        👁 Live preview against current snapshot
+        <span style="margin-left: auto; text-transform: none; font-size: 10px;">snapshot 42s ago</span>
+      </div>
+      <div style="margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; padding: 8px; background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; color: #d1fadf;">Burn is $42.13 today.</div>
+      <div style="margin-top: 6px; font-size: 11px; color: var(--success);">✓ All 1 placeholders interpolate cleanly.</div>
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined">✏️ Edit before approving</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- LoopTypeTabs (Email active here for the bottom section) -->
+  <h2 style="margin-top: 24px; font-size: 14px; color: var(--muted);">Email tab — forward-compat for #420</h2>
+
+  <div class="card" style="padding: 0;">
+    <div class="tab-row">
+      <div class="tab"><span>📖</span><span>Phrasebook</span><span class="count">3</span></div>
+      <div class="tab"><span>📊</span><span>Router</span><span class="count">2</span></div>
+      <div class="tab"><span>🔧</span><span>Tools</span><span class="count">1</span></div>
+      <div class="tab"><span>🛡</span><span>Envelopes</span><span class="count">1</span></div>
+      <div class="tab"><span>👁</span><span>Snapshot</span><span class="count">4</span><span class="marker">i</span></div>
+      <div class="tab active"><span>✉</span><span>Email</span><span class="marker">⏳</span></div>
+    </div>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Operator-DM clusters of email-shaped intents Kora missed at high confidence. Forward-compat:
+    the BE loop lands with CC#1's #420 — empty here until then.
+  </p>
+
+  <!-- Empty state for email loop (forward-compat) -->
+  <div class="card" style="border-color: rgba(74,222,128,0.3); background: rgba(74,222,128,0.05); text-align: center; padding: 32px;">
+    <div style="font-size: 16px; font-weight: 500;">No Email proposals yet — forward-compat lens</div>
+    <div style="margin-top: 8px; font-size: 12px; color: var(--muted); max-width: 600px; margin-left: auto; margin-right: auto;">
+      The Email loop ships with CC#1's #420. This tab is forward-compat:
+      it will populate cleanly once the BE plumbing lands; until then,
+      expect zero proposals.
+    </div>
+  </div>
+
+  <h2 style="margin-top: 24px; font-size: 14px; color: var(--muted);">Sample EmailIntentCard shape (rendered when #420 starts emitting)</h2>
+
+  <div class="card" style="border-color: rgba(250,204,21,0.4); opacity: 0.85;">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.86 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 4</span>
+      <span class="badge secondary">✉ Email intent</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created (sample)</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">forward_to_save</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">(?i)(save this|interesting read|fwd:.*article)</div>
+    </div>
+    <div style="margin-top: 6px; font-size: 11px; color: var(--muted);">
+      <span style="font-size: 10px; text-transform: uppercase;">sample emails</span>
+      <ul style="margin: 4px 0 0 16px; padding: 0;">
+        <li style="font-style: italic;">"Save this article about long-context reasoning"</li>
+        <li style="font-style: italic;">"Fwd: Anthropic's prompt-caching post — interesting read"</li>
+        <li style="font-style: italic;">"Save: notes from today's offsite planning"</li>
+      </ul>
+    </div>
+  </div>
+
+</body></html>
