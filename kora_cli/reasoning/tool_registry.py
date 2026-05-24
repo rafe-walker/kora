@@ -44,12 +44,32 @@ anticipated: "If the operator later needs a reasoning-mutating
 tool... that's a deliberate allowlist expansion + a separate
 threat-model review." The R3 walkthrough was the review.
 
+# Deliberate scope expansion #2: kora__attempt_probe_autofix
+
+KR-PROBE-AUTOFIX-EXECUTION adds a second mutating tool
+``kora__attempt_probe_autofix`` per
+``feedback-kora-is-unified-operator-interface`` ("Kora
+investigates + attempts fix where safe + DMs you with what
+happened, what was tried, what's left for you to decide"). The
+blast-radius concern (mass-send analog) is handled by THREE
+fail-CLOSED gates: (1) per-probe env gate
+``KORA_PROBE_AUTOFIX_<PROBE>_ENABLED`` defaults OFF; (2) the
+envelope's action whitelist (only ``fly + restart_machine``
+exists in v1); (3) the per-probe executor verifies the target_id
+resolves to a real unhealthy resource (Fly machine in
+state != "started") before any API call. Loop-risk is bounded by
+the probe-wake cadence (Kora only sees the envelope offer when a
+probe wake actually fired) + the env gate's fail-CLOSED default.
+
 Other mutating tools remain available to OTHER agents via
 ``/mcp`` (with capability gating per KR-MCP-RUNTIME-SURFACE ST2).
-The architectural distinction: **Kora REASONS in her DM thread;
-AGENTS DRIVE her via MCP.** Reasoning-tools are for Kora to LOOK
-at her own state or send a single operator-pinned email;
-mutating-tools are how other agents tell her what to DO.
+The architectural distinction holds: **Kora REASONS in her DM
+thread; AGENTS DRIVE her via MCP.** The two reasoning-side
+mutating tools are narrow exceptions where the scope is bound by
+non-Kora canonical truth (Joshua's verified email address; the
+operator-set envelope env). General-purpose mutating tools (e.g.
+``kora__send_email``, ``kora__create_sea_ticket``,
+``kora__request_state_transition``) stay excluded.
 
 # Schema conversion: MCP camelCase → Anthropic snake_case
 
@@ -102,6 +122,11 @@ REASONING_TOOL_ALLOWLIST: List[str] = [
     # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned email send.
     # Mutating but recipient-locked; see module docstring.
     "kora__send_email_to_operator",
+    # KR-PROBE-AUTOFIX-EXECUTION — envelope-gated probe autofix.
+    # Mutating but bound by per-probe env gate (default OFF,
+    # fail-CLOSED) + envelope action whitelist + per-probe
+    # executor target verification. See module docstring.
+    "kora__attempt_probe_autofix",
 ]
 
 
@@ -110,7 +135,10 @@ REASONING_TOOL_ALLOWLIST: List[str] = [
 # get a synthetic Caller below; the dispatcher's own audit
 # emission attributes the call to that synthetic actor_kind.
 _REASONING_MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"kora__send_email_to_operator"}
+    {
+        "kora__send_email_to_operator",
+        "kora__attempt_probe_autofix",
+    }
 )
 
 # Synthetic actor_kind used when the reasoning engine invokes a
