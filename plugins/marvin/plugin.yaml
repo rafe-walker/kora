@@ -1,0 +1,6 @@
+name: marvin
+version: 0.1.0
+description: "Demo identity-provider plugin — paranoid-android persona. Built to validate the KR-PLUGIN-IDENTITY Option C architecture from #199: a non-Kora plugin claiming the agent's identity via the `pre_agent_identity_set` hook. Proves the pip-installable bundle vision for external IsoKron users."
+author: "CC#3 Kora Runtime"
+hooks:
+  - pre_agent_identity_set
