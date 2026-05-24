@@ -49,6 +49,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.listeners.heartbeat import register_periodic_task
 from kora_mcp.catalog import load_effective_catalog
@@ -223,7 +228,7 @@ class MCPConsumptionListener:
     def pool(self) -> Optional[MCPClientPool]:
         return self._pool
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         """Build the pool from the effective catalog. Lazy — no
         transport opens at this point. Any pool construction error
         propagates so the coordinator can abort the daemon."""
@@ -296,9 +301,16 @@ def current_pool() -> Optional[MCPClientPool]:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2.
+_listener_singleton = MCPConsumptionListener()
+
+
 def _factory():
-    listener = MCPConsumptionListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("mcp_consumption", _factory)
@@ -319,3 +331,30 @@ register_periodic_task(
     interval_seconds=_read_health_check_interval(),
     callable=run_health_check,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="mcp_consumption",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_health_check_interval(),
+        callback=run_health_check,
+        name="mcp.health_check",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.mcp_consumption] hermes registry already had "
+        "'mcp_consumption' entry: %s — skipping duplicate registration",
+        _exc,
+    )

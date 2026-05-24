@@ -39,6 +39,11 @@ import os
 from typing import Any, Optional
 
 from kora_cli.alerts.notifier import AlertNotifier
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.listeners.heartbeat import register_periodic_task
 
@@ -221,7 +226,7 @@ async def run_digest_flush() -> None:
 class AlertNotifierListener:
     """Holds the live :class:`AlertNotifier` for the daemon's lifetime."""
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         """Construct the notifier bound to live client lazy factories.
 
         Fail-soft on construction errors so daemon boot doesn't
@@ -290,9 +295,16 @@ def _purelymail_client_factory() -> Optional[Any]:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2.
+_listener_singleton = AlertNotifierListener()
+
+
 def _factory():
-    listener = AlertNotifierListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("alert_notifier", _factory)
@@ -318,3 +330,36 @@ register_periodic_task(
     interval_seconds=_read_digest_interval(),
     callable=run_digest_flush,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+#
+# Multi-task listener: primary notify cycle goes in periodic_task;
+# digest_flush stays on the Kora heartbeat scheduler (per the §4.1
+# audit recommendation c). Phase 4 may extend PeriodicTaskSpec to
+# a list shape; for now both tasks fire correctly under the existing
+# wirings.
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="alert_notifier",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_interval(),
+        callback=run_notification_cycle,
+        name="alerts.notify",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.alert_notifier_listener] hermes registry already had "
+        "'alert_notifier' entry: %s — skipping duplicate registration",
+        _exc,
+    )

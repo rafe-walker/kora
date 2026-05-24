@@ -419,6 +419,11 @@ def test_orchestrator_registers_haiku_router_hook():
     class _MockCtx:
         def register_hook(self, name, callback):
             registered.append(name)
+        def register_identity_provider(self, provider):
+            # KR-PLUGIN-IDENTITY Option C added this method; mirror
+            # the real PluginContext's delegation so the orchestrator
+            # walk completes without AttributeError.
+            self.register_hook("pre_agent_identity_set", provider)
 
     register(_MockCtx())
     assert "post_llm_call_can_reissue" in registered

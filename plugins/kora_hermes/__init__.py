@@ -39,6 +39,9 @@ from kora_cli.reasoning.kora_hermes_plugin.cost_ladder.plugin import (
 from kora_cli.reasoning.kora_hermes_plugin.haiku_router.plugin import (
     haiku_router_post_call_escalation as _post_llm_call_can_reissue,
 )
+from kora_cli.reasoning.kora_hermes_plugin.identity.plugin import (
+    kora_identity_provider as _pre_agent_identity_set,
+)
 from kora_cli.reasoning.kora_hermes_plugin.plugin import (
     KORA_ROUTES,
     KoraHermesPlugin,
@@ -64,6 +67,7 @@ __all__ = [
     "_post_llm_call",
     "_post_llm_call_can_reissue",
     "_post_tool_call",
+    "_pre_agent_identity_set",
     "_pre_api_request_mutable",
     "_pre_tool_call",
     "_pre_tool_list_finalized",

@@ -74,12 +74,16 @@ def test_plugin_is_discovered_but_opt_in():
     assert "not enabled in config" in (loaded.error or "")
 
 
-def test_register_function_wires_eight_hooks():
-    """The plugin's register(ctx) function registers exactly 8
-    hooks (KR-HERMES-LOCAL-EXT-REISSUE added
-    post_llm_call_can_reissue to ST2B's 7). Test directly with
-    a mock context — bypasses Hermes's opt-in plugins.enabled
-    gate (operator-policy territory)."""
+def test_register_function_wires_nine_hooks():
+    """The plugin's register(ctx) function registers exactly 9
+    hooks (KR-PLUGIN-IDENTITY Option C added pre_agent_identity_set
+    to the previous 8). Test directly with a mock context —
+    bypasses Hermes's opt-in plugins.enabled gate.
+
+    The identity sub-plugin calls ``ctx.register_identity_provider``
+    which (in the real PluginContext) internally calls
+    ``register_hook("pre_agent_identity_set", wrapped)``. The
+    MockCtx mirrors this delegation so both signals are visible."""
     from plugins.kora_hermes import register
 
     registered = []
@@ -87,6 +91,11 @@ def test_register_function_wires_eight_hooks():
     class _MockCtx:
         def register_hook(self, name, callback):
             registered.append((name, callback))
+        def register_identity_provider(self, provider):
+            # Mirror real PluginContext: register_identity_provider
+            # is a convenience that wires into the
+            # pre_agent_identity_set hook.
+            self.register_hook("pre_agent_identity_set", provider)
 
     register(_MockCtx())
     hook_names = [name for name, _ in registered]
@@ -98,7 +107,8 @@ def test_register_function_wires_eight_hooks():
         "post_tool_call",
         "post_llm_call",
         "pre_tool_call_can_provide_result",  # ST2B added
-        "post_llm_call_can_reissue",  # KR-HERMES-LOCAL-EXT-REISSUE added
+        "post_llm_call_can_reissue",         # KR-HERMES-LOCAL-EXT-REISSUE added
+        "pre_agent_identity_set",            # KR-PLUGIN-IDENTITY Option C added
     ])
     # Each registered callback is callable.
     for name, callback in registered:

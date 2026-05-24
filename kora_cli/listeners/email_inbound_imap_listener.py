@@ -35,6 +35,11 @@ import logging
 import os
 from typing import Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.listeners.heartbeat import register_periodic_task
 
@@ -226,7 +231,7 @@ class EmailInboundIMAPListener:
     ``None`` rather than aborting daemon boot.
     """
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         try:
             from kora_cli.clients.purelymail_imap_client import (
                 PurelymailIMAPClient,
@@ -279,14 +284,22 @@ class EmailInboundIMAPListener:
         )
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2
+# (matches the snapshot listener Phase 1 pattern from #196).
+_listener_singleton = EmailInboundIMAPListener()
+
+
 # ---------------------------------------------------------------------------
-# Factory + registration (import-time side effect)
+# Factory + Kora-side registration (back-compat — dissolves in Phase 6)
 # ---------------------------------------------------------------------------
 
 
 def _factory():
-    listener = EmailInboundIMAPListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("email_inbound_imap", _factory)
@@ -307,3 +320,30 @@ register_periodic_task(
     interval_seconds=_read_poll_interval(),
     callable=run_poll_cycle,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="email_inbound_imap",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_poll_interval(),
+        callback=run_poll_cycle,
+        name="email.imap_poll",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.email_inbound_imap_listener] hermes registry already had "
+        "'email_inbound_imap' entry: %s — skipping duplicate registration",
+        _exc,
+    )

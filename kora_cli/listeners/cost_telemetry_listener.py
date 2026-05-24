@@ -37,6 +37,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.listeners.heartbeat import register_periodic_task
 from kora_cli.telemetry import (
@@ -306,7 +311,7 @@ class CostTelemetryListener:
     registered at module-import time; this listener just emits
     boot logs so operators can confirm wiring."""
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         logger.info(
             "[kora.cost_telemetry_listener] periodic tasks registered: "
             "persist cadence=%ss, reset-tick cadence=%ss",
@@ -323,9 +328,16 @@ class CostTelemetryListener:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2.
+_listener_singleton = CostTelemetryListener()
+
+
 def _factory():
-    listener = CostTelemetryListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("cost_telemetry", _factory)
@@ -348,3 +360,38 @@ register_periodic_task(
     interval_seconds=_read_reset_tick_interval(),
     callable=run_monthly_reset_check,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+#
+# Multi-task listener: the audit's §4.1 recommendation (option c) says
+# "let startup spawn its own asyncio loops" for daemons with more than
+# one periodic task. We register the PRIMARY persist task here in the
+# BackgroundDaemonEntry's periodic_task field; the two reset-check
+# tasks stay on Kora's heartbeat scheduler via the register_periodic_
+# task calls above. Phase 4 (scheduler dissolution) will revisit
+# whether to extend PeriodicTaskSpec to a list-of-specs.
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="cost_telemetry",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_persist_interval(),
+        callback=run_persist_cycle,
+        name="cost_telemetry.persist",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.cost_telemetry_listener] hermes registry already had "
+        "'cost_telemetry' entry: %s — skipping duplicate registration",
+        _exc,
+    )

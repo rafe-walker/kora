@@ -325,6 +325,18 @@ class KoraHermesPlugin:
 
         register_haiku_router(ctx)
 
+        # KR-PLUGIN-IDENTITY (Option C) — owns the agent's identity
+        # for THIS engine instance. Provides IdentitySpec (system
+        # prompt + SOUL.md + metadata) via the new
+        # ``pre_agent_identity_set`` hook. Closes 7th-of-7 plugin
+        # extraction. Bare-Hermes-no-Kora-plugin users still see
+        # the file-read fallback in the engine.
+        from kora_cli.reasoning.kora_hermes_plugin.identity import (
+            register as register_identity,
+        )
+
+        register_identity(ctx)
+
         # --- Handlers still living in the orchestrator (await
         # their own KR-PLUGIN-* extraction buckets) ---
         ctx.register_hook(
@@ -337,7 +349,7 @@ class KoraHermesPlugin:
         )
 
         logger.info(
-            "[kora_hermes] plugin registered: 6 sub-plugins + 3 "
+            "[kora_hermes] plugin registered: 7 sub-plugins + 3 "
             "orchestrator-resident hooks against KORA_ROUTES=%s",
             sorted(KORA_ROUTES),
         )
