@@ -234,6 +234,37 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    # KR-HERMES-LOCAL-EXTENSIONS — pre_tool_list_finalized hook.
+    # Allows plugins to filter / replace the tool list per-call
+    # WITHOUT mutating ``agent.tools`` (which is process-wide).
+    # First non-None ``{"override": [...]}`` return wins; ties
+    # (multiple plugins overriding) → first wins, others
+    # ignored. Failures are caught + logged; on any exception
+    # we fall back to the unfiltered list (fail-safe).
+    try:
+        from kora_cli.plugins import invoke_hook as _invoke_hook
+        _filter_results = _invoke_hook(
+            "pre_tool_list_finalized",
+            session_id=getattr(agent, "session_id", "") or "",
+            platform=getattr(agent, "platform", "") or "",
+            model=getattr(agent, "model", "") or "",
+            tools=list(agent.tools) if agent.tools else [],
+            route=getattr(agent, "route", "") or "",
+        )
+        for _result in _filter_results:
+            if isinstance(_result, dict):
+                _override = _result.get("override")
+                if isinstance(_override, list):
+                    tools_for_api = _override
+                    break
+    except Exception as _hook_exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "pre_tool_list_finalized hook failed: %s — falling back "
+            "to agent.tools unfiltered",
+            _hook_exc,
+        )
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
