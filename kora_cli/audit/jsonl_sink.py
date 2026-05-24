@@ -112,6 +112,20 @@ SeamName = Literal[
     # can render both inbound + outbound seams in the same
     # cockpit panel.
     "tool.email_to_operator_sent",
+    # KR-PROBE-AUTOFIX-EXECUTION — Kora's reasoning loop attempted a
+    # pre-approved fix action for a probe-detected issue. Emitted
+    # by ``kora__attempt_probe_autofix`` for every invocation
+    # (including rejections from envelope gates), with ``details``
+    # capturing ``probe`` / ``action`` / ``target_id`` / operator-
+    # facing ``reason_from_reasoning``, ``status`` (``attempted`` /
+    # ``rejected`` / ``execution_failed``), rejection_reason on
+    # rejects, before/after state on attempts, and
+    # ``executor_duration_ms``. The reason field IS recorded
+    # verbatim (unlike email body in tool.email_to_operator_sent)
+    # because operator triage of "what did Kora decide and why" is
+    # the primary use case. Source attribution is ``reasoning``
+    # since invocations originate inside the reasoning loop.
+    "tool.probe_autofix_attempted",
     # KR-INTENT-EMAIL-TO-SEA-TICKET — operator-driven Sea_Ticket
     # creation from inbound email. Emitted from the email-inbound
     # handler when intent recognition runs on a Joshua-authored

@@ -2083,6 +2083,170 @@ async def _dispatch_send_email_to_operator(
     )
 
 
+# ===========================================================================
+# KR-PROBE-AUTOFIX-EXECUTION — Kora attempts the fix
+# ===========================================================================
+#
+# 2nd mutating tool in the reasoning allowlist (after #179's
+# send_email_to_operator). Scope-justification: the action is bound
+# by per-probe env gates (default OFF, fail-CLOSED) + the envelope's
+# whitelist of one action + a per-probe executor that verifies the
+# target_id resolves to a real unhealthy resource. The Loop-risk +
+# blast-radius concerns that excluded other mutating tools are
+# addressed via the envelope plumbing in
+# ``kora_cli/probes/fix_envelopes.py``; the executor lives in
+# ``kora_cli/tools/probe_autofix.py``.
+#
+# Operator R3 + ``feedback-kora-is-unified-operator-interface``:
+# "Kora investigates + attempts fix where safe + DMs you with what
+# happened, what was tried, what's left for you to decide."
+# ===========================================================================
+
+
+ATTEMPT_PROBE_AUTOFIX_TOOL: Dict[str, Any] = {
+    "name": "kora__attempt_probe_autofix",
+    "description": (
+        "Attempt a pre-approved fix action for a probe-detected "
+        "issue. The action MUST be in the probe's enabled "
+        "envelope (see envelope_enabled / envelope_fix_name in "
+        "the probe-investigation context). Only the ``fly + "
+        "restart_machine`` envelope exists in v1; all per-probe "
+        "envelopes default OFF (operator opts in via "
+        "KORA_PROBE_AUTOFIX_<PROBE>_ENABLED). Returns a "
+        "structured result with status (attempted / rejected / "
+        "execution_failed) + before/after state. Always include "
+        "the outcome in your DM to the operator — what you tried, "
+        "what changed, what's left for them to decide."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "probe": {
+                "type": "string",
+                "enum": [
+                    "supabase",
+                    "fly",
+                    "vercel",
+                    "sentry",
+                    "doppler",
+                ],
+                "description": "Which probe's envelope to invoke.",
+            },
+            "action": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Action name from the envelope (e.g. "
+                    "'restart_machine'). Free-form actions outside "
+                    "the envelope are rejected."
+                ),
+            },
+            "target_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": (
+                    "Per-probe target identifier (e.g. fly machine "
+                    "id for restart_machine). The executor verifies "
+                    "this resolves to a real unhealthy resource "
+                    "before acting."
+                ),
+            },
+            "reason": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "Brief rationale for the attempt — recorded "
+                    "verbatim in the audit log so operator triage "
+                    "can reconstruct what you decided and why."
+                ),
+            },
+        },
+        "required": ["probe", "action", "target_id", "reason"],
+        "additionalProperties": False,
+    },
+    "requires_cap_gate": True,
+    "dev_only": False,
+}
+
+
+class AttemptProbeAutofixResult(BaseModel):
+    """Pydantic projection of the tool's result dict. ``Dict[str,
+    Any]`` fields kept open-shape because per-probe before/after
+    state varies (Fly machine state vs hypothetical future Vercel
+    deployment state etc.)."""
+
+    status: str
+    rejection_reason: Optional[str] = None
+    rejection_detail: Optional[Dict[str, Any]] = None
+    action_taken: Optional[str] = None
+    fly_app: Optional[str] = None
+    before_state: Optional[Dict[str, Any]] = None
+    after_state: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    executor_duration_ms: Optional[int] = None
+
+
+async def _execute_attempt_probe_autofix(
+    *,
+    probe: str,
+    action: str,
+    target_id: str,
+    reason: str,
+    caller: Caller,
+) -> AttemptProbeAutofixResult:
+    from kora_cli.tools.probe_autofix import attempt_probe_autofix
+
+    caller_session_id = f"mcp:{caller.actor_kind}"
+    raw = await attempt_probe_autofix(
+        probe=probe,
+        action=action,
+        target_id=target_id,
+        reason=reason,
+        caller_session_id=caller_session_id,
+    )
+
+    _emit_audit(
+        tool="kora__attempt_probe_autofix",
+        caller=caller,
+        args={
+            "probe": probe,
+            "action": action,
+            "target_id": target_id,
+            "reason_chars": len(reason or ""),
+        },
+        result=(
+            f"status={raw.get('status')} "
+            f"rejection_reason={raw.get('rejection_reason')} "
+            f"action_taken={raw.get('action_taken')}"
+        ),
+    )
+
+    return AttemptProbeAutofixResult(
+        status=raw.get("status", "unknown"),
+        rejection_reason=raw.get("rejection_reason"),
+        rejection_detail=raw.get("rejection_detail"),
+        action_taken=raw.get("action_taken"),
+        fly_app=raw.get("fly_app"),
+        before_state=raw.get("before_state"),
+        after_state=raw.get("after_state"),
+        error=raw.get("error"),
+        executor_duration_ms=raw.get("executor_duration_ms"),
+    )
+
+
+async def _dispatch_attempt_probe_autofix(
+    params: Dict[str, Any], caller: Caller
+) -> BaseModel:
+    return await _execute_attempt_probe_autofix(
+        probe=params.get("probe", ""),
+        action=params.get("action", ""),
+        target_id=params.get("target_id", ""),
+        reason=params.get("reason", ""),
+        caller=caller,
+    )
+
+
 ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     REQUEST_STATE_TRANSITION_TOOL,
     CREATE_SEA_TICKET_TOOL,
@@ -2099,6 +2263,8 @@ ST2_TOOL_DESCRIPTORS: List[Dict[str, Any]] = [
     SEND_TEST_ALERT_TOOL,
     # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned email tool
     SEND_EMAIL_TO_OPERATOR_TOOL,
+    # KR-PROBE-AUTOFIX-EXECUTION — envelope-gated probe autofix
+    ATTEMPT_PROBE_AUTOFIX_TOOL,
 ]
 
 
@@ -2122,4 +2288,6 @@ ST2_TOOL_DISPATCH: Dict[str, ST2ToolDispatcher] = {
     "kora__send_test_alert": _dispatch_send_test_alert,
     # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned send
     "kora__send_email_to_operator": _dispatch_send_email_to_operator,
+    # KR-PROBE-AUTOFIX-EXECUTION — envelope-gated probe autofix
+    "kora__attempt_probe_autofix": _dispatch_attempt_probe_autofix,
 }
