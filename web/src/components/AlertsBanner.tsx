@@ -29,8 +29,18 @@ export function AlertsBanner({ data }: { data: AlertsResponse | null }) {
   // current alert id-set so re-dismissal is required when new
   // alerts arrive — otherwise dismissing once would suppress all
   // future alerts until tab close.
+  //
+  // KR-FE-DASHBOARD-SNAPSHOT-WIRE: when the data came from the
+  // $0-cost daemon snapshot, the per-alert array may be empty
+  // even when total_active > 0 (snapshot only carries aggregate
+  // counts). Fall through to a (total_active, by_severity) hash
+  // so re-dismissal still triggers when the aggregate shape
+  // changes — operator doesn't get silenced across new alert
+  // additions just because we're on the snapshot path.
   const alertIdsKey = data
-    ? data.alerts.map((a) => a.id).sort().join(",")
+    ? data.alerts.length > 0
+      ? data.alerts.map((a) => a.id).sort().join(",")
+      : `agg:${data.total_active}:${data.by_severity.critical}:${data.by_severity.warning}:${data.by_severity.info}`
     : "";
 
   useEffect(() => {
@@ -58,8 +68,13 @@ export function AlertsBanner({ data }: { data: AlertsResponse | null }) {
   //   - no active alerts (empty state shown in the full panel, not
   //     as a banner — dashboard stays clean)
   //   - operator dismissed for this tab
+  //
+  // KR-FE-DASHBOARD-SNAPSHOT-WIRE: source-of-truth for "are there
+  // alerts to show" is total_active (works for both snapshot-
+  // projected and fan-out-loaded data); the per-alert array may
+  // be empty on snapshot path.
   if (data === null) return null;
-  if (data.alerts.length === 0) return null;
+  if (data.total_active === 0) return null;
   if (dismissed) return null;
 
   const critical = data.by_severity.critical ?? 0;

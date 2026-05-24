@@ -134,6 +134,12 @@ export const api = {
     fetchJSON<ReasoningResponse>("/api/reasoning/recent"),
   getCurrentAlerts: () =>
     fetchJSON<AlertsResponse>("/api/alerts/current"),
+  // KR-FE-DASHBOARD-SNAPSHOT-WIRE: $0-cost daemon snapshot read.
+  // Returns either the snapshot dict OR an unavailable marker
+  // ({error: "no_snapshot", stale: true}) when the daemon hasn't
+  // produced a fresh snapshot. Callers branch on `"error" in resp`.
+  getSnapshot: () =>
+    fetchJSON<SnapshotResponse | SnapshotUnavailable>("/api/snapshot"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1783,4 +1789,45 @@ export interface AlertsResponse {
   generated_at: string;
   total_active: number;
   by_severity: Record<AlertSeverity, number>;
+}
+
+// Daemon-state snapshot (KR-FE-DASHBOARD-SNAPSHOT-WIRE / backed by
+// kora_cli/snapshot/state_snapshot.py). $0-cost read for the
+// dashboard's first-paint path. Individual sub-fields degrade to
+// "unknown" rather than failing the whole snapshot (fail-soft).
+export interface SnapshotResponse {
+  schema_version: number;
+  computed_at: string; // ISO timestamp; FE uses for freshness badge
+  operational_state: {
+    primary: string;
+    paused: boolean;
+    pause_reason: string | null;
+  };
+  alerts: {
+    active_count: number;
+    by_severity: { critical: number; warning: number; info: number };
+    by_category: Record<string, number>;
+  };
+  cost_ladder: {
+    current_tier: string;
+    monthly_budget_pct_used: number | null;
+    model_default: string; // "unknown" until KR-SNAPSHOT-MODEL-DEFAULT
+  };
+  service_health: {
+    supabase: string;
+    fly: string;
+    vercel: string;
+    sentry: string;
+    doppler: string;
+  };
+  tasks?: {
+    open_count: number | "unknown";
+    in_progress_count: number | "unknown";
+  };
+  cost_telemetry?: unknown; // schema_version 2 (KR-CHEAP-COST-TELEMETRY)
+}
+
+export interface SnapshotUnavailable {
+  error: "no_snapshot";
+  stale: true;
 }
