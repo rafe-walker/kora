@@ -109,6 +109,15 @@ SeamName = Literal[
     # KR-FE-EMAIL-INTENT-LOG-PANEL surfaces this seam in the
     # cockpit.
     "intent.email_to_sea_ticket",
+    # KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — operator-driven phrasebook
+    # edits via the cockpit PUT endpoint. Each successful write
+    # emits one entry with entry_count_before / entry_count_after /
+    # backup_filename so operator-attention triage can reconstruct
+    # "when did the phrasebook change + did the change have a
+    # backup to revert to." Future actor extension (e.g.
+    # ``actor="kora_proposal_approved"`` from the promotion-loop
+    # bucket) reuses this seam shape.
+    "phrasebook.updated",
 ]
 
 SourceName = Literal[

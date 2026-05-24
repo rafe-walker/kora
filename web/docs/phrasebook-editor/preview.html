@@ -1,0 +1,313 @@
+<!--
+  Static preview of PhrasebookPage in 3 states for PR review.
+  Mirrors the JSX produced by PhrasebookPage.tsx + PhrasebookEditor.tsx
+  so reviewers see the operator-facing flows without running the
+  daemon. Rendered to edit.png / validation.png / revert.png via
+  headless Chrome.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kora — PhrasebookEditor flows (KR-FE-PHRASEBOOK-EDITOR-AND-CRUD)</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --fg: #ededed; --muted: #8b8b8b;
+      --card: #131313; --border: #2a2a2a;
+      --success: #4ade80; --warning: #facc15; --destructive: #f87171;
+      --primary: #60a5fa;
+    }
+    body { background: var(--bg); color: var(--fg);
+           font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+           padding: 28px; max-width: 1100px; margin: 0; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+    h2 { font-size: 13px; font-weight: 500; color: var(--muted);
+         margin: 22px 0 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .preamble { color: var(--muted); font-size: 12px; max-width: 760px;
+                line-height: 1.5; margin-bottom: 14px; }
+    .card { background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+    .card.destructive { border-color: rgba(248, 113, 113, 0.4); }
+    .card.warning { border-color: rgba(250, 204, 21, 0.4); }
+    .card.success { border-color: rgba(74,222,128,0.3); background: rgba(74,222,128,0.05); }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .badge { padding: 1px 6px; border: 1px solid var(--border);
+             border-radius: 4px; font-size: 10px; display: inline-flex;
+             align-items: center; gap: 4px; }
+    .badge.success { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.1); color: var(--success); }
+    .badge.warning { border-color: rgba(250,204,21,0.4); background: rgba(250,204,21,0.1); color: var(--warning); }
+    .badge.destructive { border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.1); color: var(--destructive); }
+    .btn { padding: 5px 12px; font-size: 11px; border: 1px solid var(--border);
+           background: transparent; color: var(--fg); border-radius: 6px; cursor: pointer;
+           display: inline-flex; align-items: center; gap: 4px; }
+    .btn.primary { border-color: var(--primary); background: var(--primary); color: #001; }
+    .btn.destructive { border-color: var(--destructive); color: var(--destructive); background: rgba(248,113,113,0.08); }
+    .btn.outlined { border-color: var(--border); }
+    .input, .textarea { width: 100%; padding: 4px 8px; font-size: 11px;
+                        border: 1px solid var(--border); border-radius: 4px;
+                        background: var(--card); color: var(--fg);
+                        font-family: ui-monospace, monospace; }
+    .input.error, .textarea.error { border-color: rgba(248,113,113,0.6); }
+    .textarea { min-height: 44px; resize: vertical; }
+    .label-tiny { font-size: 9px; color: var(--muted); text-transform: uppercase;
+                  letter-spacing: 0.04em; margin-bottom: 2px; display: block; }
+    .field-error { font-size: 10px; color: var(--destructive); font-style: italic; margin-top: 2px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .page-header { display: flex; justify-content: space-between; gap: 12px;
+                   align-items: flex-start; margin-bottom: 14px; flex-wrap: wrap; }
+    .page-header .title { font-size: 18px; font-weight: 600; }
+    .page-header .desc { font-size: 12px; color: var(--muted); max-width: 600px; margin-top: 4px; }
+    .preview-result { padding: 6px 8px; border-radius: 6px; border: 1px solid; font-size: 11px; }
+    .preview-result.success { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.05); }
+    .preview-result.warning { border-color: rgba(250,204,21,0.4); background: rgba(250,204,21,0.05); }
+    .preview-render { padding: 6px 8px; background: rgba(0,0,0,0.3); border: 1px solid var(--border);
+                      border-radius: 4px; font-family: ui-monospace, monospace; font-size: 11px;
+                      margin-top: 4px; white-space: pre-wrap; }
+    .modal-mock { padding: 16px; border-radius: 8px; max-width: 720px; background: var(--card);
+                  border: 1px solid var(--border); margin: 24px 0; box-shadow: 0 6px 32px rgba(0,0,0,0.5); }
+    .modal-mock .backup-row { padding: 8px; border: 1px solid var(--border); border-radius: 6px;
+                              margin-bottom: 4px; display: flex; gap: 8px; align-items: center; font-size: 11px; }
+    .modal-mock .backup-row.corrupt { opacity: 0.5; }
+    .scenario-divider { border: 0; border-top: 1px dashed var(--border); margin: 32px 0 12px; }
+  </style>
+</head>
+<body>
+
+  <!-- ============================ STATE 1: EDIT MODE ============================ -->
+  <h1>Phrasebook editor — state 1: edit mode active</h1>
+  <p class="preamble">
+    Operator clicked "Edit phrasebook". Entries become editable; live tester swaps to
+    client-side preview (mirrors dm_phrasebook match + render). Save / Cancel / Add entry buttons appear.
+  </p>
+
+  <div class="page-header">
+    <div>
+      <div class="title">Phrasebook (Slack DM short-circuit)</div>
+      <div class="desc">Read-only view of the regex patterns the live Slack DM handler consults
+        before invoking the reasoning engine. Matched + renderable → $0 reply.</div>
+    </div>
+    <div class="row">
+      <button class="btn">↻ Reload</button>
+    </div>
+  </div>
+
+  <!-- Source banner -->
+  <div class="card">
+    <div class="row">
+      <span style="font-size: 11px; font-weight: 500;">Source:</span>
+      <span class="badge success">📝 operator override</span>
+      <code style="font-size: 10px; color: var(--muted);">/Users/Apple/.kora/phrasebook/slack_dm.yml</code>
+    </div>
+  </div>
+
+  <!-- ClientSidePreview -->
+  <div class="card">
+    <div style="font-size: 11px; font-weight: 500; margin-bottom: 6px;">↻ Preview against in-progress edits (client-side)</div>
+    <div class="row">
+      <input class="input" style="flex: 1;" value="what's my burn" />
+      <button class="btn primary">Test</button>
+    </div>
+    <div class="preview-result success" style="margin-top: 8px;">
+      <span class="badge success">✓ Matched · category burn_query · $0 reply</span>
+      <div class="preview-render">2.5% of monthly budget used. Tier: normal.</div>
+    </div>
+    <div style="font-size: 9px; color: var(--muted); font-style: italic; margin-top: 6px;">
+      Mirrors dm_phrasebook.match_message + render_reply; preview uses in-progress edits, not the saved phrasebook.
+    </div>
+  </div>
+
+  <!-- Edit mode controls (top) -->
+  <div class="row" style="margin-bottom: 8px;">
+    <button class="btn primary">💾 Save changes</button>
+    <button class="btn">✕ Cancel</button>
+    <button class="btn outlined">+ Add entry</button>
+  </div>
+
+  <!-- Entry rows being edited -->
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern (Python regex, case-insensitive)</span>
+          <input class="input" value="^(burn|cost|spend|how ?much|what'?s? my burn|what'?s? the burn|whats the spend)[\s.?!]*$" />
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="burn_query" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="Single-clause cost / burn inquiry" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template (supports {snapshot.X.Y} placeholders)</span>
+          <textarea class="textarea">{snapshot.cost_ladder.monthly_budget_pct_used}% of monthly budget used. Tier: {snapshot.cost_ladder.current_tier}.</textarea>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern</span>
+          <input class="input" value="^(status|state|how ?are (you|things)|how'?s? it going)[\s.?!]*$" />
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="status_query" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="General are-you-alive / how-things-going" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea">Operational state: {snapshot.operational_state.primary}. {snapshot.alerts.active_count} active alert(s).</textarea>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <hr class="scenario-divider" />
+
+  <!-- ============================ STATE 2: VALIDATION ERROR ============================ -->
+  <h1>Phrasebook editor — state 2: validation error (422)</h1>
+  <p class="preamble">
+    Operator clicked Save with a bad regex + an unknown snapshot path. Server returned 422 with structured
+    per-entry errors; FE renders each next to the offending field. Top-level errors render at the top.
+  </p>
+
+  <div class="card destructive">
+    <div style="font-size: 11px; font-weight: 500; color: var(--destructive); margin-bottom: 4px;">
+      ⚠ 1 top-level error:
+    </div>
+    <div style="font-size: 11px; color: var(--destructive); margin-left: 12px;">
+      • duplicate (pattern, category) — already declared at index 0
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom: 8px;">
+    <button class="btn primary">💾 Save changes</button>
+    <button class="btn">✕ Cancel</button>
+    <button class="btn outlined">+ Add entry</button>
+  </div>
+
+  <!-- Entry with invalid regex -->
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern (Python regex)</span>
+          <input class="input error" value="(unclosed" />
+          <div class="field-error">invalid regex: missing ), unterminated subpattern at position 0</div>
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="ack" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="Operator ack" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea">👍</textarea>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <!-- Entry with bad snapshot path -->
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern</span>
+          <input class="input" value="^how many tickets" />
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="ticket_query" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="Ask about ticket count" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea error">{snapshot.totally.not.a.real.field} open tickets right now.</textarea>
+          <div class="field-error">snapshot path 'totally.not.a.real.field' not in known scalar schema (see SNAPSHOT_SCALAR_PATHS)</div>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <hr class="scenario-divider" />
+
+  <!-- ============================ STATE 3: BACKUPS / REVERT ============================ -->
+  <h1>Phrasebook editor — state 3: backups + revert dialog</h1>
+  <p class="preamble">
+    Operator clicked "Backups". Modal shows newest-first list; per-row Revert with confirm. Corrupt
+    backups (entry_count null) are greyed out. Bottom note explains revert semantics.
+  </p>
+
+  <div class="page-header">
+    <div>
+      <div class="title">Phrasebook (Slack DM short-circuit)</div>
+    </div>
+    <div class="row">
+      <button class="btn outlined">✏ Edit phrasebook</button>
+      <button class="btn">⏱ Backups</button>
+      <button class="btn">↻ Reload</button>
+    </div>
+  </div>
+
+  <div class="modal-mock">
+    <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+      <div class="row" style="gap: 6px;">
+        <span style="font-weight: 500; font-size: 13px;">⏱ Phrasebook backups</span>
+        <span style="color: var(--muted); font-size: 11px;">(keeping 10 most recent)</span>
+      </div>
+      <button class="btn">✕</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T20-15-22Z.yml</code>
+      <span style="color: var(--muted);">7 entries</span>
+      <span style="color: var(--muted);">512b</span>
+      <span style="color: var(--warning); font-style: italic;">Replace current?</span>
+      <button class="btn destructive">Yes, revert</button>
+      <button class="btn">No</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T19-42-08Z.yml</code>
+      <span style="color: var(--muted);">5 entries</span>
+      <span style="color: var(--muted);">412b</span>
+      <button class="btn outlined">Revert</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T18-30-15Z.yml</code>
+      <span style="color: var(--muted);">5 entries</span>
+      <span style="color: var(--muted);">408b</span>
+      <button class="btn outlined">Revert</button>
+    </div>
+    <div class="backup-row corrupt">
+      <code style="flex: 1;">slack_dm.2026-05-23T17-12-44Z.yml</code>
+      <span style="color: var(--muted);">corrupt</span>
+      <span style="color: var(--muted);">240b</span>
+      <button class="btn outlined" disabled>Revert</button>
+    </div>
+    <div style="font-size: 9px; color: var(--muted); font-style: italic; margin-top: 10px;">
+      Revert clones the chosen backup over the current override YAML; the backup file itself is preserved
+      (you can re-revert to it later). To remove the override entirely (fall back to bundled default),
+      revert with no backups present.
+    </div>
+  </div>
+
+</body>
+</html>

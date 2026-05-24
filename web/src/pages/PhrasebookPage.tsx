@@ -24,7 +24,9 @@ import {
   Bot,
   CheckCircle2,
   FileEdit,
+  History,
   Info,
+  Pencil,
   RefreshCw,
   XCircle,
 } from "lucide-react";
@@ -38,12 +40,24 @@ import { useToast } from "@/hooks/useToast";
 import { usePanelView } from "@/hooks/usePanelView";
 import { api } from "@/lib/api";
 import type {
+  PhrasebookBackupItem,
   PhrasebookEntryDto,
   PhrasebookResponse,
   PhrasebookTestResponse,
+  PhrasebookValidationErrorBody,
+  PhrasebookValidationErrorEntry,
   SnapshotResponse,
   SnapshotUnavailable,
 } from "@/lib/api";
+import {
+  BackupsDialog,
+  ClientSidePreview,
+  EditModeControls,
+  EntryEditorRow,
+  makeEmptyEntry,
+  toEditableEntries,
+  type EditableEntry,
+} from "@/pages/PhrasebookEditor";
 
 // Walk a dotted path through nested dicts. Mirrors
 // dm_phrasebook._walk_snapshot so the FE's "is this field unknown?"
@@ -330,6 +344,24 @@ export default function PhrasebookPage() {
   const [testing, setTesting] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
 
+  // KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — edit-mode state.
+  // editingEntries === null ≡ view mode (read-only); non-null ≡
+  // operator is editing locally and hasn't saved yet.
+  const [editingEntries, setEditingEntries] = useState<
+    EditableEntry[] | null
+  >(null);
+  const [saving, setSaving] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<
+    PhrasebookValidationErrorEntry[]
+  >([]);
+
+  // Backups dialog state — separate from edit mode so operator
+  // can revert from view-mode or edit-mode equally.
+  const [backupsOpen, setBackupsOpen] = useState(false);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const [backups, setBackups] = useState<PhrasebookBackupItem[]>([]);
+  const [backupsRotationKeep, setBackupsRotationKeep] = useState(10);
+
   const { toast, showToast } = useToast();
 
   const loadAll = useCallback(
@@ -380,6 +412,128 @@ export default function PhrasebookPage() {
     void loadAll(false);
   }, [loadAll]);
 
+  // ---- Edit mode handlers ----
+
+  const enterEditMode = useCallback(() => {
+    if (phrasebook === null) return;
+    setEditingEntries(toEditableEntries(phrasebook.entries));
+    setValidationErrors([]);
+  }, [phrasebook]);
+
+  const exitEditMode = useCallback(() => {
+    setEditingEntries(null);
+    setValidationErrors([]);
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (editingEntries === null) return;
+    setSaving(true);
+    setValidationErrors([]);
+    try {
+      const writeBody = editingEntries.map(({ _localId: _ig, ...rest }) => rest);
+      const result = await api.putSlackDmPhrasebook(writeBody);
+      // Refresh local state from the response (server-canonicalized
+      // entries; includes referenced_snapshot_fields).
+      setPhrasebook({
+        source: "override",
+        source_path: result.source_path,
+        override_candidate_path: result.source_path,
+        entries: result.entries,
+      });
+      setEditingEntries(null);
+      const backupNote = result.backup_filename
+        ? ` · backup: ${result.backup_filename}`
+        : " · no prior override (first edit)";
+      showToast(
+        `Saved ${result.entry_count} entries${backupNote}`,
+        "success",
+      );
+    } catch (e: unknown) {
+      // fetchJSON throws "STATUS: BODY" — parse for 422 structured
+      // errors so the editor can render per-row feedback.
+      const msg = e instanceof Error ? e.message : String(e);
+      const match = msg.match(/^(\d+):\s*(.*)$/s);
+      if (match && match[1] === "422") {
+        try {
+          const body: PhrasebookValidationErrorBody = JSON.parse(match[2]);
+          if (body && body.error === "validation_failed") {
+            setValidationErrors(body.errors);
+            showToast(
+              `Save refused — ${body.errors.length} validation error${
+                body.errors.length === 1 ? "" : "s"
+              }`,
+              "error",
+            );
+            return;
+          }
+        } catch {
+          /* fall through to generic error */
+        }
+      }
+      showToast(`Save failed: ${msg}`, "error");
+    } finally {
+      setSaving(false);
+    }
+  }, [editingEntries, showToast]);
+
+  const updateEntry = useCallback(
+    (localId: string, next: EditableEntry) => {
+      setEditingEntries((prev) =>
+        prev === null
+          ? prev
+          : prev.map((e) => (e._localId === localId ? next : e)),
+      );
+    },
+    [],
+  );
+
+  const deleteEntry = useCallback((localId: string) => {
+    setEditingEntries((prev) =>
+      prev === null ? prev : prev.filter((e) => e._localId !== localId),
+    );
+  }, []);
+
+  const addEntry = useCallback(() => {
+    setEditingEntries((prev) =>
+      prev === null ? prev : [...prev, makeEmptyEntry()],
+    );
+  }, []);
+
+  // ---- Backups + revert ----
+
+  const openBackups = useCallback(async () => {
+    setBackupsOpen(true);
+    setBackupsLoading(true);
+    try {
+      const result = await api.getSlackDmPhrasebookBackups();
+      setBackups(result.backups);
+      setBackupsRotationKeep(result.rotation_keep);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      showToast(`Failed to load backups: ${msg}`, "error");
+    } finally {
+      setBackupsLoading(false);
+    }
+  }, [showToast]);
+
+  const handleRevert = useCallback(
+    async (filename: string | null) => {
+      try {
+        const result = await api.revertSlackDmPhrasebook(filename);
+        showToast(`Reverted to ${result.reverted_to}`, "success");
+        // Refresh phrasebook + exit edit mode (the in-progress
+        // edits are now stale relative to the reverted content).
+        setEditingEntries(null);
+        setValidationErrors([]);
+        await loadAll(false);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        showToast(`Revert failed: ${msg}`, "error");
+      }
+    },
+    [loadAll, showToast],
+  );
+
   return (
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
@@ -394,17 +548,42 @@ export default function PhrasebookPage() {
             to reasoning (cents).
           </p>
         </div>
-        <Button
-          size="sm"
-          ghost
-          disabled={refreshing}
-          onClick={() => void loadAll(true)}
-        >
-          <RefreshCw
-            className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`}
-          />
-          Reload
-        </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {editingEntries === null && (
+            <>
+              <Button
+                size="sm"
+                outlined
+                disabled={refreshing || phrasebook === null}
+                onClick={enterEditMode}
+                title="Edit the phrasebook entries — saves write to the operator override"
+              >
+                <Pencil className="h-3 w-3" />
+                Edit phrasebook
+              </Button>
+              <Button
+                size="sm"
+                ghost
+                onClick={() => void openBackups()}
+                title="View + revert from backups"
+              >
+                <History className="h-3 w-3" />
+                Backups
+              </Button>
+            </>
+          )}
+          <Button
+            size="sm"
+            ghost
+            disabled={refreshing}
+            onClick={() => void loadAll(true)}
+          >
+            <RefreshCw
+              className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`}
+            />
+            Reload
+          </Button>
+        </div>
       </div>
 
       {loadError && (
@@ -456,60 +635,110 @@ export default function PhrasebookPage() {
             </CardContent>
           </Card>
 
-          {/* Live tester */}
-          <LiveTester
-            onTest={handleTest}
-            result={testResult}
-            testing={testing}
-            testError={testError}
-          />
+          {/* Live tester — view-mode uses the backend's live
+              phrasebook; edit-mode swaps in the ClientSidePreview
+              that runs against in-progress edits instead. */}
+          {editingEntries === null ? (
+            <LiveTester
+              onTest={handleTest}
+              result={testResult}
+              testing={testing}
+              testError={testError}
+            />
+          ) : (
+            <ClientSidePreview
+              entries={editingEntries}
+              snapshot={snapshot}
+            />
+          )}
 
-          {/* Entries table */}
-          <Card>
-            <CardContent className="py-4 flex flex-col gap-3">
-              <div className="text-sm font-medium">
-                All entries ({phrasebook.entries.length})
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-muted-foreground border-b border-border">
-                      <th className="text-left font-medium py-1.5 pr-3">
-                        Category
-                      </th>
-                      <th className="text-left font-medium py-1.5 pr-3">
-                        Pattern
-                      </th>
-                      <th className="text-left font-medium py-1.5 pr-3">
-                        Reply template + referenced snapshot fields
-                      </th>
-                      <th className="text-right font-medium py-1.5">
-                        Current viability
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {phrasebook.entries.map((entry, i) => (
-                      <EntryRow
-                        key={`${entry.category}-${i}`}
-                        entry={entry}
-                        snapshot={snapshot}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="text-[10px] text-muted-foreground italic">
-                "Current viability" is computed against the live snapshot:
-                if any referenced field is currently "unknown" or missing,
-                the live handler would fall through to the reasoning
-                engine for that entry. Editor follow-on:
-                KR-FE-PHRASEBOOK-EDITOR + KR-API-PHRASEBOOK-CRUD.
-              </div>
-            </CardContent>
-          </Card>
+          {/* Entries — read-only table in view-mode, editor in
+              edit-mode. */}
+          {editingEntries === null ? (
+            <Card>
+              <CardContent className="py-4 flex flex-col gap-3">
+                <div className="text-sm font-medium">
+                  All entries ({phrasebook.entries.length})
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-muted-foreground border-b border-border">
+                        <th className="text-left font-medium py-1.5 pr-3">
+                          Category
+                        </th>
+                        <th className="text-left font-medium py-1.5 pr-3">
+                          Pattern
+                        </th>
+                        <th className="text-left font-medium py-1.5 pr-3">
+                          Reply template + referenced snapshot fields
+                        </th>
+                        <th className="text-right font-medium py-1.5">
+                          Current viability
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {phrasebook.entries.map((entry, i) => (
+                        <EntryRow
+                          key={`${entry.category}-${i}`}
+                          entry={entry}
+                          snapshot={snapshot}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="text-[10px] text-muted-foreground italic">
+                  "Current viability" is computed against the live snapshot:
+                  if any referenced field is currently "unknown" or missing,
+                  the live handler would fall through to the reasoning
+                  engine for that entry. Click "Edit phrasebook" to
+                  add / modify / delete entries.
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <EditModeControls
+                saving={saving}
+                onSave={() => void handleSave()}
+                onCancel={exitEditMode}
+                onAddEntry={addEntry}
+                rootErrors={validationErrors.filter(
+                  (e) => e.entry_index === -1,
+                )}
+              />
+              {editingEntries.map((entry, i) => (
+                <EntryEditorRow
+                  key={entry._localId}
+                  entry={entry}
+                  index={i}
+                  errors={validationErrors}
+                  onChange={(next) => updateEntry(entry._localId, next)}
+                  onDelete={() => deleteEntry(entry._localId)}
+                />
+              ))}
+              <EditModeControls
+                saving={saving}
+                onSave={() => void handleSave()}
+                onCancel={exitEditMode}
+                onAddEntry={addEntry}
+                rootErrors={[]}
+              />
+            </div>
+          )}
         </>
       )}
+
+      <BackupsDialog
+        open={backupsOpen}
+        loading={backupsLoading}
+        backups={backups}
+        rotationKeep={backupsRotationKeep}
+        onClose={() => setBackupsOpen(false)}
+        onRevert={handleRevert}
+      />
     </div>
   );
 }
