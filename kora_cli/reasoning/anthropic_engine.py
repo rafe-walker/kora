@@ -1075,44 +1075,138 @@ class AnthropicReasoningEngine:
         conversation`` chokepoint instead of the direct
         ``messages.create`` bypass.
 
-        # ST1 disclaimer
+        # ST2 — actual wire-up
 
-        This is the SCAFFOLDING entry. It maps the message source
-        to a Kora route literal, sets ``agent.route`` so the
-        ``kora_hermes`` plugin's hook callbacks see the right
-        route, and would construct an AIAgent to drive
-        ``run_conversation`` — BUT the full route-through (tool
-        plumbing, ResponseResult projection from
-        ``run_conversation``'s return shape, AIAgent config
-        derived from ``ConversationContext``, max-iter divergence
-        handling) is ST2.
+        Builds a fresh ``AIAgent`` per call (one-shot reply
+        pattern; AIAgent ctor is cheap — no I/O), pins
+        ``max_iterations=5`` to match Kora's existing
+        ``MAX_TOOL_USE_ITERATIONS`` (the spec's critical pin —
+        Hermes default 90 would quintuple monthly cost if Kora
+        silently inherited it), sets ``agent.route`` so
+        ``kora_hermes`` plugin hooks fire correctly, then calls
+        ``run_conversation`` + projects the result dict back
+        into Kora's :class:`ResponseResult` shape.
 
-        ST1 raises ``NotImplementedError`` when the toggle is on
-        — by design, so the toggle is opt-in for tests that
-        validate the scaffolding wiring (plugin discovery,
-        hook-fire ordering, route propagation) without
-        accidentally landing partial route-through behavior in
-        production traffic. ST2 replaces this body with the
-        actual ``AIAgent`` construction + invocation.
+        # Tools
 
-        For production today: leave ``KORA_REASONING_USE_GATEWAY``
-        unset (or ``false``) — the existing bypass path drives
-        every Slack DM / email / probe / cron reply unchanged.
+        ST2 ships **toolless** route-through:
+        ``agent.tools = []`` overrides Hermes's auto-loaded
+        default toolset. Kora's reasoning tools live in a
+        parallel registry (``kora_cli/reasoning/tool_registry``)
+        and aren't bridged into Hermes's tool dispatch yet —
+        that's the explicit ST2B follow-on. While the toggle is
+        OFF in production (default), the bypass path still has
+        full tool capability; toggling ON gives toolless
+        reasoning, which is acceptable for the parity-validation
+        phase the bucket requires.
+
+        # ResponseResult projection
+
+        ``run_conversation`` returns a dict with keys
+        ``final_response`` / ``model`` / ``input_tokens`` /
+        ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``completed`` / ``interrupted``.
+        We map these into the dataclass + derive
+        ``reasoning_duration_ms`` from start/end timestamps;
+        ``tools_used`` defaults to ``[]`` (toolless v1);
+        ``error`` is set when ``completed`` is False AND
+        ``interrupted`` is True.
         """
+        import time as _time
+
+        started_at = _time.monotonic()
+
+        # Source → route mapping (uses ST1 helper).
         route = _source_to_kora_route(getattr(message, "source", ""))
-        logger.info(
-            "[kora.reasoning.gateway] ST1 entry — message.source=%s "
-            "→ route=%s (NotImplementedError pending ST2 plumbing)",
-            getattr(message, "source", ""),
-            route,
+
+        # Refuse-paths — preserve the bypass semantic so the toggle
+        # is behavior-neutral on these paths.
+        if context.current_operational_state in ("paused", "stopped"):
+            return ResponseResult(
+                text="",
+                model_used="",
+                input_tokens=0,
+                output_tokens=0,
+                reasoning_duration_ms=_elapsed_ms(started_at),
+                error="operational_state_paused",
+            )
+        if context.current_cost_ladder_rung == "hard_stop_100":
+            return ResponseResult(
+                text="",
+                model_used="",
+                input_tokens=0,
+                output_tokens=0,
+                reasoning_duration_ms=_elapsed_ms(started_at),
+                error="cost_ladder_halted",
+            )
+
+        # Build AIAgent. Keep ctor kwargs to the minimum that
+        # works for Kora — see PR body's mapping table for what
+        # we explicitly set vs accept from Hermes defaults. The
+        # critical pin is ``max_iterations=5``; Hermes default
+        # is 90 (~18x looser bound on tool-use depth) which
+        # would re-introduce the cost-shape problem KR-HAIKU-
+        # ROUTER #165 closed.
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model=MODEL_HAIKU,  # default; plugin's
+                                 # pre_api_request_mutable hook
+                                 # overrides per-call based on
+                                 # cost-router's earning-signal
+                                 # decision
+            provider="anthropic",
+            api_mode="anthropic_messages",
+            max_iterations=MAX_TOOL_USE_ITERATIONS,  # 5 — PIN
+            max_tokens=self._max_output_tokens,
+            quiet_mode=True,  # daemon path; no print() to stdout
         )
-        raise NotImplementedError(
-            "KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST2 owns the "
-            "AIAgent construction + tool plumbing + ResponseResult "
-            "projection. ST1 only ships the plugin scaffold + "
-            f"toggle + route resolution (route={route!r} for "
-            f"source={getattr(message, 'source', '')!r}). Unset "
-            "KORA_REASONING_USE_GATEWAY to use the bypass path."
+        # Override agent.tools = [] — Kora's reasoning tools are
+        # NOT bridged into Hermes's toolset model in this ST.
+        # The bridge is the explicit ST2B follow-on bucket. With
+        # the toggle OFF in production, the bypass path retains
+        # full tool capability; toggling ON loses tool-use until
+        # ST2B lands.
+        agent.tools = []
+        agent.valid_tool_names = set()
+
+        # Route field threading — kora_hermes plugin's hooks gate
+        # on this. Setting it to "" (when source isn't mapped)
+        # makes the plugin no-op on this call, matching ST1
+        # semantic.
+        agent.route = route
+
+        # Drive the conversation. ``run_conversation`` runs sync
+        # inside Hermes today (no async variant); offload to a
+        # thread so we don't block the asyncio event loop the
+        # daemon runs on.
+        import asyncio
+
+        try:
+            result_dict = await asyncio.to_thread(
+                agent.run_conversation,
+                message.text or "",
+                self._system_prompt,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[kora.reasoning.gateway] run_conversation raised: %r",
+                exc,
+            )
+            return ResponseResult(
+                text="",
+                model_used=getattr(agent, "model", "") or "",
+                input_tokens=0,
+                output_tokens=0,
+                reasoning_duration_ms=_elapsed_ms(started_at),
+                error=f"gateway_exception:{type(exc).__name__}",
+            )
+
+        # Project run_conversation's dict → ResponseResult.
+        return _project_gateway_result(
+            result_dict,
+            started_at=started_at,
+            fallback_model=getattr(agent, "model", "") or "",
         )
 
     async def close(self) -> None:
@@ -1347,6 +1441,82 @@ def _source_to_kora_route(source: str) -> str:
     if not isinstance(source, str):
         return ""
     return _SOURCE_TO_ROUTE.get(source, "")
+
+
+# ---------------------------------------------------------------------------
+# KR-REASONING-ROUTE-THROUGH-GATEWAY ST2 — result projection
+# ---------------------------------------------------------------------------
+
+
+def _project_gateway_result(
+    result_dict: Dict[str, Any],
+    *,
+    started_at: float,
+    fallback_model: str,
+) -> ResponseResult:
+    """Project Hermes ``run_conversation``'s return dict into
+    Kora's :class:`ResponseResult` dataclass.
+
+    Mapping (per agent/conversation_loop.py:4077-4102):
+      * ``final_response`` → ``text``
+      * ``model`` → ``model_used`` (with ``fallback_model`` if
+        absent / falsy)
+      * ``input_tokens`` / ``output_tokens`` → same
+      * ``cache_write_tokens`` → ``cache_creation_input_tokens``
+        (name differs; same concept — Hermes uses cache_write,
+        Kora uses cache_creation_input per the Anthropic SDK
+        usage object's field naming)
+      * ``cache_read_tokens`` → ``cache_read_input_tokens``
+      * ``completed`` + ``interrupted`` → ``error`` (set to
+        ``"gateway_interrupted"`` when interrupted; ``None``
+        when completed cleanly; ``"gateway_incomplete"`` for
+        the rare uncompleted-uninterrupted case)
+
+    ``tools_used`` defaults to ``[]`` — ST2 route-through is
+    toolless; ST2B's tool-bridge wires this from the messages
+    history.
+    """
+    if not isinstance(result_dict, dict):
+        return ResponseResult(
+            text="",
+            model_used=fallback_model,
+            input_tokens=0,
+            output_tokens=0,
+            reasoning_duration_ms=_elapsed_ms(started_at),
+            error="gateway_returned_non_dict",
+        )
+
+    text = str(result_dict.get("final_response", "") or "")
+    model_used = (
+        result_dict.get("model")
+        or fallback_model
+        or ""
+    )
+
+    completed = bool(result_dict.get("completed", False))
+    interrupted = bool(result_dict.get("interrupted", False))
+    if interrupted:
+        error = "gateway_interrupted"
+    elif not completed:
+        error = "gateway_incomplete"
+    else:
+        error = None
+
+    return ResponseResult(
+        text=text,
+        model_used=str(model_used),
+        input_tokens=int(result_dict.get("input_tokens", 0) or 0),
+        output_tokens=int(result_dict.get("output_tokens", 0) or 0),
+        reasoning_duration_ms=_elapsed_ms(started_at),
+        error=error,
+        tools_used=[],  # ST2B will populate from messages history
+        cache_creation_input_tokens=int(
+            result_dict.get("cache_write_tokens", 0) or 0
+        ),
+        cache_read_input_tokens=int(
+            result_dict.get("cache_read_tokens", 0) or 0
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
