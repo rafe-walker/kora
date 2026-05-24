@@ -35,6 +35,13 @@ from kora_cli.probes.issue_detector import (
     detect_issue_for_snapshot,
     detect_issues,
 )
+from kora_cli.probes.wake_consumer import (
+    ProbeWakeConsumer,
+    WakeConsumeOutcome,
+    format_fallback_text,
+    format_investigation_prompt,
+    format_operator_dm,
+)
 from kora_cli.probes.wake_emitter import emit_wake_event
 
 __all__ = [
@@ -42,8 +49,13 @@ __all__ = [
     "FixEnvelope",
     "Issue",
     "IssueSeverity",
+    "ProbeWakeConsumer",
+    "WakeConsumeOutcome",
     "detect_issue_for_snapshot",
     "detect_issues",
     "emit_wake_event",
+    "format_fallback_text",
+    "format_investigation_prompt",
+    "format_operator_dm",
     "is_envelope_enabled",
 ]

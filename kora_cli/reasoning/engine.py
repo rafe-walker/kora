@@ -34,7 +34,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Prot
 # ---------------------------------------------------------------------------
 
 
-MessageSource = Literal["slack_dm", "email", "mcp"]
+MessageSource = Literal["slack_dm", "email", "mcp", "probe_investigation"]
 
 # Cost-ladder rung as Kora's reasoning sees it. These are the
 # ``.value`` strings of ``agent.cost_state_holder.CostRung`` — the

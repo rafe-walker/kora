@@ -71,3 +71,10 @@ from kora_cli.listeners import snapshot_listener  # noqa: F401
 # reads telemetry; persist task writes telemetry — order doesn't
 # matter for correctness, only for boot-log readability).
 from kora_cli.listeners import cost_telemetry_listener  # noqa: F401
+# KR-PROBE-WAKE-CONSUMER — tails audit JSONL for probe.wake_requested
+# rows (emitted by KR-PROBE-AUDIT-AND-CONVERT runner post-hook),
+# debounces per (probe, category), invokes reasoning engine with
+# route="probe_investigation", and DMs operator with the
+# investigation summary. Imported LAST so the audit reader +
+# reasoning engine + slack client listeners are all registered first.
+from kora_cli.listeners import probe_wake_listener  # noqa: F401
