@@ -472,7 +472,7 @@ def load_reasoning_calls_with_xref(
         Plain-text rendering already enforced FE-side via
         dangerouslySetInnerHTML ban from PR #132.
     """
-    from kora_cli.audit.jsonl_sink import AuditEntry  # noqa: F401 — for type-doc
+    from kora_cli.audit.local_jsonl_sink import AuditEntry  # noqa: F401 — for type-doc
 
     audit_rows = read_audit_entries(seam="reasoning.tool_called")
     slack_outbound = _load_outbound_entries(limit=500)
