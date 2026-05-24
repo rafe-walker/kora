@@ -50,11 +50,27 @@ function writeStored(state: Record<string, CollapseState>): void {
   }
 }
 
+export interface GroupRef {
+  key: string;
+  defaultCollapsed: boolean;
+}
+
 export interface UseSidebarGroupCollapseResult {
   /** True iff the group is currently collapsed (operator override OR default). */
   isCollapsed: (groupKey: string, defaultCollapsed: boolean) => boolean;
   /** Toggle a single group; persisted to localStorage. */
   toggle: (groupKey: string, defaultCollapsed: boolean) => void;
+  /**
+   * Snapshot — true iff EVERY group in the supplied list is currently
+   * collapsed. Drives the "Collapse all" / "Expand all" shortcut
+   * label state (KR-FE-SIDEBAR-MOBILE-COLLAPSE-UX, this bucket).
+   */
+  allCollapsed: (groups: readonly GroupRef[]) => boolean;
+  /** Force every supplied group into the same state; persisted. */
+  setAll: (
+    groups: readonly GroupRef[],
+    nextState: CollapseState,
+  ) => void;
 }
 
 export function useSidebarGroupCollapse(): UseSidebarGroupCollapseResult {
@@ -95,5 +111,32 @@ export function useSidebarGroupCollapse(): UseSidebarGroupCollapseResult {
     [],
   );
 
-  return { isCollapsed, toggle };
+  const allCollapsed = useCallback(
+    (groups: readonly GroupRef[]) => {
+      if (groups.length === 0) return false;
+      return groups.every((g) => {
+        const override = overrides[g.key];
+        if (override === "collapsed") return true;
+        if (override === "expanded") return false;
+        return g.defaultCollapsed;
+      });
+    },
+    [overrides],
+  );
+
+  const setAll = useCallback(
+    (groups: readonly GroupRef[], nextState: CollapseState) => {
+      setOverrides((prev) => {
+        const next = { ...prev };
+        for (const g of groups) {
+          next[g.key] = nextState;
+        }
+        writeStored(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  return { isCollapsed, toggle, allCollapsed, setAll };
 }

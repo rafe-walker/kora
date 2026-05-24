@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Wizard step 4 — Tutorial probe</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .progress { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px; }
+  .step-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 4px; font-size: 10px; font-family: ui-monospace, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+  .step-chip.active { background: var(--primary); color: #001; }
+  .step-chip.pending { background: rgba(143,143,143,0.15); color: var(--muted); }
+  .step-chip.reached { background: rgba(250,204,21,0.3); color: #fde68a; }
+  .arrow { color: var(--muted); }
+</style></head><body>
+
+  <h1>Wizard step 4 — Tutorial probe fires + operator watches the 4-stream join</h1>
+
+  <div class="page-header">
+    <div class="title">✨ First-run setup</div>
+    <button class="btn">Skip — I'll configure manually</button>
+  </div>
+
+  <div class="card progress">
+    <span class="step-chip reached">✨ 1/5 Welcome</span>
+    <span class="arrow">→</span>
+    <span class="step-chip reached">🔑 2/5 Anthropic key</span>
+    <span class="arrow">→</span>
+    <span class="step-chip reached">☁ 3/5 IsoKron + Slack</span>
+    <span class="arrow">→</span>
+    <span class="step-chip active">✨ 4/5 Tutorial probe</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">💡 5/5 Promotion loops</span>
+  </div>
+
+  <div class="card">
+    <div style="font-size: 13px; font-weight: 500;">✨ Step 4 of 5 — Tutorial probe</div>
+    <p style="margin-top: 10px; font-size: 13px;">
+      First investigation tutorial: a synthetic <code>probe.wake_requested</code>
+      audit row fires here — Kora's reasoning engine investigates, DMs you the
+      result, and the 4-stream join lights up in the Probe Investigations panel.
+    </p>
+    <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+      <button class="btn primary">📤 Trigger probe wake now</button>
+      <span class="badge success">✓ Wake fired</span>
+    </div>
+
+    <div class="card" style="border-color: rgba(250,204,21,0.4); background: rgba(250,204,21,0.05); margin-top: 12px;">
+      <div style="font-weight: 500; font-size: 12px;">Watch the investigation unfold</div>
+      <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+        caller_session_id: <span style="font-family: ui-monospace, monospace;">probe:wizard_tutorial:first_run</span>
+      </div>
+      <div style="display: flex; gap: 8px; margin-top: 6px; font-size: 11px;">
+        <a style="color: var(--primary);">→ Open Probe Investigations</a>
+        <a style="color: var(--primary);">→ Drill into the audit timeline</a>
+      </div>
+      <div style="font-size: 10px; color: var(--muted); font-style: italic; margin-top: 4px;">
+        If your Slack is misconfigured, the audit row + DM payload still get written —
+        you can debug from the timeline view.
+      </div>
+    </div>
+
+    <button class="btn primary" style="margin-top: 12px;">Next: Promotion loops</button>
+  </div>
+
+</body></html>

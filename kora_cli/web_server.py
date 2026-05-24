@@ -11189,6 +11189,312 @@ def _mount_plugin_api_routes():
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
 
 
+# ---------------------------------------------------------------------------
+# KR-FE-OPERATOR-FIRST-RUN-WIZARD — onboarding endpoints
+# ---------------------------------------------------------------------------
+#
+# 6 small endpoints powering the cockpit's first-run wizard. Each one
+# does ONE thing — validate a credential, fire a synthetic probe, or
+# read/write the marker file. Substantive logic per endpoint stays
+# ≤30 LoC per CC#2's contract for this bucket (any endpoint that
+# grew beyond would belong to the CC#1 lane).
+#
+# Marker file lives at ``<KORA_HOME>/wizard_config.json``. Operator's
+# .env values are NEVER written to the operator's shell — wizard
+# surfaces a downloadable .env file the operator copies into place.
+# Per [[feedback-fail-closed-by-default-security-infra]]: never
+# mutate operator env without explicit consent.
+#
+# Drift-guard pins (tests/kora_cli/test_wizard_endpoints.py):
+#   * _WIZARD_STEPS allowlist matches FE constant
+#   * _WIZARD_VALIDATION_RESULTS allowlist matches FE constant
+
+
+_WIZARD_STEPS: Tuple[str, ...] = (
+    "welcome",
+    "anthropic",
+    "substrate_slack",
+    "tutorial_probe",
+    "promotion_intro",
+)
+
+_WIZARD_VALIDATION_RESULTS: Tuple[str, ...] = (
+    "success",
+    "auth_failure",
+    "network_failure",
+    "timeout",
+)
+
+_WIZARD_CONFIG_FILENAME = "wizard_config.json"
+
+
+def _wizard_config_path() -> Path:
+    return get_kora_home() / _WIZARD_CONFIG_FILENAME
+
+
+def _audit_log_is_empty() -> bool:
+    """A heuristic for "fresh install never ran" — the audit JSONL
+    file is missing or has zero non-blank lines. Used together with
+    the marker-file check to drive first-run detection."""
+    from kora_cli.audit.jsonl_sink import AUDIT_LOG_FILENAME
+
+    path = get_kora_home() / AUDIT_LOG_FILENAME
+    if not path.is_file():
+        return True
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    return False
+    except OSError:
+        return True
+    return True
+
+
+@app.get("/api/wizard/state")
+async def get_wizard_state() -> Dict[str, Any]:
+    """Wizard resume + first-run detection feed.
+
+    Returns whether the wizard has been completed (marker file
+    present) + whether the install is fresh (no audit rows). The
+    FE composes these into the "should I show the wizard?" gate
+    — fresh AND not-completed → show; otherwise route "/" to
+    Dashboard as usual.
+    """
+    import json as _json
+
+    marker = _wizard_config_path()
+    completed = False
+    skipped = False
+    tenant_id: Optional[str] = None
+    last_step: Optional[str] = None
+    if marker.is_file():
+        try:
+            with marker.open("r", encoding="utf-8") as f:
+                payload = _json.load(f) or {}
+        except (OSError, _json.JSONDecodeError):
+            payload = {}
+        if isinstance(payload, dict):
+            completed = bool(payload.get("completed"))
+            skipped = bool(payload.get("skipped"))
+            tenant_id = (
+                str(payload.get("tenant_id"))
+                if isinstance(payload.get("tenant_id"), str)
+                else None
+            )
+            last_step_raw = payload.get("last_step")
+            if isinstance(last_step_raw, str) and last_step_raw in _WIZARD_STEPS:
+                last_step = last_step_raw
+
+    return {
+        "marker_present": marker.is_file(),
+        "completed": completed,
+        "skipped": skipped,
+        "tenant_id": tenant_id,
+        "last_step": last_step,
+        "audit_log_empty": _audit_log_is_empty(),
+        "steps": list(_WIZARD_STEPS),
+        "validation_results": list(_WIZARD_VALIDATION_RESULTS),
+    }
+
+
+def _classify_validation_exception(exc: BaseException) -> str:
+    """Map an exception from a credential-validation HTTP call to
+    one of the 4 _WIZARD_VALIDATION_RESULTS values."""
+    import httpx as _httpx
+
+    if isinstance(exc, _httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, _httpx.RequestError):
+        return "network_failure"
+    return "network_failure"
+
+
+@app.post("/api/wizard/validate-anthropic")
+async def validate_anthropic(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a minimal 1-token completion against the Anthropic API
+    using the supplied key. Returns success / auth_failure /
+    network_failure / timeout — never the response body, never the
+    key, never an inference cost worth logging.
+    """
+    import httpx as _httpx
+
+    api_key = str(payload.get("api_key", "") or "").strip()
+    if not api_key:
+        return {"result": "auth_failure", "detail": "missing api_key"}
+    body = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 1,
+        "messages": [{"role": "user", "content": "ping"}],
+    }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                json=body,
+                headers=headers,
+            )
+    except BaseException as exc:
+        return {"result": _classify_validation_exception(exc)}
+    if resp.status_code == 200:
+        return {"result": "success"}
+    if resp.status_code in (401, 403):
+        return {"result": "auth_failure", "detail": f"HTTP {resp.status_code}"}
+    return {"result": "network_failure", "detail": f"HTTP {resp.status_code}"}
+
+
+@app.post("/api/wizard/validate-substrate")
+async def validate_substrate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Ping the IsoKron substrate (Supabase-style PostgREST) with
+    the supplied service-role key. We hit the root REST endpoint —
+    a 401 means auth failure, a 200/404 (no tables) means the
+    substrate is reachable + credentials valid."""
+    import httpx as _httpx
+
+    url = str(payload.get("url", "") or "").strip().rstrip("/")
+    key = str(payload.get("service_role_key", "") or "").strip()
+    if not url or not key:
+        return {"result": "auth_failure", "detail": "missing url or key"}
+    headers = {"apikey": key, "authorization": f"Bearer {key}"}
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{url}/rest/v1/", headers=headers)
+    except BaseException as exc:
+        return {"result": _classify_validation_exception(exc)}
+    if resp.status_code in (200, 404):
+        return {"result": "success"}
+    if resp.status_code in (401, 403):
+        return {"result": "auth_failure", "detail": f"HTTP {resp.status_code}"}
+    return {"result": "network_failure", "detail": f"HTTP {resp.status_code}"}
+
+
+@app.post("/api/wizard/validate-slack")
+async def validate_slack(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Hit slack.com/api/auth.test with the supplied bot token.
+    Slack returns a JSON body even on auth failure — we branch
+    on the ``ok`` boolean."""
+    import httpx as _httpx
+
+    token = str(payload.get("bot_token", "") or "").strip()
+    if not token:
+        return {"result": "auth_failure", "detail": "missing bot_token"}
+    headers = {"authorization": f"Bearer {token}"}
+    try:
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://slack.com/api/auth.test", headers=headers
+            )
+    except BaseException as exc:
+        return {"result": _classify_validation_exception(exc)}
+    try:
+        body = resp.json()
+    except ValueError:
+        return {"result": "network_failure", "detail": "non-JSON slack response"}
+    if bool(body.get("ok")):
+        return {"result": "success", "team": str(body.get("team", ""))[:64]}
+    return {"result": "auth_failure", "detail": str(body.get("error", ""))[:64]}
+
+
+@app.post("/api/wizard/trigger-tutorial-probe")
+async def trigger_tutorial_probe(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Emit a synthetic ``probe.wake_requested`` audit row so the
+    operator can watch the 4-stream join (wake → reasoning →
+    investigation_completed → slack_dm_log) light up in the
+    Probe Investigations panel. NOT a real probe — no real
+    health check fires; the row is the wizard's "first
+    investigation tutorial" signal."""
+    from kora_cli.audit.jsonl_sink import emit_audit
+
+    tenant_id = str(payload.get("tenant_id", "default") or "default")[:48]
+    probe_name = "wizard_tutorial"
+    category = "first_run"
+    try:
+        emit_audit(
+            "probe.wake_requested",
+            {
+                "probe": probe_name,
+                "category": category,
+                "severity": "info",
+                "title": "First-run tutorial probe",
+                "detail": (
+                    "Synthetic wake fired by the first-run wizard "
+                    f"(tenant_id={tenant_id}). Investigate the "
+                    "Probe Investigations panel to see the 4-stream "
+                    "join in action."
+                ),
+                "envelope_enabled": False,
+                "envelope_fix_name": "(none)",
+                "wizard_tutorial": True,
+            },
+            caller_session_id=f"probe:{probe_name}:{category}",
+            source="cron",
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"emit_audit failed: {type(exc).__name__}",
+        }
+    return {
+        "ok": True,
+        "probe": probe_name,
+        "category": category,
+        "caller_session_id": f"probe:{probe_name}:{category}",
+    }
+
+
+@app.post("/api/wizard/complete")
+async def complete_wizard(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Write the marker file with the operator's tenant_id +
+    completion status. Marker presence + ``completed=true`` flips
+    the cockpit's default landing back from Wizard to Dashboard.
+
+    Accepts either an explicit completion (``{tenant_id, last_step,
+    completed: true}``) or a skip (``{skipped: true}``). Skip still
+    writes the marker so the wizard doesn't re-prompt on every
+    cockpit launch — operator can re-run via /wizard URL directly.
+    """
+    import json as _json
+
+    marker = _wizard_config_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    skipped = bool(payload.get("skipped", False))
+    completed = bool(payload.get("completed", False)) or not skipped
+    tenant_id_raw = payload.get("tenant_id", "default")
+    tenant_id = (
+        str(tenant_id_raw)[:48]
+        if isinstance(tenant_id_raw, str)
+        else "default"
+    ) or "default"
+    last_step_raw = payload.get("last_step", "promotion_intro")
+    last_step = (
+        last_step_raw
+        if isinstance(last_step_raw, str) and last_step_raw in _WIZARD_STEPS
+        else "promotion_intro"
+    )
+    body = {
+        "completed": completed,
+        "skipped": skipped,
+        "tenant_id": tenant_id,
+        "last_step": last_step,
+        "written_at": (
+            _probe_xref_datetime.now(_probe_xref_timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        ),
+    }
+    try:
+        with marker.open("w", encoding="utf-8") as f:
+            _json.dump(body, f, indent=2)
+    except OSError as exc:
+        return {"ok": False, "error": f"marker write failed: {exc!r}"[:120]}
+    return {"ok": True, "marker_path": str(marker), **body}
+
+
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
 

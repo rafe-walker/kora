@@ -124,6 +124,7 @@ import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
 import DashboardPage from "@/pages/DashboardPage";
+import WizardPage from "@/pages/WizardPage";
 import RunbooksPage from "@/pages/RunbooksPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
@@ -136,6 +137,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import { usePromotionPendingCount } from "@/hooks/usePromotionPendingCount";
 import { useSidebarGroupCollapse } from "@/hooks/useSidebarGroupCollapse";
+import { useWizardFirstRunDetection } from "@/hooks/useWizardFirstRunDetection";
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
@@ -163,6 +165,11 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": DashboardPage,
+  // KR-FE-OPERATOR-FIRST-RUN-WIZARD — operator can re-open the
+  // wizard at /wizard even after dismissing it. The first-run
+  // detection swaps "/" to render WizardPage when the install is
+  // fresh + the marker is absent (see useWizardFirstRunDetection).
+  "/wizard": WizardPage,
   "/sessions": SessionsPage,
   "/operational-state": OperationalStatePage,
   "/health-rollup": HealthRollupPage,
@@ -631,12 +638,20 @@ export default function App() {
     [manifests],
   );
 
+  // KR-FE-OPERATOR-FIRST-RUN-WIZARD — first-run detection. When the
+  // BE reports the install is fresh (no audit rows + no marker file),
+  // swap the "/" route to render the wizard instead of the Dashboard.
+  // Once operator finishes (or dismisses) the wizard, the marker
+  // file flips this back to Dashboard at next boot.
+  const firstRun = useWizardFirstRunDetection();
+
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
+      ...(firstRun.showWizard ? { "/": WizardPage } : {}),
       ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
     }),
-    [embeddedChat],
+    [embeddedChat, firstRun.showWizard],
   );
 
   const builtinNav = useMemo(() => {
@@ -826,6 +841,20 @@ export default function App() {
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
+              {/* KR-FE-SIDEBAR-MOBILE-COLLAPSE-UX — "Collapse all"
+                  / "Expand all" shortcut. Tappable on mobile +
+                  desktop; reads current state to flip its label. */}
+              <SidebarCollapseAllButton
+                groups={sidebarGroups}
+                allCollapsed={groupCollapse.allCollapsed(sidebarGroups)}
+                onCollapseAll={() =>
+                  groupCollapse.setAll(sidebarGroups, "collapsed")
+                }
+                onExpandAll={() =>
+                  groupCollapse.setAll(sidebarGroups, "expanded")
+                }
+              />
+
               {/* KR-FE-COCKPIT-NAV-RESTRUCTURE — grouped sidebar.
                   Each group has a collapsible header with optional
                   badge-sum. Plugin items keep their own bottom
@@ -967,6 +996,19 @@ export default function App() {
   );
 }
 
+// KR-FE-SIDEBAR-MOBILE-COLLAPSE-UX — badge overflow convention.
+// A group or single nav item showing "127" overflows the chip on
+// the narrow mobile sidebar. Cap displayed value at 99 + suffix
+// the canonical "99+" so operators see "many pending" without
+// the layout breaking. Numeric value used by aria-label stays
+// exact (screen readers get the truth; the visual is the
+// abbreviation).
+function formatBadgeCount(n: number): string {
+  if (n <= 0) return "0";
+  if (n > 99) return "99+";
+  return String(n);
+}
+
 function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon, badgeCount } = item;
 
@@ -1008,7 +1050,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
                   "bg-yellow-500/30 text-yellow-200",
                 )}
               >
-                {badgeCount}
+                {formatBadgeCount(badgeCount)}
               </span>
             )}
 
@@ -1086,7 +1128,7 @@ function SidebarNavGroup({
             aria-label={`${badgeSum} total awaiting review across ${groupLabel}`}
             className="rounded-sm px-1.5 py-0.5 font-mono text-[0.55rem] tracking-normal bg-yellow-500/30 text-yellow-200"
           >
-            {badgeSum}
+            {formatBadgeCount(badgeSum)}
           </span>
         )}
       </button>
@@ -1105,6 +1147,49 @@ function SidebarNavGroup({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+// KR-FE-SIDEBAR-MOBILE-COLLAPSE-UX — operator triage shortcut.
+// Reads current state to flip its label: when every visible group
+// is collapsed, the button offers "Expand all"; otherwise
+// "Collapse all". Behavior is purely visual — does NOT affect
+// each group's defaultCollapsed declaration, only the operator's
+// override map in localStorage.
+function SidebarCollapseAllButton({
+  groups,
+  allCollapsed,
+  onCollapseAll,
+  onExpandAll,
+}: {
+  groups: readonly RenderedNavGroup[];
+  allCollapsed: boolean;
+  onCollapseAll: () => void;
+  onExpandAll: () => void;
+}) {
+  if (groups.length === 0) return null;
+  const label = allCollapsed ? "Expand all" : "Collapse all";
+  return (
+    <div className="px-4 pt-2 pb-1 flex items-center justify-end">
+      <button
+        type="button"
+        onClick={allCollapsed ? onExpandAll : onCollapseAll}
+        aria-label={`${label} sidebar groups`}
+        className={cn(
+          "inline-flex items-center gap-1.5 px-2 py-1 rounded",
+          "font-mondwest text-[0.55rem] tracking-[0.15em] uppercase",
+          "opacity-50 hover:opacity-100 transition-opacity",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+        )}
+      >
+        {allCollapsed ? (
+          <ChevronDown className="h-3 w-3" />
+        ) : (
+          <ChevronRight className="h-3 w-3" />
+        )}
+        <span>{label}</span>
+      </button>
     </div>
   );
 }

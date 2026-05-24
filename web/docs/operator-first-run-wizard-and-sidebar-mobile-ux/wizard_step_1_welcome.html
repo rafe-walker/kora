@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Wizard step 1 — Welcome</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .progress { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px; }
+  .step-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 4px; font-size: 10px; font-family: ui-monospace, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+  .step-chip.active { background: var(--primary); color: #001; }
+  .step-chip.pending { background: rgba(143,143,143,0.15); color: var(--muted); }
+  .step-chip.reached { background: rgba(250,204,21,0.3); color: #fde68a; }
+  .arrow { color: var(--muted); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .field-input { padding: 6px 8px; font-size: 13px; border: 1px solid var(--border); background: var(--card); color: var(--fg); border-radius: 4px; font-family: ui-monospace, monospace; }
+  .help { font-size: 10px; color: var(--muted); font-style: italic; }
+</style></head><body>
+
+  <h1>First-run setup — Step 1 of 5: Welcome</h1>
+  <p class="preamble">
+    Wizard appears when cockpit detects a fresh install (no marker file +
+    empty audit log). Operator can dismiss with "Skip — I'll configure
+    manually"; otherwise step-by-step gets to a working Kora in ~15 min.
+  </p>
+
+  <div class="page-header">
+    <div class="title">✨ First-run setup</div>
+    <button class="btn">Skip — I'll configure manually</button>
+  </div>
+
+  <!-- Progress bar -->
+  <div class="card progress">
+    <span class="step-chip active">✨ 1/5 Welcome</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">🔑 2/5 Anthropic key</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">☁ 3/5 IsoKron + Slack</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">✨ 4/5 Tutorial probe</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">💡 5/5 Promotion loops</span>
+  </div>
+
+  <!-- Step body -->
+  <div class="card">
+    <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500;">
+      ✨ Step 1 of 5 — Welcome
+    </div>
+    <p style="margin-top: 10px; font-size: 13px;">
+      Welcome to Kora — your operator-side AI teammate. This wizard walks
+      you through the four credentials Kora needs (Anthropic + IsoKron +
+      Slack) and fires a tutorial probe so you can see the full audit-trail
+      loop end-to-end.
+    </p>
+    <p class="italic-muted" style="font-size: 11px;">
+      Estimated time: <strong>~15 minutes</strong>. You'll need your
+      Anthropic API key, an IsoKron substrate URL + service-role key, and a
+      Slack bot token + your operator user_id.
+    </p>
+    <div class="field" style="margin-top: 12px;">
+      <span class="field-label">Tenant ID</span>
+      <input class="field-input" value="stormhaven_enterprises" />
+      <span class="help">
+        Partitions cost ladder + audit log + plugin namespace. Use 'default' if
+        you're the only operator. Multi-tenant Kora deployments give each tenant
+        its own id (org / username).
+      </span>
+    </div>
+    <button class="btn primary" style="margin-top: 12px;">Next: Anthropic key</button>
+  </div>
+
+  <div class="card" style="border-color: rgba(96,165,250,0.3); background: rgba(96,165,250,0.05); font-size: 11px;">
+    <div style="display: flex; gap: 8px; align-items: flex-start;">
+      <span>?</span>
+      <div>
+        <strong>Privacy</strong> — none of these credentials leave your browser
+        except inside the matching validate-* request to the upstream service
+        you're checking against. Wizard NEVER writes to your shell <code>.env</code>;
+        you download + copy it yourself.
+      </div>
+    </div>
+  </div>
+
+</body></html>
