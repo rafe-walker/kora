@@ -133,9 +133,11 @@ def _parse_email_session_id(session_id: Optional[str]) -> Optional[str]:
     """Parse audit ``caller_session_id`` as ``"email:{message_id}"``.
 
     Mirrors the engine derivation at
-    ``kora_cli/reasoning/anthropic_engine.py:869-871`` and the
-    handler's :func:`_email_caller_session_id` at
-    ``kora_cli/handlers/email_inbound_handler.py:271-277``.
+    ``kora_cli/reasoning/anthropic_engine.py:869-871``. (The
+    handler-side derivation that originally produced this shape
+    was removed with the inbound auto-reply branch per Lock R3-8
+    (a) / KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL; the engine remains
+    the authority for any future email-driven reasoning path.)
 
     Returns the inbound message_id, or ``None`` for:
       * non-email-shaped session ids (slack_dm / mcp / unknown)

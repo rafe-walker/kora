@@ -275,11 +275,14 @@ class PurelymailClient:
 
         Reasoning-meta kwargs (KR-EMAIL-OUTBOUND-REASONING-META):
         threaded through to the outbound JSONL log when the send
-        is driven by a reasoning-engine reply (handler's
-        AUTO_REPLY path). Symmetric with slack_dm's PR #131
-        pattern — fields appear in JSONL only when non-None so
-        the panel-xref bucket can correlate audit entries by
-        ``caller_session_id``.
+        is driven by a reasoning-engine reply. Symmetric with
+        slack_dm's PR #131 pattern — fields appear in JSONL only
+        when non-None so the panel-xref bucket can correlate
+        audit entries by ``caller_session_id``. The email-inbound
+        auto-reply path that originally drove this was removed
+        per Lock R3-8 (a) (KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL);
+        the kwargs remain wired for non-inbound outbound paths
+        and a future KR-INTENT-EMAIL-TO-SEA-TICKET consumer.
         """
         # 1. Client-side validation (BEFORE any SMTP traffic).
         self._validate_allowed_from(from_addr)
