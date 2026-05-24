@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Probe Investigations V2</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Probe Investigations V2 (KR-FE-PROBE-INVESTIGATION-VIEWER-V2 → Deliverable B)</h1>
+  <p class="preamble">
+    V2 closes the 3 V1NotesBanner gaps from PR #171. PR #184 added
+    probe.investigation_completed (cost/model/dm_status/autofix) + wired
+    slack_dm_log.jsonl for probe DMs. This panel now joins all 4 streams
+    on caller_session_id and shows: cost USD, model used, DM status chip
+    filter, "🔧 fix attempted" badge when autofix rode along.
+  </p>
+
+  <div class="page-header">
+    <div class="title">Probe Investigations</div>
+    <div class="row">
+      <div style="display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+        <button class="btn" style="background: var(--primary); color: #001; border-radius: 0; border: none;">24h</button>
+        <button class="btn" style="border-radius: 0; border: none;">7d</button>
+        <button class="btn" style="border-radius: 0; border: none;">All</button>
+      </div>
+      <button class="btn outlined">↻ Refresh</button>
+    </div>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Heartbeat-probe wake events joined with reasoning calls, per-investigation completion summary (cost / model / DM status / autofix),
+    and operator's DM confirmation. All 4 streams joined on
+    <code>caller_session_id="probe:{probe}:{category}"</code>.
+  </p>
+
+  <!-- Summary header -->
+  <div class="card">
+    <div class="row">
+      <span>📊 <strong>4</strong> <span class="italic-muted">wakes</span></span>
+      <span class="italic-muted">·</span>
+      <span style="color: var(--warning);">✗ <strong>1</strong> <span class="italic-muted">active</span></span>
+      <span style="color: var(--success);">✓ <strong>3</strong> <span class="italic-muted">resolved</span></span>
+      <span class="italic-muted" style="margin-left: auto; font-size: 11px;">generated 2026-05-23 14:22:01</span>
+    </div>
+    <div style="margin-top: 10px;" class="row">
+      <span class="italic-muted" style="font-size: 11px;">Probe health right now:</span>
+      <span class="badge success">vercel: healthy</span>
+      <span class="badge success">sentry: healthy</span>
+      <span class="badge warning">doppler: degraded</span>
+      <span class="badge success">supabase: healthy</span>
+      <span class="badge success">fly: healthy</span>
+    </div>
+  </div>
+
+  <!-- dm_status filter chips -->
+  <div class="card">
+    <div class="row" style="font-size: 11px;">
+      <span class="italic-muted">All DM statuses</span>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✉⊗ Failed <strong style="margin-left: 4px;">1</strong></button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">⚠ Engine unavail. + failed <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--success); border-color: rgba(74,222,128,0.4);">💬 Sent <strong style="margin-left: 4px;">3</strong></button>
+      <button class="btn outlined" style="color: var(--warning); border-color: rgba(250,204,21,0.4);">⊙ Engine unavail. (fallback) <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined">? Unknown <strong style="margin-left: 4px;">0</strong></button>
+    </div>
+  </div>
+
+  <!-- Investigation card 1 — full V2 fields populated -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row" style="align-items: flex-start;">
+      <span style="color: var(--warning); font-size: 16px; margin-top: 2px;">⚠</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">doppler</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-23 14:18:42</span>
+          <span class="badge warning">warning</span>
+          <span class="badge">secrets_drift</span>
+          <span class="badge warning" style="font-size: 10px;">🔧 fix attempted</span>
+          <span style="margin-left: auto;"></span>
+          <span class="badge warning">✗ Active</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 13px; font-weight: 500;">3 secrets drift detected in staging config</div>
+        <div style="margin-top: 4px; font-size: 11px; color: var(--muted);">Diff: KORA_AUTH_TOKEN, FLY_API_TOKEN, SUPABASE_SERVICE_KEY differ from baseline.</div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <!-- Investigation completed summary band -->
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge warning">🔧 fix attempted</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$ $0.0042</span>
+          <span class="italic-muted">· 3.8s</span>
+          <span class="italic-muted">· DM 4m ago</span>
+        </div>
+        <div style="margin-top: 6px; color: var(--fg);">
+          Secrets drift in staging — three keys differ from baseline. Attempted automatic
+          re-sync; the FLY_API_TOKEN sync succeeded but the other two require a manual
+          Doppler resync (token doesn't grant write to baseline scope).
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: probe:doppler:secrets_drift</span>
+        ·
+        envelope: doppler_resync (ENABLED)
+        ·
+        current probe health: <code>degraded</code>
+      </div>
+      <div style="margin-top: 8px;" class="row">
+        <span style="font-size: 11px; color: var(--muted);">🔧 4 tool calls · 3.8s total</span>
+      </div>
+      <div class="row" style="margin-top: 4px;">
+        <span class="badge">doppler_diff <span style="color: var(--muted); margin-left: 4px;">120ms</span></span>
+        <span class="badge">cost_check <span style="color: var(--muted); margin-left: 4px;">15ms</span></span>
+        <span class="badge">doppler_resync <span style="color: var(--muted); margin-left: 4px;">2.1s</span></span>
+        <span class="badge warning">slack_dm <span style="color: var(--muted); margin-left: 4px;">1.5s</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Investigation card 2 — DM failed -->
+  <div class="card" style="border-color: rgba(248,113,113,0.4);">
+    <div class="row" style="align-items: flex-start;">
+      <span style="color: var(--destructive); font-size: 16px; margin-top: 2px;">⊗</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">supabase</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-23 13:45:11</span>
+          <span class="badge destructive">critical</span>
+          <span class="badge">latency_spike</span>
+          <span style="margin-left: auto;"></span>
+          <span class="badge success">✓ Resolved</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 13px; font-weight: 500;">Read latency P95 spiked to 850ms</div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge destructive">⊗ DM failed</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$ $0.0021</span>
+          <span class="italic-muted">· 2.1s</span>
+        </div>
+        <div style="margin-top: 6px; color: var(--fg);">
+          P95 spike correlated with a 4-minute Supabase connection-pool refresh. Auto-recovered.
+          No action required; pool sizing already at recommended.
+        </div>
+        <div style="margin-top: 4px; color: var(--destructive); font-family: ui-monospace, monospace; font-size: 10px;">
+          reasoning_error: slack_dm post_dm raised TimeoutError: Slack POST exceeded 5s
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>

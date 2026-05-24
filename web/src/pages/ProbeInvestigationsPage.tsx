@@ -1,33 +1,38 @@
-// Probe investigations xref viewer — KR-FE-PROBE-INVESTIGATION-VIEWER.
+// Probe investigations xref viewer — KR-FE-PROBE-INVESTIGATION-VIEWER-V2.
 //
-// Operator-facing lens onto the "Kora actually acts" loop wired by
-// PR #163 (wake emitter) + PR #166 (wake consumer). Joins three
-// data sources per wake event:
+// V1 (PR #171) joined three sources per wake and surfaced a
+// V1NotesBanner listing the three deferred fields. PR #184 closed
+// those gaps BE-side (probe.investigation_completed seam +
+// slack_dm_log.jsonl path for probe DMs). This V2 panel:
 //
-//   1. probe.wake_requested audit row (the wake itself)
-//   2. reasoning.tool_called audit rows keyed by caller_session_id
-//      == "probe:{probe}:{category}" (the investigation tool calls)
-//   3. snapshot.service_health[probe] (current health → resolution)
+//   * Removes V1NotesBanner — the deferred fields are now live.
+//   * Joins all 4 streams (KR-FE-PROBE-INVESTIGATION-VIEWER-V2
+//     extended BE):
 //
-// Empty state matters here: PR #166 just merged today (2026-05-23)
-// so most installations will see zero wakes for a while. The empty
-// state is a calm reassuring message, not an empty card list — see
-// the spec's empty-state criterion.
+//       1. probe.wake_requested        (the wake itself)
+//       2. reasoning.tool_called       (tool trace inside)
+//       3. probe.investigation_completed (cost/model/dm_status/autofix)
+//       4. slack_dm_log.jsonl           (DM-sent confirmation timestamp)
 //
-// v1 deferred (surfaced to operator via the v1_notes banner so the
-// roadmap is visible, not hidden):
-//   * per-call cost_usd / model_used aren't durably recorded
-//   * probe DMs bypass slack_dm_log.jsonl — no DM-sent confirmation
-//   * resolution simplified to "currently healthy" (not time-windowed)
+//   * Adds a dm_status chip-filter so the operator can triage
+//     "failed_send" + "engine_unavailable_failed_send" first.
+//   * Per-row card: cost (USD), model_used, DM-sent timestamp,
+//     "🔧 fix attempted" badge when autofix_attempted=true.
+//
+// Drift-guard: PROBE_DM_STATUS_VALUES (api.ts) pinned against
+// _DM_STATUS_VALUES in web_server.py.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  DollarSign,
   HelpCircle,
   Info,
+  MailX,
+  MessageSquare,
   RefreshCw,
   Sparkles,
   Wrench,
@@ -40,11 +45,21 @@ import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
 import { api } from "@/lib/api";
-import type {
-  ProbeInvestigationItem,
-  ProbeInvestigationsResponse,
-  ProbeResolutionStatus,
+import {
+  PROBE_DM_STATUS_VALUES,
+  type ProbeDmStatus,
+  type ProbeInvestigationItem,
+  type ProbeInvestigationsResponse,
+  type ProbeResolutionStatus,
 } from "@/lib/api";
+import {
+  FilterChips,
+  formatDurationMs,
+  formatRelative,
+  formatTimestamp,
+  type CategoryDef,
+  type FilterValue,
+} from "@/components/AuditPanelKit";
 
 type Window = "24h" | "7d" | "all";
 
@@ -64,6 +79,43 @@ type BadgeTone =
   | "secondary"
   | "success"
   | "warning";
+
+// KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — dm_status chip categories.
+// Ordering puts attention-demanding states first (failed_send +
+// engine_unavailable_failed_send) per CC#1's #184 recommendation:
+// the operator should see failures at the front of the filter row.
+const DM_STATUS_CATEGORIES: readonly CategoryDef<ProbeDmStatus>[] = [
+  {
+    key: "failed_send",
+    label: "Failed",
+    tone: "destructive",
+    Icon: MailX,
+  },
+  {
+    key: "engine_unavailable_failed_send",
+    label: "Engine unavail. + failed",
+    tone: "destructive",
+    Icon: AlertTriangle,
+  },
+  {
+    key: "sent",
+    label: "Sent",
+    tone: "success",
+    Icon: MessageSquare,
+  },
+  {
+    key: "engine_unavailable_fallback",
+    label: "Engine unavail. (fallback)",
+    tone: "warning",
+    Icon: AlertCircle,
+  },
+  {
+    key: "unknown",
+    label: "Unknown",
+    tone: "outline",
+    Icon: HelpCircle,
+  },
+];
 
 // Map severity to icon + tone. Keys mirror the wake_consumer's
 // _SEVERITY_EMOJI (kora_cli/probes/wake_consumer.py:430-434) so the
@@ -92,6 +144,20 @@ function resolutionVisual(status: ProbeResolutionStatus): {
   return { Icon: HelpCircle, tone: "outline", label: "Unknown" };
 }
 
+function dmStatusVisual(status: ProbeDmStatus | "unknown"): {
+  tone: BadgeTone;
+  label: string;
+} {
+  if (status === "sent") return { tone: "success", label: "DM sent" };
+  if (status === "failed_send")
+    return { tone: "destructive", label: "DM failed" };
+  if (status === "engine_unavailable_fallback")
+    return { tone: "warning", label: "Engine unavail. → fallback DM" };
+  if (status === "engine_unavailable_failed_send")
+    return { tone: "destructive", label: "Engine unavail. + DM failed" };
+  return { tone: "outline", label: "DM unknown" };
+}
+
 function toneCardBorderClass(tone: BadgeTone): string {
   if (tone === "destructive") return "border-destructive/40";
   if (tone === "warning") return "border-yellow-500/40";
@@ -99,19 +165,11 @@ function toneCardBorderClass(tone: BadgeTone): string {
   return "";
 }
 
-function formatTimestamp(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function formatDurationMs(ms: number): string {
-  if (ms < 1000) return `${ms} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
-  return `${(ms / 60_000).toFixed(1)} min`;
+function formatCostUSD(usd: number | null): string {
+  if (usd === null) return "—";
+  if (usd < 0.0001) return "<$0.0001";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
 }
 
 function InvestigationDetails({
@@ -123,7 +181,7 @@ function InvestigationDetails({
     return (
       <div className="text-xs italic text-muted-foreground">
         No reasoning calls recorded for this wake. Either the consumer
-        hasn't picked it up yet, or the engine returned
+        hasn&apos;t picked it up yet, or the engine returned
         engine_unavailable / cost_ladder_halted before invoking any
         tools.
       </div>
@@ -176,9 +234,74 @@ function InvestigationDetails({
   );
 }
 
+// KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — investigation_completed
+// summary band. Renders the per-investigation cost/model/dm/autofix
+// fields the V1 banner used to apologize for missing. Only renders
+// when the join populated investigation_completed for this wake;
+// older wakes (pre-#184) silently get nothing here.
+function InvestigationCompletedSummary({
+  item,
+}: {
+  item: ProbeInvestigationItem;
+}) {
+  const ic = item.investigation_completed;
+  if (ic === null) {
+    return null;
+  }
+  const dm = dmStatusVisual(ic.dm_status);
+  return (
+    <div className="rounded border border-border bg-muted/20 p-2 space-y-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={dm.tone}>{dm.label}</Badge>
+        {ic.autofix_attempted && (
+          <Badge tone="warning" title="A probe_autofix attempt was made during this investigation">
+            <Wrench className="h-3 w-3 mr-1 inline" />
+            🔧 fix attempted
+          </Badge>
+        )}
+        {ic.model_used && (
+          <Badge tone="outline" className="font-mono">
+            {ic.model_used}
+          </Badge>
+        )}
+        {ic.total_cost_usd !== null && (
+          <span className="inline-flex items-center gap-1 text-muted-foreground">
+            <DollarSign className="h-3 w-3" />
+            {formatCostUSD(ic.total_cost_usd)}
+          </span>
+        )}
+        {ic.investigation_duration_ms !== null && (
+          <span className="text-muted-foreground">
+            · {formatDurationMs(ic.investigation_duration_ms)}
+          </span>
+        )}
+        {item.dm_entry && item.dm_entry.sent_at && (
+          <span
+            className="text-muted-foreground"
+            title={formatTimestamp(item.dm_entry.sent_at)}
+          >
+            · DM {formatRelative(item.dm_entry.sent_at)}
+          </span>
+        )}
+      </div>
+      {ic.summary_text && (
+        <div className="text-xs text-foreground/90 whitespace-pre-wrap">
+          {ic.summary_text}
+        </div>
+      )}
+      {ic.reasoning_error && (
+        <div className="text-xs text-destructive font-mono">
+          reasoning_error: {ic.reasoning_error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InvestigationCard({ item }: { item: ProbeInvestigationItem }) {
   const sev = severityVisual(item.severity);
   const res = resolutionVisual(item.resolution_status);
+  const autofix = item.investigation_completed?.autofix_attempted === true;
 
   return (
     <Card className={toneCardBorderClass(sev.tone)}>
@@ -203,6 +326,12 @@ function InvestigationCard({ item }: { item: ProbeInvestigationItem }) {
               </span>
               <Badge tone={sev.tone}>{sev.label}</Badge>
               <Badge tone="outline">{item.issue_category}</Badge>
+              {autofix && (
+                <Badge tone="warning" className="text-[10px]">
+                  <Wrench className="h-3 w-3 mr-1 inline" />
+                  🔧 fix attempted
+                </Badge>
+              )}
               <span className="ml-auto" />
               <Badge tone={res.tone}>
                 <res.Icon className="h-3 w-3 mr-1 inline" />
@@ -221,6 +350,7 @@ function InvestigationCard({ item }: { item: ProbeInvestigationItem }) {
         </div>
 
         <div className="ml-8 space-y-2">
+          <InvestigationCompletedSummary item={item} />
           <div className="text-xs text-muted-foreground">
             <span className="font-mono">
               caller_session_id: {item.caller_session_id}
@@ -245,7 +375,15 @@ function InvestigationCard({ item }: { item: ProbeInvestigationItem }) {
   );
 }
 
-function EmptyState({ window }: { window: Window }) {
+function EmptyState({
+  window,
+  filterApplied,
+  onReset,
+}: {
+  window: Window;
+  filterApplied: boolean;
+  onReset: () => void;
+}) {
   // The point of this view is to surface attention events. Zero
   // events == nothing demanding operator attention == healthy.
   // Don't render a sad "no data" — render reassurance.
@@ -255,6 +393,22 @@ function EmptyState({ window }: { window: Window }) {
       : window === "7d"
         ? "in the last 7 days"
         : "in the last 24 hours";
+  if (filterApplied) {
+    return (
+      <Card className="border-border bg-muted/10">
+        <CardContent className="p-6 flex flex-col items-center text-center gap-2 text-sm text-muted-foreground">
+          <Info className="h-5 w-5" />
+          No wakes match the current DM-status filter {windowLabel}.{" "}
+          <button
+            className="text-primary hover:underline"
+            onClick={onReset}
+          >
+            Clear filter
+          </button>
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <Card className="border-green-500/30 bg-green-500/5">
       <CardContent className="p-8 flex flex-col items-center text-center gap-3">
@@ -327,35 +481,13 @@ function SummaryHeader({ data }: { data: ProbeInvestigationsResponse }) {
   );
 }
 
-function V1NotesBanner({
-  notes,
-}: {
-  notes: ProbeInvestigationsResponse["v1_notes"];
-}) {
-  return (
-    <Card className="border-blue-500/30 bg-blue-500/5">
-      <CardContent className="p-3">
-        <div className="flex items-start gap-2 text-xs">
-          <Info className="h-4 w-4 text-blue-500 flex-shrink-0 mt-0.5" />
-          <div className="space-y-1 text-muted-foreground">
-            <div>
-              <span className="font-medium text-foreground">v1 scope:</span>{" "}
-              this panel joins audit rows + snapshot health. Per-call cost
-              and DM-sent confirmation aren't yet recorded —{" "}
-              <span className="italic">{notes.per_call_cost_usd}</span>;{" "}
-              <span className="italic">{notes.dm_sent_confirmation}</span>.
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 export default function ProbeInvestigationsPage() {
   usePanelView("ProbeInvestigationsPage");
 
   const [window, setWindow] = useState<Window>("24h");
+  const [dmStatusFilter, setDmStatusFilter] = useState<
+    FilterValue<ProbeDmStatus>
+  >("all");
   const [data, setData] = useState<ProbeInvestigationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -376,6 +508,21 @@ export default function ProbeInvestigationsPage() {
   useEffect(() => {
     void load(window);
   }, [load, window]);
+
+  // Drift-guard grep — pins the constant import so the
+  // test_probe_dm_status_drift_guard test catches a rename on
+  // either side.
+  void PROBE_DM_STATUS_VALUES;
+
+  const filteredItems = useMemo(() => {
+    if (data === null) return [];
+    if (dmStatusFilter === "all") return data.items;
+    return data.items.filter((it) => {
+      const ic = it.investigation_completed;
+      if (ic === null) return false;
+      return ic.dm_status === dmStatusFilter;
+    });
+  }, [data, dmStatusFilter]);
 
   return (
     <div className="space-y-4 p-4 max-w-6xl">
@@ -414,8 +561,9 @@ export default function ProbeInvestigationsPage() {
 
       <p className="text-sm text-muted-foreground">
         Heartbeat-probe wake events joined with the reasoning calls Kora
-        made to investigate them and current probe health for resolution
-        status. Joined on{" "}
+        made to investigate, the per-investigation completion summary
+        (cost / model / DM status / autofix), and the operator&apos;s DM
+        confirmation. All streams joined on{" "}
         <span className="font-mono">caller_session_id="probe:{"{probe}"}:{"{category}"}"</span>{" "}
         (set by{" "}
         <span className="font-mono">_derive_caller_session_id</span> in
@@ -443,12 +591,26 @@ export default function ProbeInvestigationsPage() {
       {data && (
         <>
           <SummaryHeader data={data} />
-          <V1NotesBanner notes={data.v1_notes} />
-          {data.items.length === 0 ? (
-            <EmptyState window={window} />
+          <Card>
+            <CardContent className="p-3">
+              <FilterChips
+                categories={DM_STATUS_CATEGORIES}
+                counts={data.by_dm_status_24h}
+                current={dmStatusFilter}
+                onChange={setDmStatusFilter}
+                allLabel="All DM statuses"
+              />
+            </CardContent>
+          </Card>
+          {filteredItems.length === 0 ? (
+            <EmptyState
+              window={window}
+              filterApplied={dmStatusFilter !== "all"}
+              onReset={() => setDmStatusFilter("all")}
+            />
           ) : (
             <div className="space-y-3">
-              {data.items.map((item) => (
+              {filteredItems.map((item) => (
                 <InvestigationCard
                   key={item.wake_event_id}
                   item={item}

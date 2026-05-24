@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Promotion Review · Phrasebook</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Promotion Review · Phrasebook (PR #186 → Deliverable A)</h1>
+  <p class="preamble">
+    Operator-approval UX for Kora-generated phrasebook proposals. The
+    promotion loop synthesizes a regex + reply_template from clusters of
+    operator DMs; the operator reads each proposal here, optionally edits
+    the regex/template, and approves (writes to override phrasebook) or
+    rejects (records rationale). Sidebar PendingBadge counts proposals
+    awaiting review.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">💡 Promotion Review · Phrasebook</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Kora's proposed phrasebook entries — clusters of operator questions that look answerable from the current
+    snapshot. Approve moves the entry into the operator-override phrasebook (the $0 reply path); reject records
+    the rationale for the audit trail. Edit-before-approve lets you tighten the regex or reply before committing.
+  </p>
+
+  <!-- Summary band + filter chips -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span style="color: var(--warning);">✨ <strong>3 pending</strong></span>
+      <span class="italic-muted">·</span>
+      <span class="italic-muted">12 approved this cycle</span>
+      <span class="italic-muted">·</span>
+      <span class="italic-muted">2 rejected</span>
+    </div>
+    <div class="sparkline-row" style="margin-top: 12px;">
+      <button class="btn outlined" style="border-color: var(--warning); color: var(--warning); background: rgba(250,204,21,0.1);">✨ Pending <strong style="margin-left: 4px;">3</strong></button>
+      <button class="btn outlined">✓ Approved <strong style="margin-left: 4px;">12</strong></button>
+      <button class="btn outlined">✗ Rejected <strong style="margin-left: 4px;">2</strong></button>
+      <button class="btn outlined">⚠ Expired <strong style="margin-left: 4px;">0</strong></button>
+      <span class="italic-muted" style="font-size: 10px;">All</span>
+    </div>
+  </div>
+
+  <!-- Proposal 1 -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.94 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 6</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 2h ago</span>
+      <span class="badge secondary">✨ Kora wrote this</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">cost_query</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">(?i)(burn|budget|used)</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">reply template</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-top: 2px;">Burn is ${'{snapshot.cost.today_usd}'} today; ${'{snapshot.cost.percent_of_budget}'}% of budget used.</div>
+    </div>
+    <div style="margin-top: 10px; font-size: 11px; color: var(--muted);">
+      <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;">sample questions</div>
+      <ul style="margin: 4px 0 0 16px; padding: 0;">
+        <li style="font-style: italic;">"what's my burn?"</li>
+        <li style="font-style: italic;">"burn?"</li>
+        <li style="font-style: italic;">"how much have I used today?"</li>
+      </ul>
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined">✏️ Edit before approving</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- Proposal 2 -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.88 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 5</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 4h ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">health_query</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">(?i)(status|healthy|broken|down)</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">reply template</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-top: 2px;">All probes healthy. Last check: ${'{snapshot.service_health.last_checked}'}.</div>
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined">✏️ Edit before approving</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- Proposal 3 — in edit mode -->
+  <div class="card" style="border-color: rgba(96,165,250,0.6);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.86 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 5</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 6h ago</span>
+      <span class="badge secondary">✨ Kora wrote this</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">Category</div>
+      <input value="capacity_query" style="width: 100%; padding: 4px 6px; font-size: 12px; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; margin-top: 2px;" />
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">Pattern (Python regex, case-insensitive)</div>
+      <input value="(?i)(capacity|saturation|load)" style="width: 100%; padding: 4px 6px; font-size: 12px; font-family: ui-monospace, monospace; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; margin-top: 2px;" />
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">Reply template</div>
+      <textarea style="width: 100%; min-height: 64px; padding: 4px 6px; font-size: 12px; font-family: ui-monospace, monospace; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; margin-top: 2px;">Current load: ${'{snapshot.capacity.load_percent}'}%, saturation: ${'{snapshot.capacity.saturation_state}'}.</textarea>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">Review notes (optional)</div>
+      <input value="Tightened pattern to exclude 'capacity planning' meeting prompts" style="width: 100%; padding: 4px 6px; font-size: 12px; background: var(--card); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; margin-top: 2px;" />
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">📤 Submit + approve</button>
+      <button class="btn outlined">✕ Cancel</button>
+    </div>
+  </div>
+
+</body></html>

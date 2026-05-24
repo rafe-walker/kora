@@ -440,13 +440,21 @@ async def test_per_category_summaries_dont_leak_arbitrary_fields(env):
 def test_action_categories_drift_guard():
     """action_category values must match between BE projection
     allow-list and FE constant. (No emitter constants here — the
-    categories are cross-seam FE-defined.)"""
+    categories are cross-seam FE-defined.)
+
+    KR-FE-KORA-ACTIONS-EXTENDED-SEAMS extension: + promotion_proposed
+    / promotion_approved / promotion_rejected for the PR #186
+    promotion-loop audit rows.
+    """
     expected = {
         "email_sent",
         "sea_ticket_created",
         "autofix_attempted",
         "investigation_completed",
         "phrasebook_proposal_approved",
+        "promotion_proposed",
+        "promotion_approved",
+        "promotion_rejected",
         "other",
     }
 
@@ -471,15 +479,24 @@ def test_action_categories_drift_guard():
 
 
 def test_seam_literal_includes_all_source_seams():
-    """The 4 source seams the panel reads from must all be in the
+    """The source seams the panel reads from must all be in the
     SeamName Literal (otherwise read_audit_entries silently returns
-    [] + the panel mysteriously shows empty for that category)."""
+    [] + the panel mysteriously shows empty for that category).
+
+    KR-FE-KORA-ACTIONS-EXTENDED-SEAMS extension: +
+    probe.investigation_completed (PR #184) and the 3 promotion-loop
+    seams (PR #186).
+    """
     sink_src = _JSONL_SINK.read_text()
     for seam in (
         "tool.email_to_operator_sent",
         "intent.email_to_sea_ticket",
         "tool.probe_autofix_attempted",
         "phrasebook.updated",
+        "probe.investigation_completed",
+        "promotion.proposed",
+        "promotion.approved",
+        "promotion.rejected",
     ):
         assert f'"{seam}"' in sink_src, (
             f"SeamName missing '{seam}' — KoraActionsPage will "

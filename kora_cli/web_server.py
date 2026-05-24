@@ -7373,13 +7373,22 @@ async def list_recent_probe_autofix(limit: int = 100) -> Dict[str, Any]:
 # audit-details dicts pass through to the response.
 
 
+# KR-FE-KORA-ACTIONS-EXTENDED-SEAMS — promotion-loop categories
+# added below: ``promotion_proposed`` reads ``promotion.proposed``;
+# ``promotion_approved`` / ``promotion_rejected`` read the
+# operator-driven approve/reject endpoint emissions from PR #186.
+# All three link through to /promotions/phrasebook with a focus=
+# query so the row deep-links to its proposal.
 _KORA_ACTION_CATEGORIES = (
     "email_sent",
     "sea_ticket_created",
     "autofix_attempted",
     "investigation_completed",
     "phrasebook_proposal_approved",
-    "other",  # forward-compat catch-all for future seams
+    "promotion_proposed",
+    "promotion_approved",
+    "promotion_rejected",
+    "other",
 )
 
 
@@ -7476,14 +7485,77 @@ def _kora_action_summary_investigation_completed(
     d: Dict[str, Any],
 ) -> Dict[str, Any]:
     probe = str(d.get("probe", ""))[:48]
+    autofix_attempted = bool(d.get("autofix_attempted", False))
     summary = "Probe investigation completed"
     if probe:
         summary += f" · {probe}"
+    if autofix_attempted:
+        summary += " · 🔧 fix attempted"
     return {
         "summary": summary,
         "status": "completed",
         "deep_link": "/probe-investigations",
     }
+
+
+def _kora_action_summary_promotion_proposed(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Promotion.proposed → "💡 proposal awaiting review · <category>
+    · cluster N · conf X.XX". Deep-link surfaces the proposal in
+    the PromotionReviewPage via a focus= query."""
+    pid = str(d.get("proposal_id", ""))[:80]
+    category = str(d.get("proposed_category", ""))[:48]
+    cluster = d.get("cluster_size")
+    confidence = d.get("confidence")
+    parts = ["💡 proposal awaiting review"]
+    if category:
+        parts.append(category)
+    if isinstance(cluster, (int, float)):
+        parts.append(f"cluster {int(cluster)}")
+    if isinstance(confidence, (int, float)):
+        parts.append(f"conf {float(confidence):.2f}")
+    summary = " · ".join(parts)
+    out: Dict[str, Any] = {"summary": summary, "status": "pending"}
+    if pid:
+        out["deep_link"] = f"/promotions/phrasebook?focus={pid}"
+    else:
+        out["deep_link"] = "/promotions/phrasebook"
+    return out
+
+
+def _kora_action_summary_promotion_approved(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    pid = str(d.get("proposal_id", ""))[:80]
+    category = str(d.get("proposed_category", ""))[:48]
+    parts = ["Promotion approved"]
+    if category:
+        parts.append(category)
+    summary = " · ".join(parts)
+    out: Dict[str, Any] = {"summary": summary, "status": "approved"}
+    if pid:
+        out["deep_link"] = f"/promotions/phrasebook?focus={pid}"
+    else:
+        out["deep_link"] = "/promotions/phrasebook"
+    return out
+
+
+def _kora_action_summary_promotion_rejected(
+    d: Dict[str, Any],
+) -> Dict[str, Any]:
+    pid = str(d.get("proposal_id", ""))[:80]
+    category = str(d.get("proposed_category", ""))[:48]
+    parts = ["Promotion rejected"]
+    if category:
+        parts.append(category)
+    summary = " · ".join(parts)
+    out: Dict[str, Any] = {"summary": summary, "status": "rejected"}
+    if pid:
+        out["deep_link"] = f"/promotions/phrasebook?focus={pid}"
+    else:
+        out["deep_link"] = "/promotions/phrasebook"
+    return out
 
 
 @app.get("/api/kora-actions/recent")
@@ -7514,15 +7586,36 @@ async def list_recent_kora_actions(
     intent_rows = read_audit_entries(seam="intent.email_to_sea_ticket")
     autofix_rows = read_audit_entries(seam="tool.probe_autofix_attempted")
     phrasebook_rows = read_audit_entries(seam="phrasebook.updated")
-    # Forward-compat: probe.investigation_completed isn't in the
-    # SeamName Literal yet (lands with PR #406). read_audit_entries
-    # silently returns [] when no entries match — safe to call.
+    # probe.investigation_completed (PR #184). Already wired into
+    # SeamName by #184; the try/except is defensive against older
+    # readers that might predate the literal.
     try:
         investigation_rows = read_audit_entries(
             seam="probe.investigation_completed"
         )
     except Exception:
         investigation_rows = []
+    # KR-FE-KORA-ACTIONS-EXTENDED-SEAMS — promotion-loop audit rows
+    # from PR #186 (proposed + approved + rejected). Each row deep-
+    # links to the PromotionReviewPage with focus=<proposal_id>.
+    try:
+        promotion_proposed_rows = read_audit_entries(
+            seam="promotion.proposed"
+        )
+    except Exception:
+        promotion_proposed_rows = []
+    try:
+        promotion_approved_rows = read_audit_entries(
+            seam="promotion.approved"
+        )
+    except Exception:
+        promotion_approved_rows = []
+    try:
+        promotion_rejected_rows = read_audit_entries(
+            seam="promotion.rejected"
+        )
+    except Exception:
+        promotion_rejected_rows = []
 
     items: List[Dict[str, Any]] = []
     lineno = 0
@@ -7598,6 +7691,45 @@ async def list_recent_kora_actions(
                 "id": f"action-investigation-{lineno}",
                 "emitted_at": e.emitted_at,
                 "action_category": "investigation_completed",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in promotion_proposed_rows:
+        lineno += 1
+        s = _kora_action_summary_promotion_proposed(e.details)
+        items.append(
+            {
+                "id": f"action-promotion-proposed-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "promotion_proposed",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in promotion_approved_rows:
+        lineno += 1
+        s = _kora_action_summary_promotion_approved(e.details)
+        items.append(
+            {
+                "id": f"action-promotion-approved-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "promotion_approved",
+                "caller_session_id": e.caller_session_id or "",
+                **s,
+            }
+        )
+
+    for e in promotion_rejected_rows:
+        lineno += 1
+        s = _kora_action_summary_promotion_rejected(e.details)
+        items.append(
+            {
+                "id": f"action-promotion-rejected-{lineno}",
+                "emitted_at": e.emitted_at,
+                "action_category": "promotion_rejected",
                 "caller_session_id": e.caller_session_id or "",
                 **s,
             }
@@ -7740,6 +7872,123 @@ def _resolution_status_from_health(current_health: str) -> str:
     return "unknown"
 
 
+# KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — dm_status allowlist mirrored
+# from wake_consumer._send_dm_via_handler_path (PR #184). Paired with
+# the FE PROBE_DM_STATUS_VALUES constant. Drift-guard pinned.
+_DM_STATUS_VALUES: Tuple[str, ...] = (
+    "sent",
+    "failed_send",
+    "engine_unavailable_fallback",
+    "engine_unavailable_failed_send",
+)
+
+
+def _project_investigation_completed(entry: "AuditEntry") -> Dict[str, Any]:
+    """Project a probe.investigation_completed audit row to FE shape.
+    Whitelist: only the fields the V2 panel renders + the dm_status
+    chip-filter source. Long-text fields are truncated defensively."""
+    d = entry.details
+    dm_status_raw = str(d.get("dm_status", "")) or "unknown"
+    dm_status = dm_status_raw if dm_status_raw in _DM_STATUS_VALUES else "unknown"
+    cost_raw = d.get("total_cost_usd")
+    cost_val: Optional[float]
+    if isinstance(cost_raw, (int, float)):
+        cost_val = float(cost_raw)
+    else:
+        cost_val = None
+    dur_raw = d.get("investigation_duration_ms")
+    dur_val: Optional[int]
+    if isinstance(dur_raw, (int, float)):
+        dur_val = int(dur_raw)
+    else:
+        dur_val = None
+    model_raw = d.get("model_used")
+    model_val = str(model_raw) if isinstance(model_raw, str) else None
+    summary_raw = str(d.get("investigation_summary_text", "") or "")
+    # Cap so a runaway model output can't bloat the JSON payload;
+    # operator can read the full text in the slack DM if needed.
+    summary = summary_raw[:600]
+    err_raw = d.get("reasoning_error")
+    err_val = str(err_raw)[:200] if isinstance(err_raw, str) else None
+    return {
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "summary_text": summary,
+        "model_used": model_val,
+        "total_cost_usd": cost_val,
+        "investigation_duration_ms": dur_val,
+        "dm_status": dm_status,
+        "autofix_attempted": bool(d.get("autofix_attempted", False)),
+        "reasoning_error": err_val,
+    }
+
+
+def _project_probe_dm_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a slack_dm_log.jsonl outbound row (raw entry — NOT an
+    AuditEntry) to the FE's per-investigation dm_entry shape.
+
+    No raw text + no Slack tokens in the projection (the wider
+    slack_dm endpoint enforces the same; this is the only field a
+    probe-investigation viewer needs to confirm "DM sent at <ts>").
+    """
+    ts = str(entry.get("sent_at", "") or "")
+    send_status_raw = str(entry.get("send_status", "") or "")
+    failure_reason_raw = entry.get("failure_reason")
+    failure_reason = (
+        str(failure_reason_raw)[:120]
+        if isinstance(failure_reason_raw, str)
+        else None
+    )
+    ts_raw = entry.get("slack_message_ts")
+    slack_ts = str(ts_raw) if isinstance(ts_raw, str) else None
+    return {
+        "sent_at": ts,
+        "send_status": send_status_raw,
+        "channel_id": str(entry.get("channel_id", "") or ""),
+        "slack_message_ts": slack_ts,
+        "failure_reason": failure_reason,
+    }
+
+
+def _read_probe_dm_log_entries() -> List[Dict[str, Any]]:
+    """Read slack_dm_log.jsonl outbound entries that carry a
+    caller_session_id matching the probe:{probe}:{category} shape.
+
+    Returns one dict per entry. Failures (missing file, malformed
+    line) reduce to an empty list — the V2 viewer simply doesn't
+    surface dm_entry for items without a join.
+    """
+    import json as _json
+
+    log_path = get_kora_home() / _SLACK_DM_LOG_FILENAME
+    out: List[Dict[str, Any]] = []
+    if not log_path.is_file():
+        return out
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                sid = entry.get("caller_session_id")
+                if not isinstance(sid, str):
+                    continue
+                if not _PROBE_CALLER_SESSION_RE.match(sid):
+                    continue
+                out.append(entry)
+    except OSError as exc:
+        logger.warning(
+            "[kora.probe_investigations] slack_dm_log read failed: %r",
+            exc,
+        )
+    return out
+
+
 @app.get("/api/probe-investigations")
 async def get_probe_investigations(
     window: str = "24h",
@@ -7747,11 +7996,20 @@ async def get_probe_investigations(
 ) -> Dict[str, Any]:
     """Probe wake → investigation xref panel feed.
 
-    Joins three sources per wake event:
-      * probe.wake_requested audit rows
-      * reasoning.tool_called audit rows (caller_session_id ==
-        "probe:{probe}:{category}" — pinned by drift-guard test)
-      * snapshot.service_health[probe] (current health → resolution)
+    Joins (KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — all 4 streams):
+      * probe.wake_requested audit rows (the wake itself)
+      * reasoning.tool_called audit rows by caller_session_id
+        (the per-tool reasoning trace inside the investigation)
+      * probe.investigation_completed audit rows (PR #184 — the
+        per-investigation summary: cost/model/dm_status/autofix)
+      * slack_dm_log.jsonl outbound entries (PR #184 — DM-sent
+        confirmation timestamp)
+      * snapshot.service_health[probe] (current health →
+        resolution status)
+
+    All non-snapshot streams are joined on
+    ``caller_session_id == "probe:{probe}:{category}"`` (drift-guard
+    pinned by test_caller_session_id_matches_reasoning_engine).
 
     Args:
       window: ``24h`` | ``7d`` | ``all``. Bounds wake events read.
@@ -7759,11 +8017,6 @@ async def get_probe_investigations(
         growth). 1-200; default 50.
 
     Returns: summary counts + per-event items ordered newest-first.
-
-    v1 deferred: per-call cost / model_used / DM-sent confirmation
-    aren't durably recorded in current substrate (see PR
-    description). The response omits these fields rather than
-    fabricating zeros.
     """
     from kora_cli.audit.jsonl_reader import read_audit_entries
     from kora_cli.snapshot import read_snapshot
@@ -7787,6 +8040,15 @@ async def get_probe_investigations(
     reasoning_rows = read_audit_entries(
         seam="reasoning.tool_called", since=since
     )
+    # KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — probe.investigation_completed
+    # (PR #184). Best-effort: a daemon predating #184 won't have any
+    # of these rows yet — joins simply return None for older wakes.
+    try:
+        investigation_completed_rows = read_audit_entries(
+            seam="probe.investigation_completed", since=since
+        )
+    except Exception:
+        investigation_completed_rows = []
     snap = read_snapshot() or {}
     service_health = (
         (snap.get("service_health") or {})
@@ -7800,6 +8062,33 @@ async def get_probe_investigations(
         if not _PROBE_CALLER_SESSION_RE.match(sid):
             continue
         tool_calls_by_session.setdefault(sid, []).append(entry)
+
+    # Bucket investigation_completed by session id. Multiple rows
+    # per session would only happen on re-runs (debounce window) —
+    # pick newest by emitted_at so the panel reflects current state.
+    completed_by_session: Dict[str, "AuditEntry"] = {}
+    for entry in investigation_completed_rows:
+        sid = entry.caller_session_id or ""
+        if not _PROBE_CALLER_SESSION_RE.match(sid):
+            continue
+        prior = completed_by_session.get(sid)
+        if prior is None or entry.emitted_at > prior.emitted_at:
+            completed_by_session[sid] = entry
+
+    # Bucket slack_dm_log entries by session id (newest first by
+    # sent_at). The wake_consumer writes exactly one DM per
+    # investigation — debounced re-runs would only add additional
+    # entries, in which case "newest" reflects the freshest send.
+    dm_entries_by_session: Dict[str, Dict[str, Any]] = {}
+    for raw_dm in _read_probe_dm_log_entries():
+        sid = str(raw_dm.get("caller_session_id", ""))
+        if not sid:
+            continue
+        prior = dm_entries_by_session.get(sid)
+        if prior is None or str(raw_dm.get("sent_at", "")) > str(
+            prior.get("sent_at", "")
+        ):
+            dm_entries_by_session[sid] = raw_dm
 
     items: list = []
     for entry in wake_rows[:capped_limit]:
@@ -7846,6 +8135,22 @@ async def get_probe_investigations(
         else:
             investigation = None
 
+        completed_entry = completed_by_session.get(session_id)
+        investigation_completed = (
+            _project_investigation_completed(completed_entry)
+            if completed_entry is not None
+            and completed_entry.emitted_at >= entry.emitted_at
+            else None
+        )
+
+        dm_raw = dm_entries_by_session.get(session_id)
+        dm_entry = (
+            _project_probe_dm_entry(dm_raw)
+            if dm_raw is not None
+            and str(dm_raw.get("sent_at", "")) >= wake_iso
+            else None
+        )
+
         current_health = str(service_health.get(probe, "unknown"))
         items.append({
             "wake_event_id": f"{wake_iso}:{probe}:{category}",
@@ -7859,6 +8164,8 @@ async def get_probe_investigations(
             "envelope_fix_name": str(d.get("envelope_fix_name") or "(none)"),
             "caller_session_id": session_id,
             "investigation": investigation,
+            "investigation_completed": investigation_completed,
+            "dm_entry": dm_entry,
             "current_probe_health": current_health,
             "resolution_status": _resolution_status_from_health(current_health),
         })
@@ -7869,6 +8176,27 @@ async def get_probe_investigations(
         1 for it in items if it["resolution_status"] == "resolved"
     )
     unknown_count = total_count - active_count - resolved_count
+
+    # 24h by-dm-status aggregation. Used by the FE V2 panel's
+    # chip-filter counts. Items without an investigation_completed
+    # join are NOT counted toward any dm_status bucket.
+    by_dm_status_24h: Dict[str, int] = {v: 0 for v in _DM_STATUS_VALUES}
+    cutoff_24h = now - _probe_xref_timedelta(hours=24)
+    for it in items:
+        ic = it.get("investigation_completed")
+        if not isinstance(ic, dict):
+            continue
+        try:
+            ic_dt = _probe_xref_datetime.fromisoformat(
+                str(ic.get("emitted_at", "")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if ic_dt < cutoff_24h:
+            continue
+        status = str(ic.get("dm_status", ""))
+        if status in by_dm_status_24h:
+            by_dm_status_24h[status] += 1
 
     return {
         "window": window,
@@ -7883,16 +8211,11 @@ async def get_probe_investigations(
             for name in ("vercel", "sentry", "doppler", "supabase", "fly")
         },
         "items": items,
-        "v1_notes": {
-            "per_call_cost_usd": (
-                "not durably recorded; see /api/cost_telemetry "
-                "route=probe_investigation for aggregate"
-            ),
-            "dm_sent_confirmation": (
-                "probe DMs bypass slack_dm_log.jsonl in v1; "
-                "follow-on KR-PROBE-DM-JSONL-WIRE"
-            ),
-        },
+        # Echoed canonical allowlist — single source of truth at
+        # the wire. Paired with the FE PROBE_DM_STATUS_VALUES
+        # constant + drift-guard test.
+        "dm_status_values": list(_DM_STATUS_VALUES),
+        "by_dm_status_24h": by_dm_status_24h,
     }
 
 

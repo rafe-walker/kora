@@ -34,6 +34,7 @@ import {
   HeartPulse,
   Inbox,
   KeyRound,
+  Lightbulb,
   Mail,
   LayoutDashboard,
   Menu,
@@ -105,6 +106,7 @@ import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
 import CostTelemetryPage from "@/pages/CostTelemetryPage";
 import PhrasebookPage from "@/pages/PhrasebookPage";
+import PromotionReviewPage from "@/pages/PromotionReviewPage";
 import ProbeInvestigationsPage from "@/pages/ProbeInvestigationsPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
@@ -126,6 +128,7 @@ import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
+import { usePromotionPendingCount } from "@/hooks/usePromotionPendingCount";
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
@@ -173,6 +176,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cost-state": CostStatePage,
   "/cost-telemetry": CostTelemetryPage,
   "/phrasebook": PhrasebookPage,
+  "/promotions/phrasebook": PromotionReviewPage,
   "/probe-investigations": ProbeInvestigationsPage,
   "/capabilities": CapabilitiesPage,
   "/charter": CharterPage,
@@ -371,6 +375,20 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "phrasebook",
     label: "Phrasebook",
     icon: BookOpen,
+  },
+  {
+    // KR-FE-PROMOTION-REVIEW-PANEL — operator-approval UX for the
+    // Kora-generated phrasebook promotion proposals (PR #186).
+    // Adjacent to /phrasebook in the sidebar — the operator-flow
+    // is "Phrasebook (current state) → Promotion Review (what
+    // Kora wants to ADD)." Lightbulb icon signals "Kora's idea
+    // waiting for your read." PendingBadge populates from
+    // /api/promotions/phrasebook/pending so the operator sees
+    // attention demand without entering the page.
+    path: "/promotions/phrasebook",
+    labelKey: "promotionReview",
+    label: "Promotion Review",
+    icon: Lightbulb,
   },
   {
     path: "/capabilities",
@@ -644,10 +662,25 @@ export default function App() {
     return showTokenAnalytics ? base : base.filter((n) => n.path !== "/analytics");
   }, [embeddedChat, showTokenAnalytics]);
 
-  const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
-  );
+  // KR-FE-PROMOTION-REVIEW-PANEL — pending-proposals count for the
+  // sidebar attention badge. Polls every 60s so the operator sees
+  // new proposals land without refreshing. Best-effort: a failed
+  // fetch silently leaves the badge hidden (null) rather than
+  // surfacing a transient network error in the nav.
+  const promotionPendingCount = usePromotionPendingCount();
+
+  const sidebarNav = useMemo(() => {
+    const partitioned = partitionSidebarNav(builtinNav, manifests);
+    if (promotionPendingCount === null) return partitioned;
+    return {
+      pluginItems: partitioned.pluginItems,
+      coreItems: partitioned.coreItems.map((item) =>
+        item.path === "/promotions/phrasebook"
+          ? { ...item, badgeCount: promotionPendingCount }
+          : item,
+      ),
+    };
+  }, [builtinNav, manifests, promotionPendingCount]);
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
@@ -930,7 +963,7 @@ export default function App() {
 }
 
 function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
-  const { path, label, labelKey, icon: Icon } = item;
+  const { path, label, labelKey, icon: Icon, badgeCount } = item;
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
@@ -960,6 +993,19 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
           <>
             <Icon className="h-3.5 w-3.5 shrink-0" />
             <span className="truncate">{navLabel}</span>
+
+            {typeof badgeCount === "number" && badgeCount > 0 && (
+              <span
+                aria-label={`${badgeCount} awaiting review`}
+                className={cn(
+                  "ml-auto flex-shrink-0 rounded-sm px-1.5 py-0.5",
+                  "font-mono text-[0.55rem] tracking-normal",
+                  "bg-yellow-500/30 text-yellow-200",
+                )}
+              >
+                {badgeCount}
+              </span>
+            )}
 
             <span
               aria-hidden
@@ -1096,6 +1142,11 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+  // KR-FE-PROMOTION-REVIEW-PANEL — optional attention-count chip
+  // rendered after the nav label. ``null`` skips the chip; ``0``
+  // still renders (operator can see "nothing pending" at a glance);
+  // numbers render in a yellow pill so the eye catches it.
+  badgeCount?: number | null;
 }
 
 interface SidebarNavLinkProps {

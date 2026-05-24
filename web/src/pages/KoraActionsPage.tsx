@@ -1,23 +1,26 @@
 // Apex "what did Kora do today" timeline —
-// KR-FE-KORA-ACTIONS-AGGREGATED-PANEL.
+// KR-FE-KORA-ACTIONS-AGGREGATED-PANEL (+ KR-FE-KORA-ACTIONS-EXTENDED-SEAMS).
 //
 // 4th consumer of AuditPanelKit. Single-page operator-trust view
 // that joins ALL mutating-action audit seams into one
-// chronological timeline. Categories cover the 5 spec-canonical
-// mutating actions Kora can take + an "other" forward-compat
-// catch-all:
+// chronological timeline. Categories cover the mutating actions
+// Kora can take + an "other" forward-compat catch-all:
 //
 //   * email_sent              ← tool.email_to_operator_sent (#179)
 //   * sea_ticket_created      ← intent.email_to_sea_ticket (#176, action=created only)
 //   * autofix_attempted       ← tool.probe_autofix_attempted (#182, status=attempted only)
-//   * investigation_completed ← probe.investigation_completed (pending #406)
+//   * investigation_completed ← probe.investigation_completed (#184 — productive now)
 //   * phrasebook_proposal_approved ← phrasebook.updated (#177, actor != operator)
+//   * promotion_proposed      ← promotion.proposed (#186 — Kora-generated phrasebook proposals)
+//   * promotion_approved      ← promotion.approved (#186 — operator approval flow)
+//   * promotion_rejected      ← promotion.rejected (#186 — operator rejection flow)
 //   * other (catch-all)
 //
 // Per-row: chronological card with action_category color-coded
 // chip + composed one-line summary + deep-link to the per-seam
 // panel for the full row detail. Empty state: "Kora has been
-// quiet today."
+// quiet today." Promotion-loop rows deep-link to PromotionReviewPage
+// via /promotions/phrasebook?focus=<proposal_id>.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
@@ -26,12 +29,15 @@ import {
   AlertCircle,
   AlertTriangle,
   BookOpen,
+  CheckCircle2,
   ExternalLink,
   Inbox,
+  Lightbulb,
   RefreshCw,
   Search,
   Send,
   Wrench,
+  XCircle,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -60,8 +66,9 @@ import {
 // Visual definition per action category. Icon choice mirrors the
 // per-seam panel's icon (Send for email, Inbox for intent,
 // Wrench for autofix, Search for investigation, BookOpen for
-// phrasebook) so operator's mental model is consistent across
-// panels.
+// phrasebook, Lightbulb for promotion-proposed —matches the
+// PromotionReviewPage page title icon) so operator's mental model
+// is consistent across panels.
 const KORA_ACTION_CATEGORIES_DEFS: readonly CategoryDef<KoraActionCategory>[] = [
   {
     key: "email_sent",
@@ -94,6 +101,24 @@ const KORA_ACTION_CATEGORIES_DEFS: readonly CategoryDef<KoraActionCategory>[] = 
     Icon: BookOpen,
   },
   {
+    key: "promotion_proposed",
+    label: "Promotion proposed",
+    tone: "warning",
+    Icon: Lightbulb,
+  },
+  {
+    key: "promotion_approved",
+    label: "Promotion approved",
+    tone: "success",
+    Icon: CheckCircle2,
+  },
+  {
+    key: "promotion_rejected",
+    label: "Promotion rejected",
+    tone: "destructive",
+    Icon: XCircle,
+  },
+  {
     key: "other",
     label: "Other",
     tone: "outline",
@@ -110,7 +135,10 @@ const KORA_ACTION_CATEGORIES_MAP: Record<
   autofix_attempted: KORA_ACTION_CATEGORIES_DEFS[2],
   investigation_completed: KORA_ACTION_CATEGORIES_DEFS[3],
   phrasebook_proposal_approved: KORA_ACTION_CATEGORIES_DEFS[4],
-  other: KORA_ACTION_CATEGORIES_DEFS[5],
+  promotion_proposed: KORA_ACTION_CATEGORIES_DEFS[5],
+  promotion_approved: KORA_ACTION_CATEGORIES_DEFS[6],
+  promotion_rejected: KORA_ACTION_CATEGORIES_DEFS[7],
+  other: KORA_ACTION_CATEGORIES_DEFS[8],
 };
 
 // ----- Per-row card -----
@@ -214,12 +242,16 @@ export default function KoraActionsPage() {
         joined across all the per-seam audit streams (
         <span className="font-mono">tool.email_to_operator_sent</span>,{" "}
         <span className="font-mono">intent.email_to_sea_ticket</span>,{" "}
-        <span className="font-mono">tool.probe_autofix_attempted</span>,
-        and the pending{" "}
-        <span className="font-mono">probe.investigation_completed</span> +
+        <span className="font-mono">tool.probe_autofix_attempted</span>,{" "}
+        <span className="font-mono">probe.investigation_completed</span>,{" "}
         kora-driven{" "}
-        <span className="font-mono">phrasebook.updated</span> seams). Each
-        row links to its per-seam detail panel.
+        <span className="font-mono">phrasebook.updated</span>, and the
+        promotion-loop seams{" "}
+        <span className="font-mono">promotion.proposed</span> /{" "}
+        <span className="font-mono">promotion.approved</span> /{" "}
+        <span className="font-mono">promotion.rejected</span>). Each row
+        links to its per-seam detail panel; promotion rows deep-link to
+        the Promotion Review surface with the focused proposal.
       </p>
 
       {loading && data === null && (

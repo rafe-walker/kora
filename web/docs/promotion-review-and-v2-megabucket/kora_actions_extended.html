@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Kora Actions — extended seams</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Kora Actions — extended seams (KR-FE-KORA-ACTIONS-EXTENDED-SEAMS → Deliverable C)</h1>
+  <p class="preamble">
+    Apex timeline now joins 8 mutating-action seams (+ "other" catch-all).
+    Added since #187: <code>probe.investigation_completed</code> (#184) +
+    promotion-loop trio <code>promotion.proposed</code> /
+    <code>.approved</code> / <code>.rejected</code> (#186). Promotion rows
+    deep-link to <code>/promotions/phrasebook?focus=&lt;id&gt;</code>.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">📊 What Kora Did</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Summary band -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span><strong>12</strong> <span class="italic-muted">actions · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">↗ <strong>4</strong> <span class="italic-muted">email sent</span></div>
+      <div class="summary-chip" style="color: var(--primary);">📥 <strong>2</strong> <span class="italic-muted">Sea_Ticket created</span></div>
+      <div class="summary-chip" style="color: var(--warning);">🔧 <strong>1</strong> <span class="italic-muted">autofix attempted</span></div>
+      <div class="summary-chip" style="color: var(--muted);">🔍 <strong>2</strong> <span class="italic-muted">investigation completed</span></div>
+      <div class="summary-chip" style="color: var(--warning);">💡 <strong>3</strong> <span class="italic-muted">promotion proposed</span></div>
+    </div>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36">
+        <rect x="0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="31.4" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="47.1" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="62.8" y="2" width="14.7" height="34" style="fill: var(--success);" />
+        <rect x="78.5" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="94.2" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="109.9" y="6" width="14.7" height="30" style="fill: var(--success);" />
+        <rect x="125.6" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="141.3" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="157" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="172.7" y="2" width="14.7" height="34" style="fill: var(--success);" />
+        <rect x="188.4" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="204.1" y="20" width="14.7" height="16" style="fill: var(--success);" />
+      </svg>
+      <span class="label">42 actions · 14d</span>
+    </div>
+  </div>
+
+  <!-- Filter chips -->
+  <div class="card">
+    <div class="row" style="font-size: 11px;">
+      <span class="italic-muted">All actions</span>
+      <button class="btn outlined" style="color: var(--success);">↗ Email sent <strong style="margin-left: 4px;">4</strong></button>
+      <button class="btn outlined" style="color: var(--primary);">📥 Sea_Ticket <strong style="margin-left: 4px;">2</strong></button>
+      <button class="btn outlined" style="color: var(--warning);">🔧 Autofix <strong style="margin-left: 4px;">1</strong></button>
+      <button class="btn outlined">🔍 Investigation <strong style="margin-left: 4px;">2</strong></button>
+      <button class="btn outlined">📖 Phrasebook <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--warning);">💡 Promotion proposed <strong style="margin-left: 4px;">3</strong></button>
+      <button class="btn outlined" style="color: var(--success);">✓ Promotion approved <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--destructive);">✗ Promotion rejected <strong style="margin-left: 4px;">0</strong></button>
+    </div>
+  </div>
+
+  <!-- Promotion proposed row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--warning); margin-top: 2px;">💡</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">2m ago</span>
+          <span class="badge warning">Promotion proposed</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">pending</span>
+          <span style="font-size: 13px;">💡 proposal awaiting review · cost_query · cluster 6 · conf 0.94</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Investigation completed row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--muted); margin-top: 2px;">🔍</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">4m ago</span>
+          <span class="badge">Investigation completed</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">completed</span>
+          <span style="font-size: 13px;">Probe investigation completed · doppler · 🔧 fix attempted</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Email sent row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--success); margin-top: 2px;">↗</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">12m ago</span>
+          <span class="badge success">Email sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">sent</span>
+          <span style="font-size: 13px;">Sent email to operator · 32-char subject · 412-char body</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Autofix attempted row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--warning); margin-top: 2px;">🔧</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">14m ago</span>
+          <span class="badge warning">Autofix attempted</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">attempted</span>
+          <span style="font-size: 13px;">doppler_resync on doppler/staging_baseline · stale→syncing</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Promotion approved row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--success); margin-top: 2px;">✓</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">2h ago</span>
+          <span class="badge success">Promotion approved</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">approved</span>
+          <span style="font-size: 13px;">Promotion approved · cost_query</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Promotion rejected row -->
+  <div class="card">
+    <div class="row">
+      <span style="color: var(--destructive); margin-top: 2px;">✗</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">3h ago</span>
+          <span class="badge destructive">Promotion rejected</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 9px;">rejected</span>
+          <span style="font-size: 13px;">Promotion rejected · capacity_query</span>
+          <span style="margin-left: auto;"></span>
+          <a class="badge" style="color: var(--primary); text-decoration: none;">↗ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>
