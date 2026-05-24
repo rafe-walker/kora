@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Outbound Email Log — empty filtered</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Outbound Email Log — empty filtered state</h1>
+  <p class="preamble">
+    Operator filtered to "SMTP-failure" but no failures have occurred in the window.
+    Calm message instead of empty cards. Switching to "All" is one click via the
+    inline link.
+  </p>
+
+  <div class="page-header">
+    <div class="title">Outbound Email Log</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Summary card still rendered -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span><strong>4</strong> <span class="italic-muted">composed · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">✓ <strong>3</strong> <span class="italic-muted">sent</span></div>
+      <div class="summary-chip" style="color: var(--warning);">⛔ <strong>1</strong> <span class="italic-muted">rejected</span></div>
+    </div>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36">
+        <rect x="0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="31.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="47.1" y="18" width="14.7" height="18" style="fill: var(--success);" />
+        <rect x="62.8" y="10" width="14.7" height="26" style="fill: var(--success);" />
+        <rect x="78.5" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="94.2" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="109.9" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="125.6" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="141.3" y="18" width="14.7" height="18" style="fill: var(--success);" />
+        <rect x="157.0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="172.7" y="24" width="14.7" height="12" style="fill: var(--success);" />
+        <rect x="188.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="204.1" y="14" width="14.7" height="22" style="fill: var(--success);" />
+      </svg>
+      <span class="label">23 sent · 14d</span>
+    </div>
+  </div>
+
+  <!-- Filter chips card — SMTP-failure is the active selection -->
+  <div class="card">
+    <div class="row">
+      <button class="btn outlined">All (4)</button>
+      <button class="btn outlined">✓ Sent (3)</button>
+      <button class="btn outlined">⛔ Rejected (1)</button>
+      <button class="btn primary">⚠ SMTP-failure (0)</button>
+    </div>
+  </div>
+
+  <!-- Empty state card -->
+  <div class="card success" style="padding: 40px 20px; text-align: center;">
+    <div style="font-size: 32px; color: var(--success); line-height: 1; margin-bottom: 12px;">✦</div>
+    <div style="font-size: 16px; font-weight: 500; margin-bottom: 10px;">
+      No "SMTP-failure" events match this filter in the current window
+    </div>
+    <div style="font-size: 13px; color: var(--muted); max-width: 480px; margin: 0 auto; line-height: 1.5;">
+      Try switching to a different filter, or click
+      <a href="#" style="color: var(--primary); text-decoration: underline;">All</a>
+      to see every event.
+    </div>
+  </div>
+
+</body></html>

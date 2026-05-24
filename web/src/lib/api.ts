@@ -185,6 +185,18 @@ export const api = {
       `/api/email-intent/recent${qs}`,
     );
   },
+  // KR-FE-OUTBOUND-EMAIL-LOG-PANEL — read the audit JSONL filtered
+  // to seam=tool.email_to_operator_sent. Symmetric to
+  // getEmailIntentEventsRecent (the inbound-direction panel).
+  // Endpoint pre-aggregates by-status counts + daily-sent
+  // sparkline points so the panel can render without re-computing
+  // client-side.
+  getOutboundEmailRecent: (limit?: number) => {
+    const qs = limit !== undefined ? `?limit=${limit}` : "";
+    return fetchJSON<OutboundEmailEventsResponse>(
+      `/api/outbound-email/recent${qs}`,
+    );
+  },
   // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
   // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
   getProbeInvestigations: (opts?: {
@@ -2103,6 +2115,68 @@ export interface EmailIntentEventsResponse {
   // list a SECOND time — single source of truth at the wire.
   // The drift-guard test pins both BE source + FE constant.
   action_values: string[];
+}
+
+// KR-FE-OUTBOUND-EMAIL-LOG-PANEL — symmetric to EmailIntent
+// types above (per the spec's "symmetric to PR #180" framing).
+// Surfaces tool.email_to_operator_sent audit rows (PR #179).
+//
+// PRIVACY discipline: subject + body text are NOT in the audit
+// payload (PR #179's hard-coded privacy posture — even subject
+// is recorded only as subject_chars/length). The FE therefore
+// renders sizes + status + a stable smtp_message_id or
+// rejection_reason for triage. Never reconstructs text content.
+export type OutboundEmailStatus =
+  | "sent"
+  | "rejected"
+  | "smtp_failure"
+  | "unknown";
+
+// KR-FE-OUTBOUND-EMAIL-LOG-PANEL — drift-guard pinned in the
+// Python test against the emit_audit STATUS_* literals at
+// kora_cli/tools/email_to_operator.py. Exported so the panel
+// can iterate filter chips in canonical order without re-typing.
+export const OUTBOUND_EMAIL_STATUS_VALUES: readonly OutboundEmailStatus[] = [
+  "sent",
+  "rejected",
+  "smtp_failure",
+];
+
+export interface OutboundEmailEvent {
+  id: string;
+  emitted_at: string;
+  status: OutboundEmailStatus;
+  // Privacy-preserved size indicators. ALWAYS present per
+  // tools/email_to_operator.py:365-369 (initialized at the top
+  // of every send path regardless of which branch terminates).
+  subject_chars: number;
+  body_chars: number;
+  attachment_count: number;
+  attachment_total_bytes: number;
+  caller_session_id: string;
+  // Per-status optional fields:
+  smtp_message_id?: string; // status="sent"
+  sent_at?: string; // status="sent"
+  rejection_reason?: string; // status="rejected"
+  rejection_detail?: string; // status="rejected" (JSON-serialized, ≤200 chars)
+  error?: string; // status="smtp_failure"
+  smtp_status?: string; // status="smtp_failure" (SendResult retry path)
+}
+
+export interface OutboundEmailDailyCount {
+  date: string; // YYYY-MM-DD UTC
+  count: number;
+}
+
+export interface OutboundEmailEventsResponse {
+  events: OutboundEmailEvent[];
+  generated_at: string;
+  total_recent_24h: number;
+  by_status_24h: Record<string, number>;
+  daily_sent_14d: OutboundEmailDailyCount[];
+  // Echoed from the BE — single source of truth at the wire,
+  // pinned by the 3-source drift-guard test.
+  status_values: string[];
 }
 
 // KR-FE-PROBE-INVESTIGATION-VIEWER — joined wake event + downstream

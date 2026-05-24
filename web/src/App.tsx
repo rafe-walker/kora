@@ -48,6 +48,7 @@ import {
   Radio,
   RotateCw,
   Scroll,
+  Send,
   Settings,
   Shield,
   ShieldAlert,
@@ -94,6 +95,7 @@ import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import SlackDMPanel from "@/pages/SlackDMPanel";
 import EmailPanel from "@/pages/EmailPanel";
 import EmailIntentLogPage from "@/pages/EmailIntentLogPage";
+import OutboundEmailLogPage from "@/pages/OutboundEmailLogPage";
 import ReasoningPanel from "@/pages/ReasoningPanel";
 import AlertsPanel from "@/pages/AlertsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
@@ -161,6 +163,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/slack-dm": SlackDMPanel,
   "/email": EmailPanel,
   "/email-intent-log": EmailIntentLogPage,
+  "/outbound-email-log": OutboundEmailLogPage,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -288,6 +291,17 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "emailIntentLog",
     label: "Email Intent Log",
     icon: Inbox,
+  },
+  {
+    // KR-FE-OUTBOUND-EMAIL-LOG-PANEL — symmetric to the inbound
+    // intent panel above; surfaces tool.email_to_operator_sent
+    // (PR #179) so operator sees what Kora composed and sent.
+    // Send icon completes the inbound (Inbox) / outbound (Send)
+    // pair adjacent in the sidebar.
+    path: "/outbound-email-log",
+    labelKey: "outboundEmailLog",
+    label: "Outbound Email Log",
+    icon: Send,
   },
   {
     path: "/mcp-clients",

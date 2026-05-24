@@ -6675,6 +6675,184 @@ async def list_recent_email_intent(limit: int = 100) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Outbound email audit lens (KR-FE-OUTBOUND-EMAIL-LOG-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Symmetric to /api/email-intent/recent (above). Surfaces the
+# tool.email_to_operator_sent audit seam (PR #179 — the
+# kora__send_email_to_operator reasoning-loop tool that lets Kora
+# email the operator). Completes the cockpit's email-surface
+# story: inbound (PR #176 + #180 viewer) + outbound (PR #179 +
+# this viewer) both visible.
+#
+# PRIVACY discipline carried forward from PR #179:
+#   * Body text NEVER appears in the audit row — only ``body_chars``
+#     (the length). Same for subject: only ``subject_chars`` is
+#     recorded, not the subject string. (Spec assumed subject was
+#     surfaced; reality is stricter — neither leaves the daemon
+#     process. This panel therefore shows sizes + status + a
+#     stable smtp_message_id or rejection_reason for triage.)
+#   * Recipient is PINNED to KORA_EMAIL_JOSHUA_ADDRESS at the tool
+#     level (caller can't override); never audited because there's
+#     no variation to record.
+#
+# SECURITY:
+#   * ``rejection_detail`` is a dict carrying per-reason
+#     diagnostic data (e.g. {hourly_cap: N} or {subject_chars: N}).
+#     Truncated via JSON-serialize-then-substring to 200 chars so
+#     a future writer adding a chatty detail field can't dump
+#     diagnostic state to a panel consumer.
+#   * ``error`` (smtp_failure branch) is the exception type name
+#     only — short by construction; bounded defensively at 200.
+#   * Unknown status values coerced to "unknown" (defensive
+#     against future writers; pinned by drift-guard test).
+
+
+_OUTBOUND_EMAIL_STATUS_VALUES = (
+    "sent",
+    "rejected",
+    "smtp_failure",
+)
+
+
+def _project_outbound_email_audit(entry: "AuditEntry", lineno: int) -> Dict[str, Any]:
+    """Project a tool.email_to_operator_sent audit row to the FE's
+    OutboundEmailEvent shape. Per-status field whitelist — NEVER
+    propagates the raw details dict so future-writer leaks
+    (operator PII / SMTP headers / etc) are contained.
+
+    Privacy: subject + body text are NOT in the audit row to begin
+    with (per PR #179) — only ``subject_chars`` + ``body_chars``
+    (numeric sizes). This projection surfaces those sizes
+    verbatim; never reconstructs / displays string content."""
+    d = entry.details
+    status_raw = str(d.get("status", "unknown"))
+    status = status_raw if status_raw in _OUTBOUND_EMAIL_STATUS_VALUES else "unknown"
+
+    out: Dict[str, Any] = {
+        "id": f"outbound-{lineno}",
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "status": status,
+        # Privacy-preserved size indicators (always present in the
+        # audit row — kora_cli/tools/email_to_operator.py:365-369).
+        "subject_chars": int(d.get("subject_chars", 0) or 0),
+        "body_chars": int(d.get("body_chars", 0) or 0),
+        "attachment_count": int(d.get("attachment_count", 0) or 0),
+        # attachment_total_bytes is only populated post-attachment-
+        # read (line 431). Rejected-pre-attachment-read rows omit
+        # it. Surface as 0 when absent so the FE renders a stable
+        # shape.
+        "attachment_total_bytes": int(d.get("attachment_total_bytes", 0) or 0),
+        # caller_session_id is the reasoning-engine session that
+        # invoked the tool — operator can correlate with the
+        # reasoning panel.
+        "caller_session_id": entry.caller_session_id or "",
+    }
+
+    if status == "sent":
+        # smtp_message_id is the SMTP server's stable identifier
+        # for the message — opaque to the operator but useful for
+        # triage ("did THIS one actually reach my inbox?").
+        smtp_id = d.get("smtp_message_id")
+        if smtp_id is not None:
+            out["smtp_message_id"] = str(smtp_id)[:200]
+        sent_at = d.get("sent_at")
+        if sent_at is not None:
+            out["sent_at"] = str(sent_at)[:60]
+    elif status == "rejected":
+        reason = d.get("rejection_reason")
+        if reason is not None:
+            out["rejection_reason"] = str(reason)[:120]
+        # rejection_detail is the per-reason diagnostic dict. JSON-
+        # serialize-truncate at 200 chars defensively.
+        detail = d.get("rejection_detail")
+        if detail is not None:
+            try:
+                detail_serialized = json.dumps(detail, default=str)
+            except Exception:
+                detail_serialized = str(detail)
+            out["rejection_detail"] = detail_serialized[:200]
+    elif status == "smtp_failure":
+        err = d.get("error")
+        if err is not None:
+            out["error"] = str(err)[:200]
+        smtp_status = d.get("smtp_status")
+        if smtp_status is not None:
+            out["smtp_status"] = str(smtp_status)[:120]
+
+    return out
+
+
+@app.get("/api/outbound-email/recent")
+async def list_recent_outbound_email(limit: int = 100) -> Dict[str, Any]:
+    """Return recent tool.email_to_operator_sent audit events.
+
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to seam=
+    tool.email_to_operator_sent (written by PR #179's tool
+    emitter), projects each row, returns newest-first with
+    24h-window count aggregation by status + 14-day daily-sent
+    sparkline points.
+
+    Query params:
+      limit — number of newest entries to return; default 100,
+              capped at 500 (mirrors /api/email-intent/recent).
+    """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(int(limit or 100), 500))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="tool.email_to_operator_sent")
+
+    in_24h = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    by_status_24h: Dict[str, int] = {
+        s: 0 for s in _OUTBOUND_EMAIL_STATUS_VALUES
+    }
+    by_status_24h["unknown"] = 0
+    for e in in_24h:
+        s = str(e.details.get("status", "unknown"))
+        if s not in by_status_24h:
+            s = "unknown"
+        by_status_24h[s] = by_status_24h.get(s, 0) + 1
+
+    # Daily-sent counts over the last 14 days. Same shape as
+    # email-intent's daily_created_14d so the FE sparkline
+    # component can be reused. Window: [today - 13d, today].
+    daily_sent: Dict[str, int] = {}
+    for d_offset in range(14):
+        bucket = (now - timedelta(days=13 - d_offset)).strftime("%Y-%m-%d")
+        daily_sent[bucket] = 0
+    cutoff_14d = now - timedelta(days=14)
+    for e in all_rows:
+        if e.emitted_at < cutoff_14d:
+            continue
+        if str(e.details.get("status", "")) != "sent":
+            continue
+        key = e.emitted_at.strftime("%Y-%m-%d")
+        if key in daily_sent:
+            daily_sent[key] += 1
+
+    projected = [
+        _project_outbound_email_audit(e, lineno=i + 1)
+        for i, e in enumerate(all_rows[:capped_limit])
+    ]
+
+    return {
+        "events": projected,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_24h),
+        "by_status_24h": by_status_24h,
+        "daily_sent_14d": [
+            {"date": k, "count": v}
+            for k, v in sorted(daily_sent.items())
+        ],
+        "status_values": list(_OUTBOUND_EMAIL_STATUS_VALUES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Probe investigations xref — KR-FE-PROBE-INVESTIGATION-VIEWER
 # ---------------------------------------------------------------------------
 #
