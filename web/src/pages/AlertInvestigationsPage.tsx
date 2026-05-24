@@ -39,6 +39,7 @@ import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
 import { useActiveTenant } from "@/hooks/useActiveTenant";
+import { ActiveTenantBadge } from "@/components/ActiveTenantBadge";
 import { api } from "@/lib/api";
 import {
   PROBE_DM_STATUS_VALUES,
@@ -397,10 +398,13 @@ export default function AlertInvestigationsPage() {
   return (
     <div className="space-y-4 p-4 max-w-6xl">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <H2 className="flex items-center gap-2">
-          <BellRing className="h-5 w-5" />
-          Alert Investigations
-        </H2>
+        <div className="flex items-center gap-2 flex-wrap">
+          <H2 className="flex items-center gap-2">
+            <BellRing className="h-5 w-5" />
+            Alert Investigations
+          </H2>
+          <ActiveTenantBadge />
+        </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-md border overflow-hidden">
             {(["24h", "7d", "all"] as Window[]).map((w) => (

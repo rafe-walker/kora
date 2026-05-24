@@ -166,3 +166,66 @@ def test_fe_useActiveTenant_pins_match_be_constants():
         "FE must forward the BE-pinned literal 'tenant_id' as the "
         "query-param name; got no occurrence in web/src/lib/api.ts"
     )
+
+
+def test_fe_aggregate_and_deeplink_pins():
+    """KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — extended
+    drift-guards covering the ``?tenant=all`` URL alias, the
+    ALL_TENANTS_SENTINEL internal pseudo-id, and the cross-
+    component event used by page-header badges to open the sidebar
+    TenantPicker. Renaming any of these without updating the
+    matching consumer silently breaks deep-link UX.
+    """
+    hook_path = (
+        Path(__file__).parent.parent
+        / "web"
+        / "src"
+        / "hooks"
+        / "useActiveTenant.ts"
+    )
+    hook_src = hook_path.read_text(encoding="utf-8")
+
+    # B.1 / B.4: the URL alias literal that resolves to the
+    # internal sentinel. Pin the operator-readable form ``"all"``
+    # so deep-links stay human-readable.
+    assert 'ALL_TENANTS_URL_ALIAS = "all"' in hook_src
+    # The internal sentinel stays at ``__all__`` so it can't
+    # collide with a real tenant_id named "all".
+    assert 'ALL_TENANTS_SENTINEL = "__all__"' in hook_src
+    # B.2: open-picker event name shared between badges + picker.
+    assert (
+        'OPEN_TENANT_PICKER_EVENT = "kora:open-tenant-picker"'
+        in hook_src
+    )
+
+    # B.2: the badge participates in the same constants — grep its
+    # exported sentinel-pin so a hook rename would surface here too.
+    badge_path = (
+        Path(__file__).parent.parent
+        / "web"
+        / "src"
+        / "components"
+        / "ActiveTenantBadge.tsx"
+    )
+    badge_src = badge_path.read_text(encoding="utf-8")
+    assert "ACTIVE_TENANT_BADGE_USES_SENTINEL = ALL_TENANTS_SENTINEL" in (
+        badge_src
+    )
+    # Badge imports the open-event constant — drift-guard ties
+    # badge → hook concretely.
+    assert "OPEN_TENANT_PICKER_EVENT" in badge_src or "requestOpenTenantPicker" in badge_src
+
+    # A.2: aggregate cost cards exist + read the v6 by-tenant block.
+    agg_path = (
+        Path(__file__).parent.parent
+        / "web"
+        / "src"
+        / "components"
+        / "AggregateCostCards.tsx"
+    )
+    agg_src = agg_path.read_text(encoding="utf-8")
+    assert "cost_ladder_by_tenant" in agg_src, (
+        "AggregateCostCards must read the snapshot v6 "
+        "cost_ladder_by_tenant block — sole canonical per-tenant "
+        "cost surface"
+    )

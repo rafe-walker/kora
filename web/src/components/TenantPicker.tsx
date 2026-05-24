@@ -18,12 +18,13 @@
 // useActiveTenant().isAllTenants to render aggregate vs single-
 // tenant views.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   ALL_TENANTS_SENTINEL,
   DEFAULT_TENANT_ID,
+  OPEN_TENANT_PICKER_EVENT,
   useActiveTenant,
 } from "@/hooks/useActiveTenant";
 
@@ -37,6 +38,15 @@ export function TenantPicker() {
     loadingTenants,
   } = useActiveTenant();
   const [open, setOpen] = useState(false);
+
+  // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — listen for
+  // open-requests from page-header tenant badges. Lets the badge
+  // open the picker without prop-drilling through Layout.
+  useEffect(() => {
+    const handler = () => setOpen(true);
+    window.addEventListener(OPEN_TENANT_PICKER_EVENT, handler);
+    return () => window.removeEventListener(OPEN_TENANT_PICKER_EVENT, handler);
+  }, []);
 
   const onPick = useCallback(
     (next: string) => {
