@@ -66,9 +66,27 @@ _JOSHUA_USER_ID = "U01JOSHUA"
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch):
+    from kora_cli.audit.jsonl_sink import (
+        BATCH_SIZE_ENV,
+        _reset_batching_for_tests,
+    )
+
     monkeypatch.setenv(JOSHUA_SLACK_USER_ID_ENV, _JOSHUA_USER_ID)
     monkeypatch.delenv(DEBOUNCE_SECONDS_ENV, raising=False)
     monkeypatch.delenv(BYPASS_CRITICAL_ENV, raising=False)
+    # KR-PROBE-DEBOUNCE — default-behavior tests in this file predate
+    # the consecutive-failure upgrade. Force required=1 here so
+    # single-tick scenarios still dispatch; dedicated consecutive-
+    # buffering tests set their own env explicitly.
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "1")
+    # KR-CHEAP-AUDIT-BATCHING — these tests read the audit JSONL
+    # immediately after the consumer emits + assume sync semantics.
+    # Force per-emit writes to keep that contract; dedicated
+    # batching tests live in tests/kora_cli/audit/test_jsonl_sink.py.
+    monkeypatch.setenv(BATCH_SIZE_ENV, "0")
+    _reset_batching_for_tests()
+    yield
+    _reset_batching_for_tests()
 
 
 def _make_event(
@@ -906,3 +924,100 @@ def test_compute_total_cost_usd_swallows_pricing_exception(monkeypatch):
         )
         is None
     )
+
+
+# ===========================================================================
+# KR-PROBE-DEBOUNCE — consecutive-failure buffering upgrade
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_consecutive_first_failure_buffered_not_dispatched(monkeypatch):
+    """With required=2, the first wake_requested event for a
+    (probe, category) pair is held in the buffer rather than
+    dispatched. Prevents single-tick flakes from waking Kora."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "2")
+    # Severity warning so the critical-bypass path doesn't apply.
+    consumer = _make_consumer(engine=_make_engine(), slack=_make_slack())
+    out = await consumer.consume_wake_event(
+        _make_event(severity="warning")
+    )
+    assert out.dispatched is False
+    assert out.buffered_skipped is True
+    assert out.buffered_consecutive_count == 1
+    assert consumer.consecutive_buffer_size == 1
+
+
+@pytest.mark.asyncio
+async def test_consecutive_second_failure_dispatches(monkeypatch):
+    """The second event within the window pushes the buffer to the
+    threshold → dispatch fires."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "2")
+    engine = _make_engine()
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+    out1 = await consumer.consume_wake_event(
+        _make_event(severity="warning")
+    )
+    assert out1.dispatched is False
+    out2 = await consumer.consume_wake_event(
+        _make_event(severity="warning")
+    )
+    assert out2.dispatched is True
+    assert out2.buffered_skipped is False
+    # Buffer cleared after dispatch (post-dispatch flat-window
+    # debounce takes over).
+    assert consumer.consecutive_buffer_size == 0
+
+
+@pytest.mark.asyncio
+async def test_consecutive_critical_bypass_dispatches_first(monkeypatch):
+    """Critical-severity wakes with the bypass env truthy skip the
+    consecutive-failure buffer + dispatch on first event."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "5")
+    monkeypatch.setenv(BYPASS_CRITICAL_ENV, "true")
+    consumer = _make_consumer(engine=_make_engine(), slack=_make_slack())
+    out = await consumer.consume_wake_event(
+        _make_event(severity="critical")
+    )
+    assert out.dispatched is True
+
+
+@pytest.mark.asyncio
+async def test_consecutive_different_pairs_independent(monkeypatch):
+    """Distinct (probe, category) pairs accumulate independently —
+    one buffered, the other unrelated."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "2")
+    consumer = _make_consumer(engine=_make_engine(), slack=_make_slack())
+    await consumer.consume_wake_event(
+        _make_event(probe="fly", category="machine_down", severity="warning")
+    )
+    out = await consumer.consume_wake_event(
+        _make_event(probe="vercel", category="deploy_fail", severity="warning")
+    )
+    assert out.dispatched is False
+    assert out.buffered_consecutive_count == 1
+    assert consumer.consecutive_buffer_size == 2
+
+
+@pytest.mark.asyncio
+async def test_consecutive_required_one_preserves_legacy_behavior(monkeypatch):
+    """required=1 disables buffering — single failure dispatches."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "1")
+    consumer = _make_consumer(engine=_make_engine(), slack=_make_slack())
+    out = await consumer.consume_wake_event(
+        _make_event(severity="warning")
+    )
+    assert out.dispatched is True
+
+
+@pytest.mark.asyncio
+async def test_consecutive_reset_debounce_state_clears_buffer(monkeypatch):
+    """``reset_debounce_state`` clears the consecutive buffer too —
+    listener shutdown restart should see a clean slate."""
+    monkeypatch.setenv("KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED", "2")
+    consumer = _make_consumer(engine=_make_engine(), slack=_make_slack())
+    await consumer.consume_wake_event(_make_event(severity="warning"))
+    assert consumer.consecutive_buffer_size == 1
+    consumer.reset_debounce_state()
+    assert consumer.consecutive_buffer_size == 0

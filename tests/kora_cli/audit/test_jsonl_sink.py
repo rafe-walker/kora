@@ -30,12 +30,28 @@ import pytest
 from pydantic import ValidationError
 
 from kora_cli.audit.jsonl_sink import (
-    LOG_PATH_ENV,
     AUDIT_LOG_FILENAME,
+    BATCH_SIZE_ENV,
+    FLUSH_INTERVAL_ENV,
+    LOG_PATH_ENV,
     AuditEntry,
+    _reset_batching_for_tests,
     _resolve_log_path,
     emit_audit,
+    flush_for_tests,
 )
+
+
+# KR-CHEAP-AUDIT-BATCHING — most legacy tests assume sync per-emit
+# write semantics (they emit then immediately read the file). Force
+# BATCH_SIZE=0 to preserve that for the legacy suite; the dedicated
+# batching-behavior tests below opt back into batching explicitly.
+@pytest.fixture(autouse=True)
+def _disable_batching_by_default(monkeypatch):
+    monkeypatch.setenv(BATCH_SIZE_ENV, "0")
+    _reset_batching_for_tests()
+    yield
+    _reset_batching_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -537,3 +553,165 @@ def test_dual_write_both_surfaces_fire(tmp_path, caplog, monkeypatch):
     [entry] = _read_jsonl_lines(path)
     assert entry["seam"] == "reasoning.tool_called"
     assert entry["details"]["tool_name"] == "kora__get_operational_state"
+
+
+# ===========================================================================
+# KR-CHEAP-AUDIT-BATCHING (R3-4 #9) — batched writer behavior
+# ===========================================================================
+
+
+@pytest.fixture
+def batching_enabled(monkeypatch):
+    """Opt into batching for the per-test scope. Tiny batch size (3)
+    so the size-triggered flush is easy to exercise; tiny interval
+    (0.1s) so the time-triggered flush completes within the test's
+    timeout window."""
+    monkeypatch.setenv(BATCH_SIZE_ENV, "3")
+    monkeypatch.setenv(FLUSH_INTERVAL_ENV, "0.1")
+    _reset_batching_for_tests()
+    yield
+    _reset_batching_for_tests()
+
+
+def test_batching_size_trigger_flushes_when_threshold_hit(
+    batching_enabled, tmp_path
+):
+    """Hitting BATCH_SIZE events flushes synchronously inside the
+    triggering emit_audit call — no need to wait for the interval."""
+    path = tmp_path / "audit.jsonl"
+    # 2 emits queue; on the 3rd, batch_size=3 triggers immediate flush.
+    for i in range(3):
+        emit_audit(
+            seam="reasoning.tool_called",
+            details={"tool_name": f"tool_{i}", "tool_status": "ok"},
+            source="reasoning",
+            log_path=path,
+        )
+    entries = _read_jsonl_lines(path)
+    assert len(entries) == 3
+    assert [e["details"]["tool_name"] for e in entries] == [
+        "tool_0",
+        "tool_1",
+        "tool_2",
+    ]
+
+
+def test_batching_below_size_threshold_does_not_write_immediately(
+    batching_enabled, tmp_path
+):
+    """Emits below the batch_size threshold are queued — file stays
+    empty until either the interval-tick or an explicit flush."""
+    path = tmp_path / "audit.jsonl"
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "tool_a", "tool_status": "ok"},
+        source="reasoning",
+        log_path=path,
+    )
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "tool_b", "tool_status": "ok"},
+        source="reasoning",
+        log_path=path,
+    )
+    # Below batch_size=3 — file should not exist yet.
+    assert not path.exists() or _read_jsonl_lines(path) == []
+    # Synchronous test-only drain proves the queue held both rows.
+    flushed = flush_for_tests()
+    assert flushed == 2
+    entries = _read_jsonl_lines(path)
+    assert len(entries) == 2
+
+
+def test_batching_time_trigger_flushes_after_interval(
+    batching_enabled, tmp_path
+):
+    """Below-threshold queue gets drained by the background-thread
+    interval tick. Allows up to ~0.5s for the thread to fire."""
+    import time
+
+    path = tmp_path / "audit.jsonl"
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "tool_x", "tool_status": "ok"},
+        source="reasoning",
+        log_path=path,
+    )
+    # Interval is 0.1s; allow up to 0.6s for the thread to fire.
+    deadline = time.monotonic() + 0.6
+    entries: List[Dict[str, Any]] = []
+    while time.monotonic() < deadline:
+        entries = _read_jsonl_lines(path)
+        if entries:
+            break
+        time.sleep(0.05)
+    assert len(entries) == 1
+    assert entries[0]["details"]["tool_name"] == "tool_x"
+
+
+def test_batching_groups_entries_per_path(batching_enabled, tmp_path):
+    """When emits target multiple paths in the same batch, each
+    file is opened once + receives only its own rows."""
+    a = tmp_path / "a.jsonl"
+    b = tmp_path / "b.jsonl"
+    # 3 events total → triggers the size-based flush. 2 to A + 1 to B.
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "a1", "tool_status": "ok"},
+        source="reasoning",
+        log_path=a,
+    )
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "b1", "tool_status": "ok"},
+        source="reasoning",
+        log_path=b,
+    )
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "a2", "tool_status": "ok"},
+        source="reasoning",
+        log_path=a,
+    )
+    rows_a = _read_jsonl_lines(a)
+    rows_b = _read_jsonl_lines(b)
+    assert [r["details"]["tool_name"] for r in rows_a] == ["a1", "a2"]
+    assert [r["details"]["tool_name"] for r in rows_b] == ["b1"]
+
+
+def test_batching_shutdown_drain_flushes_remaining(
+    batching_enabled, tmp_path
+):
+    """The test-reset path mirrors what atexit does in production —
+    signals the thread to stop + drains the queue."""
+    path = tmp_path / "audit.jsonl"
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "in_flight", "tool_status": "ok"},
+        source="reasoning",
+        log_path=path,
+    )
+    # Trigger the reset (which calls flusher_stop.set + waits for the
+    # thread; the thread's final loop iteration drains the queue
+    # before exiting).
+    _reset_batching_for_tests()
+    entries = _read_jsonl_lines(path)
+    assert len(entries) == 1
+    assert entries[0]["details"]["tool_name"] == "in_flight"
+
+
+def test_batching_disabled_writes_synchronously(tmp_path, monkeypatch):
+    """BATCH_SIZE=0 (explicit opt-out, default in legacy tests):
+    emits write to the file before emit_audit returns."""
+    monkeypatch.setenv(BATCH_SIZE_ENV, "0")
+    _reset_batching_for_tests()
+    path = tmp_path / "audit.jsonl"
+    emit_audit(
+        seam="reasoning.tool_called",
+        details={"tool_name": "sync_only", "tool_status": "ok"},
+        source="reasoning",
+        log_path=path,
+    )
+    # File should exist immediately, no flush call needed.
+    [entry] = _read_jsonl_lines(path)
+    assert entry["details"]["tool_name"] == "sync_only"

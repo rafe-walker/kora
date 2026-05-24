@@ -93,3 +93,11 @@ from kora_cli.listeners import promote_phrasebook_listener  # noqa: F401
 # order. Default auto-apply OFF (proposes via audit only) per
 # bucket STOP-ASK §4 safety posture.
 from kora_cli.listeners import promote_snapshot_expand_listener  # noqa: F401
+# KR-PROMOTE-LOOPS-COMPLETION-MEGABUCKET — the three remaining
+# promotion loops. All propose-then-approve; all $0-LLM (pure audit
+# scans + threshold math). Order chosen to mirror the spec table
+# (router-tuning → tool-trimming → probe-fix-envelopes). probe-fix
+# is HARDCODED auto-apply FALSE; the others default-OFF auto-apply.
+from kora_cli.listeners import promote_router_tuning_listener  # noqa: F401
+from kora_cli.listeners import promote_tool_trimming_listener  # noqa: F401
+from kora_cli.listeners import promote_probe_fix_envelopes_listener  # noqa: F401

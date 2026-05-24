@@ -62,12 +62,14 @@ operator-grep escape hatch.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -203,6 +205,39 @@ SeamName = Literal[
     # auto_applied). Source is ``reasoning`` since the cluster
     # input is reasoning audit.
     "promotion.snapshot_field_added",
+    # KR-PROMOTE-ROUTER-TUNING — third promotion loop. Reads per-route
+    # escalation counts from cost_telemetry + the rolling 24h /
+    # monthly windows to surface routes whose Haiku-to-Opus
+    # escalation rate suggests their trigger pattern could be tuned
+    # (tightened to save Opus spend, OR loosened to avoid recurring
+    # operator /opus overrides). Payload carries proposal_id /
+    # route / escalation_count / total_calls / escalation_rate /
+    # recommendation_kind ("tighten_review" | "loosen_review") /
+    # rationale / created_at / status. Source is ``reasoning``.
+    "promotion.router_trigger_proposed",
+    # KR-PROMOTE-TOOL-TRIMMING — fourth promotion loop. Reads
+    # ``reasoning.tool_called`` audit history per (route, tool_name)
+    # over the observation window and proposes adding unused tools
+    # to a route's drop-list (the pre_tool_list_finalized hook
+    # consumer). Payload carries proposal_id / route /
+    # unused_tools (list of names) / total_calls_for_route /
+    # observation_window_days / created_at / status. Source is
+    # ``reasoning``. v1 is propose-only; enforcement of the drop-
+    # list lands in the future KR-PLUGIN-TOOL-DESC-TRIM bucket.
+    "promotion.tool_trim_proposed",
+    # KR-PROMOTE-PROBE-FIX-ENVELOPES — fifth promotion loop. Reads
+    # ``tool.probe_autofix_attempted`` + ``probe.investigation_completed``
+    # audits + clusters recurring probe failures whose investigation
+    # summaries point at a consistent recommended fix. Proposes
+    # adding a new envelope action to ``probes/fix_envelopes.py``.
+    # HIGH-RISK: payload includes the cluster's recurring fix-text +
+    # operator-facing blast radius description; auto-apply is
+    # HARDCODED FALSE — operator MUST review and scaffold manually.
+    # Payload: proposal_id / probe / fix_name_suggestion /
+    # cluster_size / sample_investigation_ids /
+    # recurring_recommendation_text / blast_radius_summary /
+    # created_at / status. Source is ``reasoning``.
+    "promotion.probe_envelope_action_proposed",
 ]
 
 SourceName = Literal[
@@ -326,14 +361,262 @@ def emit_audit(
         return
 
     path = log_path or _resolve_log_path()
+    # KR-CHEAP-AUDIT-BATCHING (R3-4 #9) — route through the batched
+    # sink when batching is enabled (default). The per-emit write
+    # path stays available as the fallback (BATCH_SIZE_ENV=0) and
+    # the immediate-write path inside the sink itself for tests
+    # that pass log_path explicitly + want sync semantics.
+    if _is_batching_enabled():
+        _enqueue_for_batched_flush(entry, path)
+        return
+    _write_entries_sync([entry], path)
+
+
+# ---------------------------------------------------------------------------
+# Batched flusher — KR-CHEAP-AUDIT-BATCHING (R3-4 #9)
+# ---------------------------------------------------------------------------
+#
+# Original behavior: every ``emit_audit`` call opens the JSONL file,
+# appends one line, closes. Fine for low volume but inefficient when
+# the daemon is humming (every reasoning tool call, every probe
+# wake, every promotion proposal emits a row). R3-4 #9 batches:
+# flush at ``KORA_AUDIT_BATCH_SIZE`` events OR ``KORA_AUDIT_FLUSH_
+# INTERVAL_SECONDS`` seconds, whichever first.
+#
+# Lifecycle (STOP-ASK §4 mitigation):
+#   * Daemon process: background thread (daemon=True) ticks every
+#     FLUSH_INTERVAL and drains the queue.
+#   * CLI invocations: same thread starts lazily on the first
+#     emit; atexit handler drains on shutdown so single-shot CLI
+#     processes don't lose pending events.
+#   * Tests that pass an explicit log_path or set BATCH_SIZE=0 stay
+#     on the sync write path.
+#
+# Per-emit interface is UNCHANGED — callers still call ``emit_audit``
+# synchronously; the queue is purely internal.
+
+BATCH_SIZE_ENV = "KORA_AUDIT_BATCH_SIZE"
+FLUSH_INTERVAL_ENV = "KORA_AUDIT_FLUSH_INTERVAL_SECONDS"
+
+DEFAULT_BATCH_SIZE = 100
+DEFAULT_FLUSH_INTERVAL_SECONDS = 5.0
+
+
+_batch_lock = threading.RLock()
+# (entry, log_path) tuples. The path is captured at enqueue-time so
+# callers that pass a per-call log_path override still write to the
+# right file even when batched.
+_batch_queue: List[Tuple["AuditEntry", Path]] = []
+_flusher_thread: Optional[threading.Thread] = None
+_flusher_stop = threading.Event()
+_atexit_registered = False
+
+
+def _read_batch_size() -> int:
+    raw = os.environ.get(BATCH_SIZE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_BATCH_SIZE
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "[kora.audit.batching] %s=%r not int; using default %d",
+            BATCH_SIZE_ENV,
+            raw,
+            DEFAULT_BATCH_SIZE,
+        )
+        return DEFAULT_BATCH_SIZE
+    if value < 0:
+        return DEFAULT_BATCH_SIZE
+    return value
+
+
+def _read_flush_interval_seconds() -> float:
+    raw = os.environ.get(FLUSH_INTERVAL_ENV, "").strip()
+    if not raw:
+        return DEFAULT_FLUSH_INTERVAL_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[kora.audit.batching] %s=%r not numeric; using default %ss",
+            FLUSH_INTERVAL_ENV,
+            raw,
+            DEFAULT_FLUSH_INTERVAL_SECONDS,
+        )
+        return DEFAULT_FLUSH_INTERVAL_SECONDS
+    if value <= 0:
+        return DEFAULT_FLUSH_INTERVAL_SECONDS
+    return value
+
+
+def _is_batching_enabled() -> bool:
+    """Batching is on whenever BATCH_SIZE > 0 (default 100).
+    Setting BATCH_SIZE=0 forces the legacy per-emit write path —
+    useful for tests that want sync semantics."""
+    return _read_batch_size() > 0
+
+
+def _write_entries_sync(
+    entries: List["AuditEntry"], path: Path
+) -> None:
+    """Write a list of entries to ``path`` in one open/close cycle.
+    Fail-soft per OSError; never raises. Empty list is a no-op."""
+    if not entries:
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
-            f.write(entry.model_dump_json() + "\n")
+            for entry in entries:
+                f.write(entry.model_dump_json() + "\n")
     except OSError as exc:
         logger.warning(
-            "[kora.audit.skipped] JSONL write failed (%s): %r — "
+            "[kora.audit.skipped] JSONL batched write failed (%s): %r — "
             "caller's structured-log line still emitted",
             path,
             exc,
         )
+
+
+def _drain_queue_locked() -> List[Tuple["AuditEntry", Path]]:
+    """Move every queued (entry, path) out of the queue. Caller
+    holds ``_batch_lock``. Returns the drained items so the actual
+    file writes can happen OUTSIDE the lock (writing to disk while
+    holding the lock would block subsequent emits unnecessarily)."""
+    drained = list(_batch_queue)
+    _batch_queue.clear()
+    return drained
+
+
+def _flush_now() -> int:
+    """Drain the queue + write each path's entries in one open/close.
+    Returns total events flushed (0 when queue empty). Safe to call
+    from any thread (the size-triggered flush calls from emit_audit
+    + the interval-triggered flush from the background thread + the
+    atexit handler all share this path)."""
+    with _batch_lock:
+        drained = _drain_queue_locked()
+    if not drained:
+        return 0
+    # Group by path so each file is opened once per flush.
+    by_path: Dict[Path, List["AuditEntry"]] = {}
+    for entry, path in drained:
+        by_path.setdefault(path, []).append(entry)
+    for path, entries in by_path.items():
+        _write_entries_sync(entries, path)
+    return len(drained)
+
+
+def _flusher_loop() -> None:
+    """Background-thread entry. Sleeps the configured interval +
+    flushes; exits when ``_flusher_stop`` is set."""
+    interval = _read_flush_interval_seconds()
+    while not _flusher_stop.is_set():
+        # ``wait(interval)`` returns True if the stop event was
+        # set during the wait → exit promptly. Otherwise it
+        # returns False after the interval and we flush.
+        if _flusher_stop.wait(interval):
+            break
+        try:
+            _flush_now()
+        except Exception as exc:
+            logger.warning(
+                "[kora.audit.batching] background flush raised %r — "
+                "queue retried on next tick",
+                exc,
+            )
+    # Final drain on stop so atexit-initiated shutdown captures
+    # whatever the background thread had pending at the moment
+    # ``_flusher_stop`` was set.
+    try:
+        _flush_now()
+    except Exception as exc:
+        logger.warning(
+            "[kora.audit.batching] final drain raised %r", exc
+        )
+
+
+def _atexit_flush() -> None:
+    """atexit hook — drain the queue + signal the background thread
+    to exit. Best-effort; never raises (atexit handlers that raise
+    are surfaced by the runtime as ugly tracebacks)."""
+    try:
+        _flusher_stop.set()
+        _flush_now()
+    except Exception as exc:
+        logger.warning(
+            "[kora.audit.batching] atexit flush raised %r — events "
+            "may be lost",
+            exc,
+        )
+
+
+def _ensure_flusher_started() -> None:
+    """Lazy thread start on first batched emit. Idempotent — safe
+    to call from every emit_audit. The thread is ``daemon=True`` so
+    a process exit doesn't block on it (the atexit handler does the
+    final drain regardless)."""
+    global _flusher_thread, _atexit_registered
+    with _batch_lock:
+        if _flusher_thread is not None and _flusher_thread.is_alive():
+            return
+        _flusher_stop.clear()
+        _flusher_thread = threading.Thread(
+            target=_flusher_loop,
+            name="kora-audit-flusher",
+            daemon=True,
+        )
+        _flusher_thread.start()
+        if not _atexit_registered:
+            atexit.register(_atexit_flush)
+            _atexit_registered = True
+
+
+def _enqueue_for_batched_flush(entry: "AuditEntry", path: Path) -> None:
+    """Append one (entry, path) to the queue + flush immediately if
+    the size threshold is hit. Otherwise the background thread
+    handles the time-based flush."""
+    _ensure_flusher_started()
+    size_threshold = _read_batch_size()
+    should_flush_immediately = False
+    with _batch_lock:
+        _batch_queue.append((entry, path))
+        if len(_batch_queue) >= size_threshold:
+            should_flush_immediately = True
+    if should_flush_immediately:
+        _flush_now()
+
+
+def flush_for_tests() -> int:
+    """Test surface: synchronously drain the queue. Returns number of
+    events flushed. Production code should NOT call this — the
+    automatic size + time + atexit triggers cover the production
+    flush points."""
+    return _flush_now()
+
+
+def _reset_batching_for_tests() -> None:
+    """Test surface: drain the queue (mirrors atexit shutdown
+    semantics), stop the flusher thread, and reset state so the
+    next test starts clean. Lets the dedicated batching-tests assert
+    "shutdown drains pending events" by calling this helper as the
+    shutdown stand-in.
+    """
+    global _flusher_thread, _atexit_registered
+    # Drain BEFORE stopping the thread so an in-flight queue
+    # reaches disk — atexit's contract is "events written".
+    try:
+        _flush_now()
+    except Exception:
+        # Best-effort; production atexit handler also swallows.
+        pass
+    _flusher_stop.set()
+    if _flusher_thread is not None:
+        _flusher_thread.join(timeout=2.0)
+    _flusher_thread = None
+    with _batch_lock:
+        _batch_queue.clear()
+    # We intentionally leave _atexit_registered True because Python's
+    # atexit API has no unregister-by-function for once-registered
+    # callbacks; the callback short-circuits on a clean queue so
+    # leaving it registered is harmless.
