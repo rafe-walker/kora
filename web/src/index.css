@@ -227,3 +227,88 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* ------------------------------------------------------------------ */
+/* KR-FE-A11Y-COMPLETION-FORCED-COLORS-AND-AXE-CORE-CI                 */
+/*                                                                     */
+/* Forced-colors mode (Windows High Contrast, "Increase contrast"      */
+/* themes) replaces author colors with system tokens (Canvas,          */
+/* CanvasText, Highlight, ButtonFace, etc.). The cockpit relies on    */
+/* author backgrounds to convey hierarchy + state (badge tones,       */
+/* picker option highlight, alert chips), so without explicit         */
+/* overrides those visual cues disappear under forced-colors. We      */
+/* surface borders + outlines using system colors instead — they      */
+/* remain visible because forced-colors does NOT replace border-      */
+/* color when set to CanvasText / Highlight.                          */
+/*                                                                     */
+/* Discipline: prefer ``border: 1px solid CanvasText`` over           */
+/* ``forced-color-adjust: none`` — the latter fights the user's       */
+/* setting and is a last resort for elements whose colored state IS   */
+/* the semantic (destructive button background).                      */
+/*                                                                     */
+/* Drift-guard: tests/test_tenants_endpoint.py asserts this block     */
+/* exists. Renaming the rules or removing them surfaces in CI.        */
+/* ------------------------------------------------------------------ */
+@media (forced-colors: active) {
+  /* Focus-visible across the cockpit. Tailwind's focus-visible:ring
+     uses box-shadow, which forced-colors strips. Replace with a
+     system-color outline so keyboard focus stays visible on every
+     focusable element. This is the highest-impact single rule —
+     it restores the keyboard-nav cue for the entire app. */
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* TenantPicker listbox highlight + selection. The keyboard-
+     highlight (bg-accent/60) and selected-active (font-semibold +
+     accent text color) cues both depend on author backgrounds /
+     text colors that forced-colors strips. Tag the highlighted +
+     selected options with explicit system-color outlines so the
+     "where would Enter land" + "currently active" cues survive.
+     ``data-highlighted`` is set by TenantPicker.tsx; aria-selected
+     is the standard pattern. */
+  [role="option"][data-highlighted="true"],
+  [role="option"][aria-selected="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+    forced-color-adjust: none;
+  }
+
+  /* ActiveTenantBadge chip in audit-panel headers — translucent
+     bg + soft current/20 border. Border becomes invisible under
+     forced-colors unless it's set with a system color; force a
+     visible CanvasText border to keep the chip affordance. */
+  [data-tenant-chip] {
+    border: 1px solid CanvasText;
+  }
+
+  /* AggregateCostCards rung progress bar. The fill color is the
+     semantic — green (normal) → yellow (warn) → red (hard stop).
+     ``forced-color-adjust: none`` is the explicit opt-in here:
+     the COLOR is the message, so we want author colors preserved
+     even under high-contrast. Track + thumb still get a system
+     outline to stay readable. */
+  [data-rung-bar] {
+    forced-color-adjust: none;
+    outline: 1px solid CanvasText;
+  }
+
+  /* Sidebar selected nav-link gets a bg-accent in normal mode —
+     under forced-colors the active vs inactive distinction
+     vanishes. NavLink emits ``aria-current="page"`` for the
+     active route; use that for the system-color outline. */
+  a[aria-current="page"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  /* @nous-research/ui Badge tones already use Tailwind ``border``
+     classes (border-destructive/30 etc.), so the border itself
+     remains visible under forced-colors thanks to system color
+     substitution. No additional rule needed.
+     ConfirmDialog backdrop is rgba(0,0,0,0.6); panel bg becomes
+     Canvas under forced-colors; existing border + backdrop give
+     enough separation. No override needed. */
+}
+
+

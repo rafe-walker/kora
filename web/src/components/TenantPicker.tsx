@@ -445,6 +445,12 @@ function TenantOption({
       type="button"
       role="option"
       aria-selected={active}
+      // KR-FE-A11Y-COMPLETION-FORCED-COLORS-AND-AXE-CORE-CI —
+      // data attribute hook for the forced-colors override in
+      // index.css. Author bg-accent/60 disappears under high-
+      // contrast; the rule promotes data-highlighted="true" to a
+      // Highlight outline.
+      data-highlighted={highlighted ? "true" : undefined}
       // Mouse pick — keyboard pick goes through onListKeyDown.
       onClick={() => onPick(tenantId)}
       onMouseEnter={onHover}
