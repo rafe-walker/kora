@@ -119,6 +119,30 @@ class BackgroundDaemonEntry:
       plugin_name: name of the plugin that registered the daemon
         (set automatically when registered via
         :meth:`PluginContext.register_background_daemon`).
+      fatal_on_startup_failure: when ``True``, an uncaught exception
+        from ``startup`` MUST cause the consumer to abort the
+        daemon-coordinator boot (process exits non-zero). When
+        ``False`` (default), the consumer should LOG the failure and
+        CONTINUE starting subsequent daemons.
+
+        Structural enforcement of the FATAL contract CC#3 #200
+        documented in the ``reasoning_engine_listener`` docstring +
+        ``feedback-local-first-upstream-after`` discussions. The
+        canonical "critical" daemon is the reasoning engine — if
+        engine construction fails, the daemon can't reason; better to
+        fail loud at boot than ship a daemon that silently degrades.
+
+        For listeners that ALSO have a Kora-side ``LISTENER_REGISTRY``
+        entry (the Path B thin-shim shape from PR #196 onward), the
+        Kora ``DaemonCoordinator`` looks up the listener's
+        ``BackgroundDaemonEntry`` by name and reads this flag. For
+        listeners with no Hermes entry (the 3 HTTP service mounts:
+        ``web``/``mcp``/``webhooks``), the coordinator defaults to
+        fatal-on-raise — preserves pre-flag behavior.
+
+        Defaults to ``False`` so adding a new daemon doesn't
+        accidentally crash the runtime on a spurious startup error;
+        critical daemons opt IN explicitly.
     """
 
     name: str
@@ -127,6 +151,7 @@ class BackgroundDaemonEntry:
     periodic_task: Optional[PeriodicTaskSpec] = None
     shutdown_timeout: float = 5.0
     plugin_name: str = ""
+    fatal_on_startup_failure: bool = False
 
 
 class BackgroundDaemonRegistry:

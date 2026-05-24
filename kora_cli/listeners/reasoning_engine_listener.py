@@ -208,12 +208,18 @@ register_daemon_listener("reasoning_engine", _factory)
 # that gateway-side consumers must propagate any startup exception
 # rather than swallowing it silently.
 #
-# Today's lifecycle is driven by Kora's DaemonCoordinator (Path B
-# thin-shim) which already honors the FATAL contract; the Hermes
-# entry is forward-compat for future consumers. No periodic_task —
-# the engine is event-driven (other code paths call
-# current_reasoning_engine() to invoke; no scheduled work owned
-# by this listener).
+# KR-PIP-PACKAGING-FOUNDATION-AND-DAEMON-FATAL-FLAG (#204):
+# fatal_on_startup_failure=True replaces the documentation-driven
+# contract from #200 with STRUCTURAL enforcement. Kora's
+# DaemonCoordinator now reads this flag at the listener-startup-raise
+# site and aborts boot iff True (see kora_cli/daemon.py::
+# DaemonCoordinator._is_startup_failure_fatal). Future gateway-side
+# consumers can rely on the same flag rather than parsing this
+# module's docstring.
+#
+# No periodic_task — the engine is event-driven (other code paths
+# call current_reasoning_engine() to invoke; no scheduled work
+# owned by this listener).
 
 _hermes_entry = BackgroundDaemonEntry(
     name="reasoning_engine",
@@ -222,6 +228,7 @@ _hermes_entry = BackgroundDaemonEntry(
     periodic_task=None,
     shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
     plugin_name="kora",
+    fatal_on_startup_failure=True,  # KR-PIP-PACKAGING-FOUNDATION #204
 )
 
 try:
