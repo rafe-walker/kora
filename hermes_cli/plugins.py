@@ -165,6 +165,15 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Per-call tool-list filtering. Fires inside chat_completion_helpers.
+    # build_api_kwargs right after ``agent.tools`` is read, before the
+    # tool list reaches the SDK. Plugins return ``{"override": [<tool>, ...]}``
+    # to filter or replace the list for that single API call without
+    # mutating the process-wide ``agent.tools``. First non-None override
+    # wins (matches existing transform_llm_output precedent). Fail-safe:
+    # plugin exceptions caught + logged at DEBUG; unmodified tool list
+    # is used.
+    "pre_tool_list_finalized",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

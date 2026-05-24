@@ -281,6 +281,38 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
 
+    # ``pre_tool_list_finalized`` hook — give plugins a chance to
+    # filter or replace the tool list for this single API call
+    # without mutating the process-wide ``agent.tools``. Plugins
+    # return ``{"override": [<tool>, ...]}`` to swap the list;
+    # ``None`` (or a non-dict / dict-without-``override``) falls
+    # through. First non-None override wins (matches existing
+    # ``transform_llm_output`` precedent). Fail-safe: plugin
+    # exceptions caught at the invoke_hook level; the unmodified
+    # tool list is used on any error.
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _tool_list_results = _invoke_hook(
+            "pre_tool_list_finalized",
+            route=getattr(agent, "route", "") or "",
+            tools=list(tools_for_api) if isinstance(tools_for_api, list) else tools_for_api,
+            task_id=getattr(agent, "_current_task_id", "") or "",
+            session_id=getattr(agent, "session_id", "") or "",
+        )
+        for _tool_result in _tool_list_results:
+            if not isinstance(_tool_result, dict):
+                continue
+            _override = _tool_result.get("override")
+            if isinstance(_override, list):
+                tools_for_api = _override
+                break  # first non-None override wins
+    except Exception as _hook_exc:
+        logger.debug(
+            "pre_tool_list_finalized hook failed: %s — using "
+            "unmodified tool list",
+            _hook_exc,
+        )
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)

@@ -335,6 +335,37 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_valid_hooks_include_pre_tool_list_finalized(self):
+        assert "pre_tool_list_finalized" in VALID_HOOKS
+
+    def test_pre_tool_list_finalized_collects_override(self, tmp_path, monkeypatch):
+        """pre_tool_list_finalized callbacks return ``{"override": [...]}``
+        to replace the tool list for one API call. Multiple plugins'
+        returns are collected; the consumer (build_api_kwargs) breaks
+        on the first non-None override."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "tool_list_plugin",
+            register_body=(
+                'ctx.register_hook("pre_tool_list_finalized", '
+                'lambda **kw: {"override": [{"name": "x"}]})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_tool_list_finalized",
+            route="",
+            tools=[{"name": "a"}, {"name": "b"}],
+            task_id="t1",
+            session_id="s1",
+        )
+        assert len(results) == 1
+        assert results[0] == {"override": [{"name": "x"}]}
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
