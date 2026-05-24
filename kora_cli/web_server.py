@@ -6129,6 +6129,155 @@ async def get_cost_telemetry():
 
 
 # ---------------------------------------------------------------------------
+# DM phrasebook viewer + tester (KR-FE-PHRASEBOOK-VIEWER)
+# ---------------------------------------------------------------------------
+#
+# Read-only v1 — operator can SEE the phrasebook + test patterns
+# interactively. Edit/write path is a follow-on bucket
+# (KR-FE-PHRASEBOOK-EDITOR + KR-API-PHRASEBOOK-CRUD).
+#
+# Why surface this in the cockpit at all:
+#   * Phrasebook + snapshot interpolation is the cheap-substrate
+#     thesis applied to DM handling — operator should be able to
+#     audit which patterns short-circuit AND test which would
+#     fall through to the reasoning engine given the current
+#     snapshot (e.g., "cost_ladder.model_default is unknown
+#     today so the burn-query entry will fall through")
+#   * Same row shape will be reused by the eventual promotion-
+#     loop review panel (proposals add phrasebook entries)
+#
+# Pattern: ALL reads go through dm_phrasebook.load_phrasebook()
+# which honors the operator override at
+# ${KORA_HOME}/phrasebook/slack_dm.yml — same source-of-truth as
+# the live DM handler, so the cockpit can't drift from runtime.
+
+# Snapshot-placeholder regex (mirrors dm_phrasebook.py:252) so the
+# extracted-fields list matches what render_reply will actually
+# walk at runtime. Kept in sync via the test-pin in
+# tests/kora_cli/test_phrasebook_endpoints.py.
+import re as _phrasebook_re
+
+_PHRASEBOOK_PLACEHOLDER_RE = _phrasebook_re.compile(
+    r"\{snapshot\.([a-zA-Z0-9_.]+)\}"
+)
+
+
+def _extract_phrasebook_snapshot_refs(template: str) -> list:
+    """Return the sorted, deduped list of snapshot field paths the
+    template references via ``{snapshot.X.Y.Z}`` placeholders."""
+    return sorted(set(_PHRASEBOOK_PLACEHOLDER_RE.findall(template or "")))
+
+
+def _phrasebook_override_path_or_none():
+    """Public-ish accessor for the override path WITHOUT requiring
+    the file to exist (the private helper inside dm_phrasebook
+    returns None when the file is absent; for the viewer we want
+    the candidate path even when it doesn't exist yet — operator
+    needs to know where to create it)."""
+    try:
+        from kora_constants import get_kora_home
+
+        return get_kora_home() / "phrasebook" / "slack_dm.yml"
+    except Exception:
+        return None
+
+
+@app.get("/api/phrasebook/slack_dm")
+async def get_slack_dm_phrasebook() -> Dict[str, Any]:
+    """Read-only view of the current Slack DM phrasebook.
+
+    Returns the same entries the live handler would match against
+    (via dm_phrasebook.load_phrasebook with no override path —
+    honors ``${KORA_HOME}/phrasebook/slack_dm.yml`` when present;
+    falls back to bundled default otherwise).
+
+    Each entry's ``referenced_snapshot_fields`` is the list of
+    snapshot paths the reply_template references — operator can
+    see at a glance which fields each entry depends on.
+    """
+    from kora_cli.short_circuit import dm_phrasebook
+
+    entries = dm_phrasebook.load_phrasebook()
+    override_candidate = _phrasebook_override_path_or_none()
+    override_exists = (
+        override_candidate is not None and override_candidate.is_file()
+    )
+    return {
+        "source": "override" if override_exists else "bundled_default",
+        "source_path": str(override_candidate) if override_exists else "bundled",
+        # Echoes the candidate path even when absent so operator
+        # knows where to drop the YAML to start overriding.
+        "override_candidate_path": str(override_candidate)
+        if override_candidate is not None
+        else None,
+        "entries": [
+            {
+                "pattern": entry.pattern.pattern,
+                "category": entry.category,
+                "description": entry.description,
+                "reply_template": entry.reply_template,
+                "referenced_snapshot_fields": (
+                    _extract_phrasebook_snapshot_refs(entry.reply_template)
+                ),
+            }
+            for entry in entries
+        ],
+    }
+
+
+@app.post("/api/phrasebook/slack_dm/test")
+async def test_phrasebook_match(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Operator-supplied test text → matched entry + rendered reply.
+
+    Read-only. Does NOT call the reasoning engine, does NOT send
+    DMs, does NOT mutate any state. Pure preview of what the live
+    handler would do RIGHT NOW for the given text.
+
+    Result shape mirrors the operator's mental model:
+      * matched=False → would fall through to reasoning (no entry
+        matched)
+      * matched=True + rendered_reply present → short-circuit reply
+        (handler would skip the reasoning engine entirely)
+      * matched=True + rendered_reply null → matched but the
+        snapshot is stale / has degraded fields → would still
+        fall through to reasoning
+
+    The ``would_fall_through_to_reasoning_engine`` boolean is the
+    single answer the operator usually wants ("does this text
+    cost me $0 or cents right now?").
+    """
+    from kora_cli.short_circuit import dm_phrasebook
+    from kora_cli.snapshot import read_snapshot
+
+    test_text = str(payload.get("text", ""))[:1024]
+    entries = dm_phrasebook.load_phrasebook()
+    matched = dm_phrasebook.match_message(test_text, entries)
+
+    if matched is None:
+        return {
+            "matched": False,
+            "would_fall_through_to_reasoning_engine": True,
+        }
+
+    snap = read_snapshot()
+    rendered = dm_phrasebook.render_reply(matched, snap)
+
+    return {
+        "matched": True,
+        "category": matched.category,
+        "description": matched.description,
+        "pattern": matched.pattern.pattern,
+        "reply_template": matched.reply_template,
+        "referenced_snapshot_fields": _extract_phrasebook_snapshot_refs(
+            matched.reply_template
+        ),
+        "rendered_reply": rendered,
+        "would_fall_through_to_reasoning_engine": rendered is None,
+        "snapshot_present": snap is not None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 

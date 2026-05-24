@@ -145,6 +145,15 @@ export const api = {
   // two windows (snapshot covers rolling_24h + monthly only).
   getCostTelemetry: () =>
     fetchJSON<CostTelemetryResponse>("/api/cost_telemetry"),
+  // KR-FE-PHRASEBOOK-VIEWER: read-only phrasebook + live regex tester.
+  getSlackDmPhrasebook: () =>
+    fetchJSON<PhrasebookResponse>("/api/phrasebook/slack_dm"),
+  testSlackDmPhrasebook: (text: string) =>
+    fetchJSON<PhrasebookTestResponse>("/api/phrasebook/slack_dm/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1867,3 +1876,46 @@ export interface CostTelemetryResponse {
   rolling_24h: Record<string, RouteCounters>;
   monthly: Record<string, RouteCounters>;
 }
+
+// DM phrasebook (KR-FE-PHRASEBOOK-VIEWER). Source-of-truth shape
+// mirrors kora_cli/short_circuit/dm_phrasebook.py PhrasebookEntry.
+// The endpoint adds referenced_snapshot_fields so the FE can
+// visualize per-entry snapshot-field dependencies without
+// re-parsing reply_template client-side.
+export interface PhrasebookEntryDto {
+  pattern: string; // source regex string (Python re.IGNORECASE)
+  category: string;
+  description: string;
+  reply_template: string;
+  referenced_snapshot_fields: string[];
+}
+
+export interface PhrasebookResponse {
+  source: "override" | "bundled_default";
+  source_path: string;
+  // Echoed even when absent so operator knows where to put a YAML
+  // to start overriding. null when KORA_HOME isn't resolvable.
+  override_candidate_path: string | null;
+  entries: PhrasebookEntryDto[];
+}
+
+export type PhrasebookTestResponse =
+  | {
+      matched: false;
+      would_fall_through_to_reasoning_engine: true;
+    }
+  | {
+      matched: true;
+      category: string;
+      description: string;
+      pattern: string;
+      reply_template: string;
+      referenced_snapshot_fields: string[];
+      // null when snapshot is missing/stale OR any referenced
+      // field is "unknown" — in both cases, would_fall_through is
+      // true and the live DM handler would defer to the
+      // reasoning engine.
+      rendered_reply: string | null;
+      would_fall_through_to_reasoning_engine: boolean;
+      snapshot_present: boolean;
+    };
