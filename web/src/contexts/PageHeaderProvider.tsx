@@ -1,9 +1,53 @@
-import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useLocation } from "react-router-dom";
 import { PageHeaderContext } from "./page-header-context";
 import { resolvePageTitle } from "@/lib/resolve-page-title";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import {
+  DEFAULT_TENANT_ID,
+  useActiveTenant,
+} from "@/hooks/useActiveTenant";
+
+// KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+// browser-tab title suffix. Mirrors the static <title> in
+// web/index.html so per-page document.title updates keep the
+// "· Kora" / "Hermes Agent" anchor a screen-reader / tab-switcher
+// expects. Single point of change if the brand suffix ever moves.
+const TAB_TITLE_SUFFIX = "Hermes Agent" as const;
+
+/**
+ * Format a per-page browser-tab title:
+ *   single-tenant or default-active → ``"Probe Investigations · Hermes Agent"``
+ *   tenant-active                   → ``"[marvin] Probe Investigations · Hermes Agent"``
+ *   aggregate-active                → ``"[all tenants] Probe Investigations · Hermes Agent"``
+ *
+ * Exported for the drift-guard test so renaming the brand suffix
+ * or changing the prefix format trips the cross-stack pin.
+ */
+export function formatBrowserTabTitle(
+  displayTitle: string,
+  options: {
+    activeTenant: string;
+    isAllTenants: boolean;
+    isMultiTenant: boolean;
+  },
+): string {
+  const base = `${displayTitle} · ${TAB_TITLE_SUFFIX}`;
+  // Hide prefix on single-tenant deployments (no value — nothing
+  // to switch to) and on the canonical "default" tenant (every
+  // operator's idle baseline).
+  if (!options.isMultiTenant) return base;
+  if (options.isAllTenants) return `[all tenants] ${base}`;
+  if (options.activeTenant === DEFAULT_TENANT_ID) return base;
+  return `[${options.activeTenant}] ${base}`;
+}
 
 export function PageHeaderProvider({
   children,
@@ -33,6 +77,22 @@ export function PageHeaderProvider({
     [pathname, t, pluginTabs],
   );
   const displayTitle = titleOverride ?? defaultTitle;
+
+  // KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+  // sync document.title to the active page header + active-tenant
+  // prefix. Lets operators distinguish ProbeInvestigations-for-
+  // Kora vs ProbeInvestigations-for-Marvin tabs at a glance in
+  // their browser tab strip. No-op until at least 2 tenants exist
+  // OR the active tenant is non-default — keeps the original
+  // static title intact for single-tenant operators.
+  const { activeTenant, isAllTenants, isMultiTenant } = useActiveTenant();
+  useEffect(() => {
+    document.title = formatBrowserTabTitle(displayTitle, {
+      activeTenant,
+      isAllTenants,
+      isMultiTenant,
+    });
+  }, [displayTitle, activeTenant, isAllTenants, isMultiTenant]);
 
   const isChatRoute = pathname === "/chat" || pathname === "/chat/";
   /** Env jump-nav is wide — stack below title on small screens so KEYS stays readable. */
