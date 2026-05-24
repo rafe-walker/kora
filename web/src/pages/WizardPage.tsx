@@ -258,6 +258,99 @@ function emptyConfig(): WizardConfig {
   };
 }
 
+// ---------------------------------------------------------------
+// KR-FE-WIZARD-RESUME-FROM-PARTIAL — sessionStorage resume.
+//
+// Why sessionStorage rather than localStorage:
+//   * Wizard state contains tenant_id + service connectivity
+//     results — operator-recoverable on refresh, but should not
+//     persist past browser close (those are scratch values that
+//     belong to a single setup session).
+//   * Credentials (anthropicApiKey / substrateServiceRoleKey /
+//     slackBotToken) are NEVER stored under any backing. Resume
+//     restores everything else and the operator re-enters the
+//     three creds + re-validates. Validation results are also
+//     reset on resume — a stale "success" badge with no key to
+//     back it would be misleading.
+//
+// Security pin: the strip-fields list below is the canonical set
+// of "never store these" fields. Adding a new credential to
+// WizardConfig means adding it here too (and to the resume-
+// regression test if/when vitest lands in this repo).
+// ---------------------------------------------------------------
+
+export const WIZARD_RESUME_STORAGE_KEY = "kora_wizard_state" as const;
+
+interface PersistedWizardState {
+  config: WizardConfig;
+  stepIdx: number;
+  // Schema version — increment when WizardConfig adds a non-
+  // additive field so we can refuse to restore stale shapes.
+  v: 1;
+}
+
+const PERSIST_SCHEMA_VERSION: PersistedWizardState["v"] = 1;
+
+function stripCreds(config: WizardConfig): WizardConfig {
+  // Credentials are NEVER persisted to sessionStorage. Validation
+  // results are also cleared so the operator re-validates the
+  // re-entered creds (a "success" badge from a session ago is not
+  // safe to trust — the upstream service state could have changed).
+  return {
+    ...config,
+    anthropicApiKey: "",
+    substrateServiceRoleKey: "",
+    slackBotToken: "",
+    anthropicValidation: null,
+    substrateValidation: null,
+    slackValidation: null,
+  };
+}
+
+function readPersisted(): PersistedWizardState | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(WIZARD_RESUME_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "v" in parsed &&
+      (parsed as { v: unknown }).v === PERSIST_SCHEMA_VERSION &&
+      "config" in parsed &&
+      "stepIdx" in parsed
+    ) {
+      return parsed as PersistedWizardState;
+    }
+  } catch {
+    // Corrupt JSON — silently drop. Wizard starts fresh.
+  }
+  return null;
+}
+
+function writePersisted(state: PersistedWizardState): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      WIZARD_RESUME_STORAGE_KEY,
+      JSON.stringify(state),
+    );
+  } catch {
+    // Quota / disabled storage — best-effort. The wizard continues
+    // working in-memory; the operator just loses resume capability.
+  }
+}
+
+function clearPersisted(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(WIZARD_RESUME_STORAGE_KEY);
+  } catch {
+    // Best-effort.
+  }
+}
+
 function StepWelcome({ config, setConfig, onAdvance }: StepProps) {
   return (
     <div className="space-y-3 text-sm">
@@ -656,6 +749,11 @@ function StepPromotionIntro({ config, onAdvance }: StepProps) {
         setError(resp.error ?? "unknown error");
         return;
       }
+      // KR-FE-WIZARD-RESUME-FROM-PARTIAL — completion is the
+      // terminal state; drop the resume blob so a future first-
+      // run wizard re-open (rare; e.g. operator removed marker
+      // manually) starts fresh.
+      clearPersisted();
       onAdvance();
       navigate("/");
     } catch (e) {
@@ -792,10 +890,46 @@ function buildEnvContents(config: WizardConfig): string {
 export default function WizardPage() {
   usePanelView("WizardPage");
 
+  // KR-FE-WIZARD-RESUME-FROM-PARTIAL — check sessionStorage on mount.
+  // If a prior session left state past step 0, render the resume
+  // prompt (operator decides yes/no before the wizard renders).
+  const [pendingResume, setPendingResume] =
+    useState<PersistedWizardState | null>(() => {
+      const p = readPersisted();
+      // Step 0 (welcome) has no information worth resuming — only
+      // offer resume from step ≥ 1.
+      return p && p.stepIdx > 0 ? p : null;
+    });
+
   const [config, setConfig] = useState<WizardConfig>(emptyConfig());
   const [stepIdx, setStepIdx] = useState(0);
   const [skipError, setSkipError] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  // Persist every config / step change. Creds + validation results
+  // are stripped via stripCreds — credentials never reach
+  // sessionStorage. Skipped while the resume-prompt is up so we
+  // don't overwrite the pending state with the empty initial.
+  useEffect(() => {
+    if (pendingResume) return;
+    writePersisted({
+      config: stripCreds(config),
+      stepIdx,
+      v: 1,
+    });
+  }, [config, stepIdx, pendingResume]);
+
+  const acceptResume = useCallback(() => {
+    if (!pendingResume) return;
+    setConfig(pendingResume.config);
+    setStepIdx(pendingResume.stepIdx);
+    setPendingResume(null);
+  }, [pendingResume]);
+
+  const declineResume = useCallback(() => {
+    clearPersisted();
+    setPendingResume(null);
+  }, []);
 
   // Drift-guard greps — pin the FE constants are referenced from
   // the page so test_wizard_drift_guards' grep against the source
@@ -816,6 +950,9 @@ export default function WizardPage() {
         tenant_id: config.tenantId.trim() || "default",
         last_step: currentStep.key,
       });
+      // KR-FE-WIZARD-RESUME-FROM-PARTIAL — clear the resume blob
+      // on skip; the wizard is done for this session.
+      clearPersisted();
       navigate("/");
     } catch (e) {
       setSkipError(e instanceof Error ? e.message : String(e));
@@ -842,6 +979,55 @@ export default function WizardPage() {
   })();
 
   const Icon = currentStep.Icon;
+
+  // KR-FE-WIZARD-RESUME-FROM-PARTIAL — render the resume prompt
+  // instead of the wizard body until the operator decides. Picking
+  // Yes restores config + jumps to the saved step; No clears the
+  // blob and starts fresh. Credentials are NEVER restored; the
+  // operator re-enters + re-validates them at their step.
+  if (pendingResume) {
+    const lastLabel =
+      STEP_DEFS[pendingResume.stepIdx]?.label ??
+      `step ${pendingResume.stepIdx + 1}`;
+    return (
+      <div className="space-y-4 p-4 max-w-3xl mx-auto">
+        <H2 className="flex items-center gap-2">
+          <WandSparkles className="h-5 w-5" />
+          First-run setup
+        </H2>
+        <Card className="border-yellow-500/30 bg-yellow-500/5">
+          <CardContent className="p-4 space-y-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <AlertTriangle className="h-4 w-4 text-yellow-500" />
+              Resume from step {pendingResume.stepIdx + 1} (
+              <span className="font-mono">{lastLabel}</span>)?
+            </div>
+            <p className="text-xs text-muted-foreground">
+              We found a wizard session in this tab. Resuming keeps
+              your tenant_id, IsoKron URL, Slack user_id, validation
+              results-to-rerun, and other non-credential fields.
+              <strong className="text-foreground">
+                {" "}
+                Credentials (Anthropic key / IsoKron service-role key
+                / Slack bot token) are never saved
+              </strong>{" "}
+              — you&apos;ll re-enter + re-validate them at their step.
+            </p>
+            <div className="flex items-center gap-2 flex-wrap pt-1">
+              <Button size="sm" onClick={acceptResume}>
+                <CheckCircle2 className="h-3 w-3 mr-1" />
+                Yes, resume from step {pendingResume.stepIdx + 1}
+              </Button>
+              <Button size="sm" ghost onClick={declineResume}>
+                No, start fresh
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4 p-4 max-w-3xl mx-auto">
       <div className="flex items-center justify-between gap-2 flex-wrap">

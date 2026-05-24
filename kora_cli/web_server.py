@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Final, List, Optional, Tuple
 
 import yaml
 
@@ -3735,8 +3735,55 @@ _COST_STATE_FALLBACK: Dict[str, Any] = {
 }
 
 
+# KR-FE-TENANT-PICKER-COCKPIT-CHROME — query-param name pinned by
+# drift-guard. FE references the same literal via
+# TENANT_ID_QUERY_PARAM in web/src/hooks/useActiveTenant.ts; the
+# contract test in tests/test_tenants_endpoint.py asserts equality.
+TENANT_ID_QUERY_PARAM_NAME: Final[str] = "tenant_id"
+
+
+@app.get("/api/tenants/list")
+async def list_tenants():
+    """Return the tenant_ids the cost-state holder currently knows about.
+
+    Wraps :func:`agent.cost_state_holder.list_cost_holder_tenants`.
+    Always includes the canonical ``"default"`` tenant even when the
+    holder registry is empty, so the FE tenant-picker can render at
+    least the single-tenant option from boot. Sorted; "default" first
+    when present, then the rest alphabetically.
+    """
+    try:
+        from agent.cost_state_holder import (
+            DEFAULT_TENANT_ID,
+            list_cost_holder_tenants,
+        )
+    except Exception as exc:
+        _log.warning(
+            "[kora.tenants] cost_state_holder import failed: %r — "
+            "returning default-only",
+            exc,
+        )
+        return {"tenants": ["default"]}
+
+    try:
+        registered = list(list_cost_holder_tenants())
+    except Exception as exc:
+        _log.warning(
+            "[kora.tenants] list_cost_holder_tenants raised %r — "
+            "returning default-only",
+            exc,
+        )
+        return {"tenants": [DEFAULT_TENANT_ID]}
+
+    if DEFAULT_TENANT_ID not in registered:
+        registered.append(DEFAULT_TENANT_ID)
+    # default-first, rest sorted — stable render order for the picker.
+    rest = sorted(t for t in registered if t != DEFAULT_TENANT_ID)
+    return {"tenants": [DEFAULT_TENANT_ID, *rest]}
+
+
 @app.get("/api/cost-state")
-async def get_cost_state():
+async def get_cost_state(tenant_id: Optional[str] = None):
     """Return Kora's current cost-ladder state.
 
     Live read via ``get_cost_state_summary`` (KR-P2-COST-FLIP). When
@@ -3744,13 +3791,18 @@ async def get_cost_state():
     registered, or the substrate read fails, returns the same shape
     with ``stub: True`` + an ``error`` field so the FE keeps rendering
     and the operator sees the cause.
+
+    ``tenant_id`` (KR-FE-TENANT-PICKER-COCKPIT-CHROME): when present,
+    resolves a per-tenant holder via ``get_cost_holder(tenant_id)``.
+    Omitted → binds to ``DEFAULT_TENANT_ID`` — pre-#202 behavior
+    preserved exactly for legacy callers.
     """
     try:
         from agent.cost_state_holder import get_cost_holder
         from agent.cost_state_summary import get_cost_state_summary
         from plugins.memory.isokron import get_last_active_provider
 
-        cost_holder = get_cost_holder()
+        cost_holder = get_cost_holder(tenant_id=tenant_id)
         provider = get_last_active_provider()
         if cost_holder is None:
             return {

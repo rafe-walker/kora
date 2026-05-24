@@ -36,6 +36,24 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
+// KR-FE-TENANT-PICKER-COCKPIT-CHROME — shared querystring builder
+// for the audit getters that take {limit?, tenantId?}. Centralising
+// avoids per-call drift in how the query-param name is spelled
+// (drift-guard test asserts tenant_id literal).
+export function buildAuditQueryString(opts?: {
+  limit?: number;
+  tenantId?: string;
+}): string {
+  if (!opts) return "";
+  const qs = new URLSearchParams();
+  if (opts.limit !== undefined) qs.set("limit", String(opts.limit));
+  if (opts.tenantId && opts.tenantId !== "default") {
+    qs.set("tenant_id", opts.tenantId);
+  }
+  const q = qs.toString();
+  return q ? `?${q}` : "";
+}
+
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
@@ -94,7 +112,19 @@ export const api = {
       "/api/kora-control/observed-state",
     ),
   getBootStatus: () => fetchJSON<BootStatusResponse>("/api/boot-status"),
-  getCostState: () => fetchJSON<CostStateResponse>("/api/cost-state"),
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — optional tenantId routes
+  // the cost-state read to a specific per-tenant holder. Omitted →
+  // legacy default-tenant behavior (preserved exactly).
+  getCostState: (opts?: { tenantId?: string }) => {
+    const qs =
+      opts?.tenantId && opts.tenantId !== "default"
+        ? `?tenant_id=${encodeURIComponent(opts.tenantId)}`
+        : "";
+    return fetchJSON<CostStateResponse>(`/api/cost-state${qs}`);
+  },
+  // List the tenants the cost-holder registry currently knows about
+  // (KR-FE-TENANT-PICKER-COCKPIT-CHROME). Drives useActiveTenant.
+  listTenants: () => fetchJSON<{ tenants: string[] }>("/api/tenants/list"),
   getCapabilities: () =>
     fetchJSON<CapabilitiesResponse>("/api/capabilities"),
   getHealthRollup: () =>
@@ -193,8 +223,16 @@ export const api = {
   // to seam=intent.email_to_sea_ticket. Endpoint pre-aggregates
   // by-action counts + daily-created sparkline points so the
   // panel can render without re-computing client-side.
-  getEmailIntentEventsRecent: (limit?: number) => {
-    const qs = limit !== undefined ? `?limit=${limit}` : "";
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — optional tenantId is
+  // forwarded as ?tenant_id=. CC#1 #444 sequence wires the BE-side
+  // filter; until that lands BE ignores the param (extra query
+  // params are harmless under FastAPI), so the FE can ship the
+  // wiring ahead of the consumer.
+  getEmailIntentEventsRecent: (opts?: {
+    limit?: number;
+    tenantId?: string;
+  }) => {
+    const qs = buildAuditQueryString(opts);
     return fetchJSON<EmailIntentEventsResponse>(
       `/api/email-intent/recent${qs}`,
     );
@@ -205,8 +243,11 @@ export const api = {
   // Endpoint pre-aggregates by-status counts + daily-sent
   // sparkline points so the panel can render without re-computing
   // client-side.
-  getOutboundEmailRecent: (limit?: number) => {
-    const qs = limit !== undefined ? `?limit=${limit}` : "";
+  getOutboundEmailRecent: (opts?: {
+    limit?: number;
+    tenantId?: string;
+  }) => {
+    const qs = buildAuditQueryString(opts);
     return fetchJSON<OutboundEmailEventsResponse>(
       `/api/outbound-email/recent${qs}`,
     );
@@ -214,16 +255,22 @@ export const api = {
   // KR-FE-AUTOFIX-LOG-PANEL — read the audit JSONL filtered to
   // seam=tool.probe_autofix_attempted. Endpoint pre-aggregates
   // by-status counts + daily-attempted sparkline.
-  getProbeAutofixRecent: (limit?: number) => {
-    const qs = limit !== undefined ? `?limit=${limit}` : "";
+  getProbeAutofixRecent: (opts?: {
+    limit?: number;
+    tenantId?: string;
+  }) => {
+    const qs = buildAuditQueryString(opts);
     return fetchJSON<ProbeAutofixEventsResponse>(
       `/api/probe-autofix/recent${qs}`,
     );
   },
   // KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora do"
   // chronological timeline joining all mutating-action seams.
-  getKoraActionsRecent: (limit?: number) => {
-    const qs = limit !== undefined ? `?limit=${limit}` : "";
+  getKoraActionsRecent: (opts?: {
+    limit?: number;
+    tenantId?: string;
+  }) => {
+    const qs = buildAuditQueryString(opts);
     return fetchJSON<KoraActionsResponse>(
       `/api/kora-actions/recent${qs}`,
     );
@@ -237,10 +284,14 @@ export const api = {
   getProbeInvestigations: (opts?: {
     window?: "24h" | "7d" | "all";
     limit?: number;
+    tenantId?: string;
   }) => {
     const qs = new URLSearchParams();
     if (opts?.window) qs.set("window", opts.window);
     if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.tenantId && opts.tenantId !== "default") {
+      qs.set("tenant_id", opts.tenantId);
+    }
     const q = qs.toString();
     return fetchJSON<ProbeInvestigationsResponse>(
       `/api/probe-investigations${q ? "?" + q : ""}`,
@@ -264,10 +315,14 @@ export const api = {
   getAlertInvestigations: (opts?: {
     window?: "24h" | "7d" | "all";
     limit?: number;
+    tenantId?: string;
   }) => {
     const qs = new URLSearchParams();
     if (opts?.window) qs.set("window", opts.window);
     if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.tenantId && opts.tenantId !== "default") {
+      qs.set("tenant_id", opts.tenantId);
+    }
     const q = qs.toString();
     return fetchJSON<AlertInvestigationsResponse>(
       `/api/alert-investigations${q ? "?" + q : ""}`,
@@ -332,9 +387,11 @@ export const api = {
     }),
   // KR-FE-PROMOTION-REVIEW-PANEL — list pending phrasebook promotion
   // proposals (sorted highest-confidence first by the BE).
-  getPhrasebookPromotionProposals: () =>
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — optional tenantId forwarded
+  // as ?tenant_id=. Graceful when BE ignores the param.
+  getPhrasebookPromotionProposals: (opts?: { tenantId?: string }) =>
     fetchJSON<PromotionProposalsResponse>(
-      "/api/promotions/phrasebook/pending",
+      `/api/promotions/phrasebook/pending${buildAuditQueryString(opts)}`,
     ),
   // Approve a pending proposal. Optional override payload fields:
   // pattern_override / reply_template_override / category_override
@@ -370,9 +427,9 @@ export const api = {
   // typed wrappers above stay as the canonical entrypoint —
   // they enforce the override field allowlist + return the
   // phrasebook-specific approve response shape.
-  getPromotionProposals: (loopSlug: string) =>
+  getPromotionProposals: (loopSlug: string, opts?: { tenantId?: string }) =>
     fetchJSON<PromotionProposalsResponse>(
-      `/api/promotions/${encodeURIComponent(loopSlug)}/pending`,
+      `/api/promotions/${encodeURIComponent(loopSlug)}/pending${buildAuditQueryString(opts)}`,
     ),
   approvePromotion: (
     loopSlug: string,

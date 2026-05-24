@@ -77,6 +77,7 @@ import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
 import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
+import { TenantPicker } from "@/components/TenantPicker";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -836,6 +837,10 @@ export default function App() {
                 <X />
               </Button>
             </div>
+
+            {/* KR-FE-TENANT-PICKER-COCKPIT-CHROME — sidebar header
+                slot. Renders nothing unless ≥2 tenants observed. */}
+            <TenantPicker />
 
             <nav
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"

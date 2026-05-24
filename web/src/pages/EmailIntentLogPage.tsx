@@ -32,6 +32,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
+import { useActiveTenant } from "@/hooks/useActiveTenant";
 import { api } from "@/lib/api";
 import {
   EMAIL_INTENT_ACTION_VALUES,
@@ -175,6 +176,9 @@ function EventCard({ event }: { event: EmailIntentEvent }) {
 export default function EmailIntentLogPage() {
   usePanelView("EmailIntentLogPage");
 
+  const { activeTenant, isAllTenants } = useActiveTenant();
+  const tenantForRead = isAllTenants ? undefined : activeTenant;
+
   const [data, setData] = useState<EmailIntentEventsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -184,14 +188,16 @@ export default function EmailIntentLogPage() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await api.getEmailIntentEventsRecent();
+      const resp = await api.getEmailIntentEventsRecent({
+        tenantId: tenantForRead,
+      });
       setData(resp);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tenantForRead]);
 
   useEffect(() => {
     void load();

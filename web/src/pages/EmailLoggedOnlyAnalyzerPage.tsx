@@ -37,6 +37,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
+import { useActiveTenant } from "@/hooks/useActiveTenant";
 import { api } from "@/lib/api";
 import type {
   EmailIntentEvent,
@@ -117,6 +118,9 @@ function LoggedOnlyCard({ event }: { event: EmailIntentEvent }) {
 export default function EmailLoggedOnlyAnalyzerPage() {
   usePanelView("EmailLoggedOnlyAnalyzerPage");
 
+  const { activeTenant, isAllTenants } = useActiveTenant();
+  const tenantForRead = isAllTenants ? undefined : activeTenant;
+
   const [data, setData] = useState<EmailIntentEventsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,14 +132,17 @@ export default function EmailLoggedOnlyAnalyzerPage() {
       // Bump limit past the default 100 — un-acted-on is the
       // long-tail of intent events; operator wants the full corpus
       // when building a training-data view. 500 matches the BE cap.
-      const resp = await api.getEmailIntentEventsRecent(500);
+      const resp = await api.getEmailIntentEventsRecent({
+        limit: 500,
+        tenantId: tenantForRead,
+      });
       setData(resp);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tenantForRead]);
 
   useEffect(() => {
     void load();

@@ -70,6 +70,7 @@ import { AlertsBanner } from "@/components/AlertsBanner";
 import { FreshnessBadge } from "@/components/FreshnessBadge";
 
 import { usePanelView } from "@/hooks/usePanelView";
+import { useActiveTenant } from "@/hooks/useActiveTenant";
 type LoadStatus<T> =
   | { state: "loading" }
   | { state: "ready"; data: T }
@@ -1058,8 +1059,25 @@ function projectAlertsFromSnapshot(snap: SnapshotResponse): AlertsResponse {
 // panel.
 function projectCostFromSnapshot(
   snap: SnapshotResponse,
+  activeTenantId?: string,
 ): CostStateResponse | null {
-  const cl = snap.cost_ladder;
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — when the operator picked a
+  // non-default tenant, project from cost_ladder_by_tenant[id]
+  // rather than the legacy default-tenant cost_ladder block. The
+  // by_tenant block lacks ``model_default`` (it's router-side, not
+  // per-tenant in v6); we borrow it from the legacy block so the
+  // tier render keeps working unchanged.
+  const useTenantBlock =
+    activeTenantId !== undefined &&
+    activeTenantId !== "default" &&
+    snap.cost_ladder_by_tenant !== undefined &&
+    snap.cost_ladder_by_tenant[activeTenantId] !== undefined;
+  const cl = useTenantBlock
+    ? {
+        ...snap.cost_ladder_by_tenant![activeTenantId!],
+        model_default: snap.cost_ladder.model_default,
+      }
+    : snap.cost_ladder;
   // USD fields — "unknown" sentinel means the cost holder hasn't
   // initialized + we can't faithfully render. Fall back to
   // fan-out for cost rather than show misleading zeros.
@@ -1167,6 +1185,13 @@ function projectHealthFromSnapshot(
 export default function DashboardPage() {
   usePanelView("DashboardPage");
 
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — route cost reads to the
+  // operator-picked tenant. "All tenants" aggregate view falls back
+  // to default for the live fan-out; the snapshot's per-tenant
+  // block is rendered via projectCostFromSnapshot(snap, tenantId).
+  const { activeTenant, isAllTenants } = useActiveTenant();
+  const tenantForRead = isAllTenants ? "default" : activeTenant;
+
   const [data, setData] = useState<DashboardData>(INITIAL_DATA);
   const [refreshing, setRefreshing] = useState(false);
   // KR-FE-DASHBOARD-SNAPSHOT-WIRE: freshness-badge state. Tracks
@@ -1235,7 +1260,7 @@ export default function DashboardPage() {
       // Row 1 — v1 surfaces
       loadOne("health", () => api.getHealthRollup()),
       loadOne("operational", () => api.getOperationalState()),
-      loadOne("cost", () => api.getCostState()),
+      loadOne("cost", () => api.getCostState({ tenantId: tenantForRead })),
       loadOne("sea", () => api.getKoraAssignedSeaTickets()),
       loadOne("control", () => api.getKoraControlObservedState()),
       loadOne("boot", () => api.getBootStatus()),
@@ -1262,7 +1287,7 @@ export default function DashboardPage() {
       // KR-ALERTS-PANEL — drives the top-of-page banner
       loadOne("alerts", () => api.getCurrentAlerts()),
     ]);
-  }, [loadOne]);
+  }, [loadOne, tenantForRead]);
 
   // Snapshot-first initial loader. Projects what the snapshot
   // covers cleanly, fans out everything else. Falls through to
@@ -1286,7 +1311,7 @@ export default function DashboardPage() {
       // unknown, fan out for this field instead." Operational +
       // alerts always project (snapshot always carries their
       // shapes, fail-soft to empty defaults at the holder layer).
-      const projectedCost = projectCostFromSnapshot(snap);
+      const projectedCost = projectCostFromSnapshot(snap, tenantForRead);
       const projectedHealth = projectHealthFromSnapshot(snap);
       const projectedFields = new Set<keyof DashboardData>([
         "operational",
@@ -1337,7 +1362,7 @@ export default function DashboardPage() {
         loadOne("reasoning", () => api.getRecentReasoning()),
       ];
       if (projectedCost === null) {
-        remainingFetches.push(loadOne("cost", () => api.getCostState()));
+        remainingFetches.push(loadOne("cost", () => api.getCostState({ tenantId: tenantForRead })));
       }
       if (projectedHealth === null) {
         remainingFetches.push(loadOne("health", () => api.getHealthRollup()));
@@ -1353,7 +1378,10 @@ export default function DashboardPage() {
       await fanOutAll();
       setLiveAt(new Date().toISOString());
     }
-  }, [loadOne, fanOutAll]);
+    // tenantForRead: re-project + re-fan-out when operator switches
+    // tenants (the snapshot's cost_ladder_by_tenant block is the
+    // source of truth for the new view).
+  }, [loadOne, fanOutAll, tenantForRead]);
 
   // Force-refresh path: bypass snapshot, do full live fan-out.
   // Triggered by the FreshnessBadge's Force-refresh button.
@@ -1529,7 +1557,7 @@ export default function DashboardPage() {
           to="/cost-state"
           status={data.cost}
           stubbed={isStubbed(data.cost)}
-          onRetry={() => void loadOne("cost", () => api.getCostState())}
+          onRetry={() => void loadOne("cost", () => api.getCostState({ tenantId: tenantForRead }))}
         >
           {data.cost.state === "ready" && <CostCardBody data={data.cost.data} />}
         </DashboardCard>
