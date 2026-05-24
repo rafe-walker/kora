@@ -78,3 +78,11 @@ from kora_cli.listeners import cost_telemetry_listener  # noqa: F401
 # investigation summary. Imported LAST so the audit reader +
 # reasoning engine + slack client listeners are all registered first.
 from kora_cli.listeners import probe_wake_listener  # noqa: F401
+# KR-PROMOTE-PHRASEBOOK-FOUNDATION — daily clustering cycle that
+# reads slack_dm_log.jsonl + proposes phrasebook entries to short-
+# circuit recurring DMs. Imported LAST so the slack_dm_log writer
+# (post-#184 routing) + the heartbeat scheduler are both wired
+# before the task gets enqueued. Fail-soft: cycle exceptions are
+# swallowed by the heartbeat _loop; per-proposal failures don't
+# poison the batch.
+from kora_cli.listeners import promote_phrasebook_listener  # noqa: F401
