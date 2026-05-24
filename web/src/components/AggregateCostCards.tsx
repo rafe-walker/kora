@@ -282,7 +282,11 @@ function TenantCostCard({ tenantId, block }: TenantCostCardProps) {
         </div>
 
         {/* Simple progress bar — pct-used over budget. Tone tracks
-            the rung so a downshifted tenant glows warning-yellow. */}
+            the rung so a downshifted tenant glows warning-yellow.
+            data-rung-bar opts this element into the
+            forced-color-adjust: none rule in index.css so the
+            semantic fill color (red = hard stop, etc.) is preserved
+            under high-contrast — the COLOR is the message here. */}
         <div
           className="h-1.5 w-full overflow-hidden rounded-full bg-muted/40"
           role="progressbar"
@@ -290,6 +294,7 @@ function TenantCostCard({ tenantId, block }: TenantCostCardProps) {
           aria-valuemin={0}
           aria-valuemax={100}
           aria-label={`${tenantId} budget usage`}
+          data-rung-bar
         >
           <div
             className={

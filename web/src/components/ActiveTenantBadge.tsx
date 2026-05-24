@@ -78,6 +78,12 @@ export function ActiveTenantBadge() {
         onClick={requestOpenTenantPicker}
         aria-label={`Active tenant: ${label}. Click to change.`}
         title="Click to open the tenant picker"
+        // KR-FE-A11Y-COMPLETION-FORCED-COLORS-AND-AXE-CORE-CI —
+        // data attribute hook for forced-colors. The border-
+        // current/20 + bg-card/60 chip styling vanishes under
+        // high-contrast; the CSS rule promotes data-tenant-chip
+        // to a CanvasText border so the affordance survives.
+        data-tenant-chip
         className={cn(
           "inline-flex items-center gap-1.5",
           "rounded border border-current/20 bg-card/60 px-2 py-0.5",
@@ -102,6 +108,7 @@ export function ActiveTenantBadge() {
         onClick={() => void onShare()}
         aria-label="Copy a shareable URL with the current tenant filter"
         title="Copy share URL"
+        data-tenant-chip
         className={cn(
           "inline-flex items-center justify-center",
           "rounded border border-current/20 bg-card/60 p-1",

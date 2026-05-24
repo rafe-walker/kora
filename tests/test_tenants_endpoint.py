@@ -352,3 +352,66 @@ def test_fe_a11y_and_recent_tenants_pins():
     # the actual completeWizard call lives behind confirmSkip.
     assert "requestSkip" in wizard_src
     assert "confirmSkip" in wizard_src
+
+
+def test_fe_forced_colors_and_axe_core_pins():
+    """KR-FE-A11Y-COMPLETION-FORCED-COLORS-AND-AXE-CORE-CI — pin the
+    forced-colors media query block + the data-attribute hooks the
+    block targets + the @axe-core/react dev integration. Renaming
+    a data attribute on a component without updating the matching
+    CSS rule silently breaks the high-contrast experience.
+    """
+    repo = Path(__file__).parent.parent
+
+    # A — forced-colors media-query block in index.css with the
+    # rules that target the multi-tenant chrome.
+    css_src = (repo / "web" / "src" / "index.css").read_text(encoding="utf-8")
+    assert "@media (forced-colors: active)" in css_src, (
+        "index.css must include a forced-colors media-query block — "
+        "Windows High Contrast users lose every author background "
+        "without it"
+    )
+    # Each rule must reference its data-attribute hook so a future
+    # rename of the attribute on the component side fails this test.
+    for hook in (
+        '[role="option"][data-highlighted="true"]',
+        "[data-tenant-chip]",
+        "[data-rung-bar]",
+        ':focus-visible',
+        'a[aria-current="page"]',
+    ):
+        assert hook in css_src, (
+            f"forced-colors block must include the {hook!r} rule"
+        )
+
+    # The components emit the data attributes the CSS targets.
+    picker_src = (
+        repo / "web" / "src" / "components" / "TenantPicker.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'data-highlighted={highlighted ? "true" : undefined}' in picker_src, (
+        "TenantPicker option must emit data-highlighted — paired "
+        "with the forced-colors CSS rule"
+    )
+
+    badge_src = (
+        repo / "web" / "src" / "components" / "ActiveTenantBadge.tsx"
+    ).read_text(encoding="utf-8")
+    assert "data-tenant-chip" in badge_src
+
+    agg_src = (
+        repo / "web" / "src" / "components" / "AggregateCostCards.tsx"
+    ).read_text(encoding="utf-8")
+    assert "data-rung-bar" in agg_src
+
+    # B — @axe-core/react dev dep + main.tsx dev-only mount.
+    pkg_src = (repo / "web" / "package.json").read_text(encoding="utf-8")
+    assert "@axe-core/react" in pkg_src, (
+        "@axe-core/react must be present in web/package.json devDependencies "
+        "for the dev-mode a11y console integration"
+    )
+    main_src = (repo / "web" / "src" / "main.tsx").read_text(encoding="utf-8")
+    # Dev-only gate — the entire branch must be tree-shaken out of
+    # production builds. import.meta.env.DEV is the vite-recognized
+    # gate.
+    assert "import.meta.env.DEV" in main_src
+    assert '"@axe-core/react"' in main_src
