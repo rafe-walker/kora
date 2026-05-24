@@ -86,3 +86,10 @@ from kora_cli.listeners import probe_wake_listener  # noqa: F401
 # swallowed by the heartbeat _loop; per-proposal failures don't
 # poison the batch.
 from kora_cli.listeners import promote_phrasebook_listener  # noqa: F401
+# KR-PROMOTE-SNAPSHOT-EXPAND — second promotion loop. Observes
+# ``reasoning.tool_called`` audit rows + proposes new snapshot fields
+# that would have pre-computed the answer. Imported AFTER the
+# phrasebook listener so both promotion loops register in dispatch
+# order. Default auto-apply OFF (proposes via audit only) per
+# bucket STOP-ASK §4 safety posture.
+from kora_cli.listeners import promote_snapshot_expand_listener  # noqa: F401

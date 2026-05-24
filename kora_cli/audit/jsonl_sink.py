@@ -191,6 +191,18 @@ SeamName = Literal[
     # operator consistently rejects are signal to tune the
     # proposer thresholds).
     "promotion.rejected",
+    # KR-PROMOTE-SNAPSHOT-EXPAND — second promotion loop. Observes
+    # reasoning tool-calls during status-shaped queries + proposes
+    # new snapshot fields that would have answered those queries at
+    # $0 LLM cost. The single seam ``promotion.snapshot_field_added``
+    # covers both the propose path (auto-apply OFF, v1 default) and
+    # the apply path (auto-apply ON). Payload carries
+    # proposal_id / proposed_field_path / proposed_collector_summary /
+    # cluster_size / sample_tool_calls / action (one of
+    # "proposed" / "auto_applied") / applier_diff_summary (only on
+    # auto_applied). Source is ``reasoning`` since the cluster
+    # input is reasoning audit.
+    "promotion.snapshot_field_added",
 ]
 
 SourceName = Literal[

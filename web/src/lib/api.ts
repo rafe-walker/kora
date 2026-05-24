@@ -1930,6 +1930,12 @@ export interface SnapshotResponse {
     }>;
     recent_error_count_5min: number;
   };
+  // tasks: schema v5 (KR-SNAPSHOT-TASKS) — open_count + in_progress_count
+  // populated from the IsoKron Sea_Tickets provider. Throttled refresh
+  // (every 30 min) preserves the $0-LLM premise of the snapshot. Both
+  // fields stay "unknown" before the first successful provider read
+  // (early-boot, daemon without gateway, or provider-side error). FE
+  // surfaces tasks panel from this — values are not stub.
   tasks?: {
     open_count: number | "unknown";
     in_progress_count: number | "unknown";
