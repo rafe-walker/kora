@@ -1278,6 +1278,15 @@ def _derive_caller_session_id(message: IncomingMessage) -> str:
         actor_kind = meta.get("caller_actor_kind") or "unknown"
         tool_name = meta.get("tool_name") or "unknown"
         return f"mcp:{actor_kind}:{tool_name}"
+    if message.source == "probe_investigation":
+        # KR-PROBE-WAKE-CONSUMER — audit-correlation key joins the
+        # reasoning.tool_called rows for this investigation back to
+        # the originating probe.wake_requested row. Shape:
+        # ``"probe:{probe_name}:{issue_category}"`` so the
+        # KR-REASONING-PANEL-PROBE-XREF follow-on can group by it.
+        probe = meta.get("probe_name") or "unknown"
+        category = meta.get("issue_category") or "unknown"
+        return f"probe:{probe}:{category}"
     return "unknown"
 
 
