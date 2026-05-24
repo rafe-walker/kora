@@ -154,6 +154,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     }),
+  // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
+  // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
+  getProbeInvestigations: (opts?: {
+    window?: "24h" | "7d" | "all";
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (opts?.window) qs.set("window", opts.window);
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    const q = qs.toString();
+    return fetchJSON<ProbeInvestigationsResponse>(
+      `/api/probe-investigations${q ? "?" + q : ""}`,
+    );
+  },
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1919,3 +1933,63 @@ export type PhrasebookTestResponse =
       would_fall_through_to_reasoning_engine: boolean;
       snapshot_present: boolean;
     };
+
+// KR-FE-PROBE-INVESTIGATION-VIEWER — joined wake event + downstream
+// reasoning + current health. Source-of-truth shape pinned by the
+// backend endpoint at /api/probe-investigations.
+//
+// v1 deferred fields documented in v1_notes; the panel surfaces
+// those notes inline so operator knows what's coming.
+export type ProbeResolutionStatus = "resolved" | "active" | "unknown";
+
+export interface ProbeReasoningToolCall {
+  tool_name: string;
+  triggered_by: string;
+  tool_duration_ms: number;
+  tool_status: string;
+  emitted_at: string;
+  exc_type?: string;
+}
+
+export interface ProbeInvestigationItem {
+  // Stable for FE react key — composed of wake_timestamp + probe +
+  // category. Repeats of the SAME wake (debounce window) get
+  // distinct ids via the timestamp component.
+  wake_event_id: string;
+  wake_timestamp: string;
+  probe_name: string;
+  issue_category: string;
+  severity: string;
+  title: string;
+  detail: string;
+  envelope_enabled: boolean;
+  envelope_fix_name: string;
+  caller_session_id: string;
+  // null when no reasoning.tool_called rows are joined to this
+  // wake's session-id (e.g. engine_unavailable fallback, or wake
+  // emitted but consumer not running yet).
+  investigation: {
+    tool_calls: ProbeReasoningToolCall[];
+    total_duration_ms: number;
+    any_errored: boolean;
+    call_count: number;
+  } | null;
+  current_probe_health: string; // "healthy" | "degraded" | "unhealthy" | "unknown"
+  resolution_status: ProbeResolutionStatus;
+}
+
+export interface ProbeInvestigationsResponse {
+  window: "24h" | "7d" | "all";
+  since: string | null; // null when window=all
+  generated_at: string;
+  total_count: number;
+  active_count: number;
+  resolved_count: number;
+  unknown_count: number;
+  current_probe_health: Record<string, string>;
+  items: ProbeInvestigationItem[];
+  v1_notes: {
+    per_call_cost_usd: string;
+    dm_sent_confirmation: string;
+  };
+}

@@ -1,0 +1,229 @@
+<!--
+  Static preview of ProbeInvestigationsPage for PR review. Mirrors
+  the JSX produced by ProbeInvestigationsPage.tsx so reviewers see
+  what the operator will see. Rendered to states.png + empty.png
+  via headless Chrome.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kora — ProbeInvestigationsPage (KR-FE-PROBE-INVESTIGATION-VIEWER)</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --fg: #ededed; --muted: #8b8b8b; --muted-bg: #1a1a1a;
+      --card: #131313; --border: #2a2a2a; --success: #4ade80;
+      --warning: #facc15; --destructive: #f87171; --primary: #60a5fa;
+      --accent: #1e293b;
+    }
+    body { background: var(--bg); color: var(--fg);
+           font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+           padding: 32px; max-width: 1100px; margin: 0; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+    h2 { font-size: 13px; font-weight: 500; color: var(--muted);
+         margin: 28px 0 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .preamble { color: var(--muted); font-size: 12px; max-width: 760px; line-height: 1.5; }
+    .card { background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .card.destructive { border-color: rgba(248, 113, 113, 0.4); }
+    .card.warning { border-color: rgba(250, 204, 21, 0.4); }
+    .card.success { border-color: rgba(74, 222, 128, 0.4); background: rgba(74,222,128,0.04); }
+    .card.info-banner { border-color: rgba(96, 165, 250, 0.3); background: rgba(96,165,250,0.05); padding: 10px 14px; }
+    .header-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .btn { padding: 6px 14px; font-size: 12px; border: 1px solid var(--border);
+           background: transparent; color: var(--fg); border-radius: 6px; cursor: pointer; }
+    .btn.primary { border-color: var(--primary); background: var(--primary); color: #001; }
+    .btn-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .btn-group button { padding: 4px 12px; font-size: 11px; font-family: ui-monospace, monospace;
+                        background: transparent; border: 0; color: var(--fg); cursor: pointer; }
+    .btn-group button.active { background: var(--primary); color: #001; }
+    .badge { padding: 1px 6px; border: 1px solid var(--border);
+             border-radius: 4px; font-size: 10px;
+             display: inline-flex; align-items: center; gap: 4px; }
+    .badge.success { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.1); color: var(--success); }
+    .badge.warning { border-color: rgba(250,204,21,0.4); background: rgba(250,204,21,0.1); color: var(--warning); }
+    .badge.destructive { border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.1); color: var(--destructive); }
+    .badge.mono { font-family: ui-monospace, monospace; }
+    .summary-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+    .health-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 12px; }
+    .meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+    .investigation { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .tool-row { display: flex; flex-wrap: wrap; gap: 4px; }
+    .empty-state { text-align: center; padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .empty-state .glyph { font-size: 36px; color: var(--success); }
+    .empty-state .title { font-size: 18px; font-weight: 500; }
+    .empty-state .body { font-size: 13px; color: var(--muted); max-width: 480px; }
+    .sev-icon { width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px; }
+    .sev-icon.destructive { color: var(--destructive); }
+    .sev-icon.warning { color: var(--warning); }
+    .right { margin-left: auto; }
+    .body-row { display: flex; gap: 12px; align-items: flex-start; }
+    .body-row .text { flex: 1; min-width: 0; }
+    .text .title-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+    .text .title-line .probe { font-family: ui-monospace, monospace; font-size: 14px; font-weight: 500; }
+    .text .title-line .ts { font-size: 11px; color: var(--muted); }
+    .text .issue-title { margin-top: 4px; font-size: 13px; font-weight: 500; }
+    .text .issue-detail { margin-top: 2px; font-size: 12px; color: var(--muted); }
+    .ml-7 { margin-left: 28px; }
+  </style>
+</head>
+<body id="root">
+
+  <!-- Page chrome -->
+  <div class="header-row" style="margin-bottom: 16px; justify-content: space-between;">
+    <h1>Probe Investigations</h1>
+    <div class="header-row" style="gap: 8px;">
+      <div class="btn-group">
+        <button class="active">24h</button>
+        <button>7d</button>
+        <button>All</button>
+      </div>
+      <button class="btn">↻ Refresh</button>
+    </div>
+  </div>
+  <p class="preamble" style="margin-bottom: 14px;">
+    Heartbeat-probe wake events joined with the reasoning calls Kora made to
+    investigate them and current probe health for resolution status. Joined on
+    <span style="font-family: ui-monospace, monospace;">caller_session_id="probe:{probe}:{category}"</span>
+    (set by <span style="font-family: ui-monospace, monospace;">_derive_caller_session_id</span> in
+    the reasoning engine).
+  </p>
+
+  <!-- Summary header -->
+  <div class="card">
+    <div class="summary-row">
+      <span>⚡ <strong>3</strong> <span style="color: var(--muted);">wakes</span></span>
+      <span style="color: var(--muted);">·</span>
+      <span>✖ <strong>1</strong> <span style="color: var(--muted);">active</span></span>
+      <span>✓ <strong>2</strong> <span style="color: var(--muted);">resolved</span></span>
+      <span class="right" style="font-size: 11px; color: var(--muted);">generated 2026-05-23 16:32:08</span>
+    </div>
+    <div class="health-row">
+      <span>Probe health right now:</span>
+      <span class="badge mono success">vercel: healthy</span>
+      <span class="badge mono success">sentry: healthy</span>
+      <span class="badge mono warning">doppler: degraded</span>
+      <span class="badge mono success">supabase: healthy</span>
+      <span class="badge mono success">fly: healthy</span>
+    </div>
+  </div>
+
+  <!-- v1 notes banner -->
+  <div class="card info-banner">
+    <div style="display: flex; align-items: flex-start; gap: 8px; font-size: 11px;">
+      <span style="color: var(--primary); flex-shrink: 0;">ⓘ</span>
+      <div style="color: var(--muted);">
+        <strong style="color: var(--fg);">v1 scope:</strong>
+        this panel joins audit rows + snapshot health. Per-call cost and DM-sent
+        confirmation aren't yet recorded —
+        <em>not durably recorded; see /api/cost_telemetry route=probe_investigation for aggregate</em>;
+        <em>probe DMs bypass slack_dm_log.jsonl in v1; follow-on KR-PROBE-DM-JSONL-WIRE</em>.
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 1: Resolved + critical (fly) -->
+  <div class="card destructive">
+    <div class="body-row">
+      <div class="sev-icon destructive">⚠</div>
+      <div class="text">
+        <div class="title-line">
+          <span class="probe">fly</span>
+          <span class="ts">2026-05-23 14:32:01</span>
+          <span class="badge destructive">critical</span>
+          <span class="badge">unhealthy</span>
+          <span class="right"></span>
+          <span class="badge success">✓ Resolved</span>
+        </div>
+        <div class="issue-title">Fly Machines API returned 401</div>
+        <div class="issue-detail">Token expired across kora-runtime + staging-app machines; both unreachable for 4 consecutive probe ticks.</div>
+      </div>
+    </div>
+    <div class="investigation ml-7">
+      <div class="meta-row">
+        <span class="mono">caller_session_id: probe:fly:unhealthy</span>
+        <span>·</span>
+        <span>envelope: rotate_fly_token (ENABLED)</span>
+        <span>·</span>
+        <span>current probe health: <span class="mono">healthy</span></span>
+      </div>
+      <div class="meta-row">
+        <span>🔧 3 tool calls</span><span>·</span><span>4.2 s total</span>
+      </div>
+      <div class="tool-row">
+        <span class="badge mono" style="font-size: 10px;">snapshot_read <span style="color: var(--muted);">120 ms</span></span>
+        <span class="badge mono" style="font-size: 10px;">read_fly_secret <span style="color: var(--muted);">340 ms</span></span>
+        <span class="badge mono" style="font-size: 10px;">run_runbook <span style="color: var(--muted);">3.7 s</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 2: Active + warning (doppler) -->
+  <div class="card warning">
+    <div class="body-row">
+      <div class="sev-icon warning">⚠</div>
+      <div class="text">
+        <div class="title-line">
+          <span class="probe">doppler</span>
+          <span class="ts">2026-05-23 12:15:11</span>
+          <span class="badge warning">warning</span>
+          <span class="badge">rotation_overdue</span>
+          <span class="right"></span>
+          <span class="badge warning">✖ Active</span>
+        </div>
+        <div class="issue-title">KORA_PURELYMAIL_API_KEY rotation 195 days overdue</div>
+        <div class="issue-detail">180-day rotation threshold crossed 15 days ago; no rotation event recorded since 2025-11-09.</div>
+      </div>
+    </div>
+    <div class="investigation ml-7">
+      <div class="meta-row">
+        <span class="mono">caller_session_id: probe:doppler:rotation_overdue</span>
+        <span>·</span>
+        <span>envelope: diagnose-only</span>
+        <span>·</span>
+        <span>current probe health: <span class="mono">degraded</span></span>
+      </div>
+      <div class="meta-row">
+        <span>🔧 1 tool call</span><span>·</span><span>180 ms total</span>
+      </div>
+      <div class="tool-row">
+        <span class="badge mono" style="font-size: 10px;">snapshot_read <span style="color: var(--muted);">180 ms</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 3: Resolved + warning (vercel), wake without follow-on -->
+  <div class="card warning">
+    <div class="body-row">
+      <div class="sev-icon warning">⚠</div>
+      <div class="text">
+        <div class="title-line">
+          <span class="probe">vercel</span>
+          <span class="ts">2026-05-23 09:48:32</span>
+          <span class="badge warning">warning</span>
+          <span class="badge">unhealthy</span>
+          <span class="right"></span>
+          <span class="badge success">✓ Resolved</span>
+        </div>
+        <div class="issue-title">Vercel deployment build failed</div>
+        <div class="issue-detail">storm-haven prod deploy returned BUILD_ERROR; cleared on subsequent re-trigger.</div>
+      </div>
+    </div>
+    <div class="investigation ml-7">
+      <div class="meta-row">
+        <span class="mono">caller_session_id: probe:vercel:unhealthy</span>
+        <span>·</span>
+        <span>envelope: diagnose-only</span>
+        <span>·</span>
+        <span>current probe health: <span class="mono">healthy</span></span>
+      </div>
+      <div style="font-style: italic; color: var(--muted); font-size: 11px;">
+        No reasoning calls recorded for this wake. Either the consumer
+        hasn't picked it up yet, or the engine returned engine_unavailable /
+        cost_ladder_halted before invoking any tools.
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

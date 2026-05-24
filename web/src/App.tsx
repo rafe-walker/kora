@@ -100,6 +100,7 @@ import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
 import CostTelemetryPage from "@/pages/CostTelemetryPage";
 import PhrasebookPage from "@/pages/PhrasebookPage";
+import ProbeInvestigationsPage from "@/pages/ProbeInvestigationsPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
@@ -163,6 +164,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cost-state": CostStatePage,
   "/cost-telemetry": CostTelemetryPage,
   "/phrasebook": PhrasebookPage,
+  "/probe-investigations": ProbeInvestigationsPage,
   "/capabilities": CapabilitiesPage,
   "/charter": CharterPage,
   "/kora-control": KoraControlPage,
@@ -231,6 +233,18 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "heartbeat",
     label: "Heartbeat",
     icon: Heart,
+  },
+  {
+    // KR-FE-PROBE-INVESTIGATION-VIEWER: wake → reasoning → DM xref.
+    // Sits right after /heartbeat since the operator-flow is
+    // "Heartbeat (raw probe state) → Probe Investigations (what Kora
+    // did about an unhealthy probe)." Joins probe.wake_requested
+    // audit + reasoning.tool_called audit on caller_session_id ==
+    // "probe:{probe}:{category}" (PR #163 + #166).
+    path: "/probe-investigations",
+    labelKey: "probeInvestigations",
+    label: "Probe Investigations",
+    icon: Sparkles,
   },
   {
     path: "/webhook-events",

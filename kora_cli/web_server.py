@@ -6278,6 +6278,256 @@ async def test_phrasebook_match(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Probe investigations xref — KR-FE-PROBE-INVESTIGATION-VIEWER
+# ---------------------------------------------------------------------------
+#
+# Reads three sources + joins them per wake event:
+#
+#   1. probe.wake_requested audit rows (PR #163 emitter)
+#   2. reasoning.tool_called audit rows where caller_session_id ==
+#      "probe:{probe}:{category}" (PR #166 wired this caller_session
+#      shape via _derive_caller_session_id, source="probe_investigation")
+#   3. snapshot.service_health[probe] (current probe health → drives
+#      resolution_status)
+#
+# v1 SCOPE NOTES (documented in PR description; flagged for follow-on):
+#
+#   * Probe DMs are NOT written to slack_dm_log.jsonl (wake_consumer
+#     calls client.post_dm directly without the
+#     SlackDMHandler._append_outbound_log_entry path). The response
+#     does NOT include dm_sent confirmation; KR-PROBE-DM-JSONL-WIRE
+#     follow-on can flip this to "DM sent at <ts>".
+#
+#   * Per-call cost_usd / model_used are not durably recorded per
+#     reasoning call — only aggregated per-route in CostTelemetry.
+#     For per-investigation cost, operator reads /cost-telemetry
+#     route=probe_investigation. KR-PROBE-INVESTIGATION-COST-XREF
+#     follow-on could add per-call records.
+#
+#   * Resolution semantics simplified to "snapshot.service_health
+#     right now" rather than "probe healthy AND post-dating wake."
+#     A per-probe observation timeline doesn't exist in v1 substrate
+#     (only current state). Stale (>24h, no recent obs) reduces to
+#     "current health=unknown" naturally. Sufficient for "is this
+#     one still firing?" — the operator's actual question.
+
+import re as _probe_xref_re
+from datetime import datetime as _probe_xref_datetime
+from datetime import timedelta as _probe_xref_timedelta
+from datetime import timezone as _probe_xref_timezone
+
+_PROBE_INVESTIGATION_VIEWER_WINDOWS = {
+    "24h": _probe_xref_timedelta(hours=24),
+    "7d": _probe_xref_timedelta(days=7),
+    "all": None,
+}
+
+_PROBE_CALLER_SESSION_RE = _probe_xref_re.compile(
+    r"^probe:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$"
+)
+
+
+def _probe_caller_session_id(probe: str, category: str) -> str:
+    """Mirror anthropic_engine._derive_caller_session_id's
+    probe_investigation shape so the join is keyed on a literal
+    that both sides agree on. Drift-guarded by
+    test_caller_session_id_matches_reasoning_engine."""
+    return f"probe:{probe}:{category}"
+
+
+def _project_reasoning_call(entry: "AuditEntry") -> Dict[str, Any]:
+    """Project a reasoning.tool_called audit row to FE shape.
+
+    Only the names + numeric/status fields the writer actually emits
+    (anthropic_engine._emit_tool_called_audit). NEVER includes tool
+    input/output bodies — those aren't in the audit details and must
+    never leak through this endpoint even if a future writer adds
+    them."""
+    d = entry.details
+    out: Dict[str, Any] = {
+        "tool_name": str(d.get("tool_name", "")),
+        "triggered_by": str(d.get("triggered_by", "")),
+        "tool_duration_ms": int(d.get("tool_duration_ms", 0) or 0),
+        "tool_status": str(d.get("tool_status", "")),
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    exc_type = d.get("exc_type")
+    if exc_type:
+        out["exc_type"] = str(exc_type)
+    return out
+
+
+def _resolution_status_from_health(current_health: str) -> str:
+    """Map current snapshot health to a resolution-status tag.
+
+    Simplified-v1 semantics: "currently healthy" → resolved (the
+    issue is no longer being observed); "currently unhealthy" or
+    "degraded" → active; "unknown" → unknown.
+    """
+    if current_health == "healthy":
+        return "resolved"
+    if current_health in ("unhealthy", "degraded"):
+        return "active"
+    return "unknown"
+
+
+@app.get("/api/probe-investigations")
+async def get_probe_investigations(
+    window: str = "24h",
+    limit: int = 50,
+) -> Dict[str, Any]:
+    """Probe wake → investigation xref panel feed.
+
+    Joins three sources per wake event:
+      * probe.wake_requested audit rows
+      * reasoning.tool_called audit rows (caller_session_id ==
+        "probe:{probe}:{category}" — pinned by drift-guard test)
+      * snapshot.service_health[probe] (current health → resolution)
+
+    Args:
+      window: ``24h`` | ``7d`` | ``all``. Bounds wake events read.
+      limit: cap on items returned (defensive against unbounded
+        growth). 1-200; default 50.
+
+    Returns: summary counts + per-event items ordered newest-first.
+
+    v1 deferred: per-call cost / model_used / DM-sent confirmation
+    aren't durably recorded in current substrate (see PR
+    description). The response omits these fields rather than
+    fabricating zeros.
+    """
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+    from kora_cli.snapshot import read_snapshot
+
+    if window not in _PROBE_INVESTIGATION_VIEWER_WINDOWS:
+        window = "24h"
+    delta = _PROBE_INVESTIGATION_VIEWER_WINDOWS[window]
+
+    capped_limit = max(1, min(int(limit or 50), 200))
+    now = _probe_xref_datetime.now(_probe_xref_timezone.utc)
+    since = now - delta if delta is not None else None
+
+    wake_rows = read_audit_entries(
+        seam="probe.wake_requested", since=since
+    )
+    # All reasoning.tool_called rows in the SAME window — we index
+    # by caller_session_id below to associate each wake with its
+    # investigation tool-calls. Reading without a per-wake filter
+    # would scale O(wakes * file-size); a single read + dict
+    # bucketing is O(file-size) total.
+    reasoning_rows = read_audit_entries(
+        seam="reasoning.tool_called", since=since
+    )
+    snap = read_snapshot() or {}
+    service_health = (
+        (snap.get("service_health") or {})
+        if isinstance(snap, dict)
+        else {}
+    )
+
+    tool_calls_by_session: Dict[str, list] = {}
+    for entry in reasoning_rows:
+        sid = entry.caller_session_id or ""
+        if not _PROBE_CALLER_SESSION_RE.match(sid):
+            continue
+        tool_calls_by_session.setdefault(sid, []).append(entry)
+
+    items: list = []
+    for entry in wake_rows[:capped_limit]:
+        d = entry.details
+        probe = str(d.get("probe") or "unknown")
+        category = str(d.get("category") or "unknown")
+        severity = str(d.get("severity") or "warning")
+        session_id = _probe_caller_session_id(probe, category)
+        wake_iso = entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        related_calls = tool_calls_by_session.get(session_id, [])
+        # Tool-calls audit rows are SAVED newest-first by the
+        # reader; chronologise within the investigation so the FE
+        # can show "tool_a → tool_b → tool_c" left-to-right.
+        related_calls_chrono = sorted(
+            related_calls, key=lambda e: e.emitted_at
+        )
+        # Only count calls AFTER the wake event (defensive against
+        # session-id reuse if a later investigation reuses the same
+        # probe:category key — the wake event marks the start).
+        post_wake_calls = [
+            c for c in related_calls_chrono
+            if c.emitted_at >= entry.emitted_at
+        ]
+        if post_wake_calls:
+            total_duration_ms = sum(
+                int(c.details.get("tool_duration_ms", 0) or 0)
+                for c in post_wake_calls
+            )
+            any_errored = any(
+                str(c.details.get("tool_status", "")).lower()
+                not in ("ok", "success", "")
+                or bool(c.details.get("exc_type"))
+                for c in post_wake_calls
+            )
+            investigation: Optional[Dict[str, Any]] = {
+                "tool_calls": [
+                    _project_reasoning_call(c) for c in post_wake_calls
+                ],
+                "total_duration_ms": total_duration_ms,
+                "any_errored": any_errored,
+                "call_count": len(post_wake_calls),
+            }
+        else:
+            investigation = None
+
+        current_health = str(service_health.get(probe, "unknown"))
+        items.append({
+            "wake_event_id": f"{wake_iso}:{probe}:{category}",
+            "wake_timestamp": wake_iso,
+            "probe_name": probe,
+            "issue_category": category,
+            "severity": severity,
+            "title": str(d.get("title") or ""),
+            "detail": str(d.get("detail") or ""),
+            "envelope_enabled": bool(d.get("envelope_enabled", False)),
+            "envelope_fix_name": str(d.get("envelope_fix_name") or "(none)"),
+            "caller_session_id": session_id,
+            "investigation": investigation,
+            "current_probe_health": current_health,
+            "resolution_status": _resolution_status_from_health(current_health),
+        })
+
+    total_count = len(items)
+    active_count = sum(1 for it in items if it["resolution_status"] == "active")
+    resolved_count = sum(
+        1 for it in items if it["resolution_status"] == "resolved"
+    )
+    unknown_count = total_count - active_count - resolved_count
+
+    return {
+        "window": window,
+        "since": since.strftime("%Y-%m-%dT%H:%M:%SZ") if since else None,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_count": total_count,
+        "active_count": active_count,
+        "resolved_count": resolved_count,
+        "unknown_count": unknown_count,
+        "current_probe_health": {
+            name: str(service_health.get(name, "unknown"))
+            for name in ("vercel", "sentry", "doppler", "supabase", "fly")
+        },
+        "items": items,
+        "v1_notes": {
+            "per_call_cost_usd": (
+                "not durably recorded; see /api/cost_telemetry "
+                "route=probe_investigation for aggregate"
+            ),
+            "dm_sent_confirmation": (
+                "probe DMs bypass slack_dm_log.jsonl in v1; "
+                "follow-on KR-PROBE-DM-JSONL-WIRE"
+            ),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
