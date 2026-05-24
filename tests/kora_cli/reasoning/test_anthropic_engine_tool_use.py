@@ -128,7 +128,10 @@ def _oauth(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_allowlist_has_5_read_only_tools():
+def test_allowlist_has_5_read_only_plus_operator_pinned_email():
+    """Post KR-EMAIL-OUTBOUND-COMPOSE-TOOL: 5 read-only tools + 1
+    operator-pinned mutating tool (kora__send_email_to_operator,
+    recipient locked to KORA_EMAIL_JOSHUA_ADDRESS by the executor)."""
     assert sorted(REASONING_TOOL_ALLOWLIST) == sorted(
         [
             "kora__get_operational_state",
@@ -136,20 +139,34 @@ def test_allowlist_has_5_read_only_tools():
             "kora__get_recent_ledger_entries",
             "kora__list_active_sea_tickets",
             "kora__get_recent_chain_events",
+            "kora__send_email_to_operator",
         ]
     )
 
 
-def test_allowlist_has_no_mutating_tools():
-    """Security boundary — Kora cannot mutate state via reasoning."""
-    mutating = [
+def test_allowlist_excludes_caller_controlled_mutating_tools():
+    """Security boundary — Kora cannot invoke tools that accept
+    caller-controlled recipients (mass-send risk) or substrate
+    state mutations from her own reasoning loop.
+
+    The lone allowlisted mutating tool
+    ``kora__send_email_to_operator`` pins recipient to
+    KORA_EMAIL_JOSHUA_ADDRESS in the executor (see
+    KR-EMAIL-OUTBOUND-COMPOSE-TOOL); other mutating tools stay
+    excluded.
+    """
+    forbidden = [
         "kora__request_state_transition",
         "kora__create_sea_ticket",
         "kora__send_webhook_test_event",
         "kora__send_slack_dm",
-        "kora__send_email",
+        "kora__send_email",  # caller-controlled recipients
+        "kora__request_pause",
+        "kora__request_resume",
+        "kora__request_stop",
+        "kora__send_test_alert",
     ]
-    for m in mutating:
+    for m in forbidden:
         assert m not in REASONING_TOOL_ALLOWLIST, (
             f"{m} should NOT be reachable from reasoning"
         )
@@ -160,7 +177,9 @@ def test_get_reasoning_available_tools_anthropic_shape():
     (snake_case per Anthropic API, NOT MCP's camelCase
     `inputSchema`)."""
     tools = get_reasoning_available_tools()
-    assert len(tools) == 5
+    # 5 read-only + 1 operator-pinned outbound
+    # (KR-EMAIL-OUTBOUND-COMPOSE-TOOL).
+    assert len(tools) == 6
     for tool in tools:
         assert set(tool.keys()) == {"name", "description", "input_schema"}
         assert tool["name"].startswith("kora__")
@@ -178,7 +197,7 @@ def test_get_reasoning_available_tools_returns_fresh_list():
     b = get_reasoning_available_tools()
     assert a is not b
     a.clear()
-    assert len(b) == 5
+    assert len(b) == 6
 
 
 @pytest.mark.asyncio
@@ -528,7 +547,8 @@ async def test_non_empty_registry_passes_tools_param(
     call_kwargs = client.messages.create.await_args.kwargs
     assert "tools" in call_kwargs
     tools = call_kwargs["tools"]
-    assert len(tools) == 5
+    # 5 read-only + kora__send_email_to_operator (KR-EMAIL-OUTBOUND-COMPOSE-TOOL)
+    assert len(tools) == 6
     assert all("input_schema" in t for t in tools)
 
 

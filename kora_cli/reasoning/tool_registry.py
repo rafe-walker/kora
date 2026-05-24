@@ -9,7 +9,7 @@ governs what Kora can call against HERSELF mid-reasoning.
 
 # Security boundary
 
-Reasoning-tools are **READ-ONLY only** in v1. Kora cannot
+Reasoning-tools are **READ-ONLY** by default. Kora cannot
 initiate state changes from her own reasoning loop:
 
   - No ``kora__request_state_transition`` (would let Kora
@@ -22,19 +22,34 @@ initiate state changes from her own reasoning loop:
     not appropriate for reasoning).
   - No ``kora__send_slack_dm`` / ``kora__send_email`` (Kora
     already responds via the Slack DM channel; meta-sends would
-    be confusing + Loop-risky).
+    be confusing + Loop-risky, AND the caller-controlled
+    recipient list creates a mass-send risk vector).
 
-Mutating tools remain available to OTHER agents via ``/mcp`` (with
-capability gating per KR-MCP-RUNTIME-SURFACE ST2). The architectural
-distinction: **Kora REASONS in her DM thread; AGENTS DRIVE her via
-MCP.** Reasoning-tools are for Kora to LOOK at her own state to
-answer Joshua; mutating-tools are how other agents tell her what
-to DO.
+# Deliberate scope expansion: kora__send_email_to_operator
 
-If the operator later needs a reasoning-mutating tool (e.g. "Kora
-can self-pause if she detects she's stuck"), that's a deliberate
-allowlist expansion + a separate threat-model review. v1 ships
-read-only.
+KR-EMAIL-OUTBOUND-COMPOSE-TOOL adds ONE mutating tool to the
+reasoning allowlist: ``kora__send_email_to_operator``. The
+exclusion above for ``kora__send_email`` was driven by two
+concerns — Loop-risk + mass-send-risk-from-caller-controlled-
+recipient. ``kora__send_email_to_operator`` neutralizes the mass-
+send concern by **pinning the recipient** to
+``KORA_EMAIL_JOSHUA_ADDRESS`` in the executor itself; the caller
+cannot specify other recipients. Loop-risk is addressed by the
+tool's own hourly-cap default (``KORA_EMAIL_OUTBOUND_HOURLY_CAP``
+= 5; configurable) plus operator R3 Q8a explicitly asking for
+this surface ("Kora, email me that pdf").
+
+This is the deliberate expansion the original docstring
+anticipated: "If the operator later needs a reasoning-mutating
+tool... that's a deliberate allowlist expansion + a separate
+threat-model review." The R3 walkthrough was the review.
+
+Other mutating tools remain available to OTHER agents via
+``/mcp`` (with capability gating per KR-MCP-RUNTIME-SURFACE ST2).
+The architectural distinction: **Kora REASONS in her DM thread;
+AGENTS DRIVE her via MCP.** Reasoning-tools are for Kora to LOOK
+at her own state or send a single operator-pinned email;
+mutating-tools are how other agents tell her what to DO.
 
 # Schema conversion: MCP camelCase → Anthropic snake_case
 
@@ -71,17 +86,39 @@ logger = logging.getLogger(__name__)
 # Allowlist (HARDCODED v1)
 # ---------------------------------------------------------------------------
 
-# The 5 read-only tools Kora can call mid-reasoning. Names match
-# ``mcp_tools.TOOL_DESCRIPTORS`` entries exactly. Order is the
-# advertised order in the Anthropic ``tools`` array (cosmetic; Claude
-# picks tools by name not position).
+# Read-only tools Kora can call mid-reasoning + one operator-pinned
+# mutating tool (kora__send_email_to_operator, KR-EMAIL-OUTBOUND-
+# COMPOSE-TOOL — see module docstring for the scope-expansion
+# rationale). Names match ``mcp_tools.TOOL_DESCRIPTORS`` /
+# ``ST2_TOOL_DESCRIPTORS`` entries exactly. Order is the advertised
+# order in the Anthropic ``tools`` array (cosmetic; Claude picks
+# tools by name not position).
 REASONING_TOOL_ALLOWLIST: List[str] = [
     "kora__get_operational_state",
     "kora__get_health_rollup",
     "kora__get_recent_ledger_entries",
     "kora__list_active_sea_tickets",
     "kora__get_recent_chain_events",
+    # KR-EMAIL-OUTBOUND-COMPOSE-TOOL — operator-pinned email send.
+    # Mutating but recipient-locked; see module docstring.
+    "kora__send_email_to_operator",
 ]
+
+
+# Tools in the allowlist that are MUTATING + take the (params,
+# caller) ST2 dispatcher signature. Engine-side reasoning calls
+# get a synthetic Caller below; the dispatcher's own audit
+# emission attributes the call to that synthetic actor_kind.
+_REASONING_MUTATING_TOOLS: frozenset[str] = frozenset(
+    {"kora__send_email_to_operator"}
+)
+
+# Synthetic actor_kind used when the reasoning engine invokes a
+# mutating tool from the allowlist. Distinct from "anonymous" so
+# the audit trail attributes the action correctly, and distinct
+# from any real MCP caller in mcp_callers.yaml so external
+# callers can't impersonate it.
+_REASONING_SELF_ACTOR_KIND = "kora_reasoning_self"
 
 
 # ---------------------------------------------------------------------------
@@ -133,10 +170,18 @@ def get_reasoning_available_tools() -> List[Dict[str, Any]]:
     """
     # Lazy import — keeps non-reasoning paths fast + breaks any
     # circular import risk between mcp_tools and the reasoning
-    # engine.
-    from kora_cli.listeners.mcp_tools import TOOL_DESCRIPTORS
+    # engine. Pull from BOTH descriptor lists (ST1 read-only +
+    # ST2 mutating) so the operator-pinned email tool is
+    # advertised to Claude alongside the read tools.
+    from kora_cli.listeners.mcp_tools import (
+        ST2_TOOL_DESCRIPTORS,
+        TOOL_DESCRIPTORS,
+    )
 
-    by_name = {desc["name"]: desc for desc in TOOL_DESCRIPTORS}
+    by_name = {
+        desc["name"]: desc
+        for desc in (*TOOL_DESCRIPTORS, *ST2_TOOL_DESCRIPTORS)
+    }
 
     out: List[Dict[str, Any]] = []
     for name in REASONING_TOOL_ALLOWLIST:
@@ -196,10 +241,31 @@ async def execute_reasoning_tool(
     """
     if name not in REASONING_TOOL_ALLOWLIST:
         raise ReasoningToolNotAllowed(
-            f"tool {name!r} is not in the reasoning allowlist "
-            f"(read-only tools only). Available: "
-            f"{REASONING_TOOL_ALLOWLIST}"
+            f"tool {name!r} is not in the reasoning allowlist. "
+            f"Available: {REASONING_TOOL_ALLOWLIST}"
         )
+
+    # Mutating-tool path (KR-EMAIL-OUTBOUND-COMPOSE-TOOL): route
+    # through ST2_TOOL_DISPATCH with a synthetic Caller. The
+    # synthetic caller's allowed_caps contains only the single
+    # tool being invoked, so even if a future executor adds a
+    # ``caller.allows(other_tool)`` check it'll fail closed.
+    if name in _REASONING_MUTATING_TOOLS:
+        from kora_cli.listeners.mcp_caller_auth import Caller
+        from kora_cli.listeners.mcp_tools import ST2_TOOL_DISPATCH
+
+        st2_dispatcher = ST2_TOOL_DISPATCH.get(name)
+        if st2_dispatcher is None:
+            raise ReasoningToolNotAllowed(
+                f"tool {name!r} is in the reasoning mutating "
+                f"allowlist but has no ST2 dispatcher — "
+                f"mcp_tools.ST2_TOOL_DISPATCH drift"
+            )
+        synthetic = Caller(
+            actor_kind=_REASONING_SELF_ACTOR_KIND,
+            allowed_caps=frozenset({name}),
+        )
+        return await st2_dispatcher(tool_input, synthetic)
 
     # Resolve the executor via mcp_tools.TOOL_DISPATCH. The
     # dispatcher takes a single ``params`` dict and calls the
