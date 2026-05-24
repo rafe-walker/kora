@@ -49,26 +49,26 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
-from .cache import TTLCache
-from .config import ISOKRON_CONFIG_SCHEMA, IsoKronProviderConfig
-from .connection import IsoKronConnection
-from .events import (
+from isokron_client.cache import TTLCache
+from isokron_client.config import ISOKRON_CONFIG_SCHEMA, IsoKronProviderConfig
+from isokron_client.connection import IsoKronConnection
+from isokron_client.events import (
     RecentChainEvent,
     emit_kora_event,
 )
-from .mcp_client import IsoKronMCPInvocationError
-from .models import (
+from isokron_client.mcp_client import IsoKronMCPInvocationError
+from isokron_client.models import (
     KoraCapabilityRow,
     PolicyRegistryEntry,
     RoleCharter,
 )
-from .reads import (
+from isokron_client.reads import (
     policies_as_mapping,
     read_active_role_charter,
     read_kora_capability_row,
     read_kora_policy_registry,
 )
-from .scratchpad import (
+from isokron_client.scratchpad import (
     ScratchpadEntry,
     ScratchpadKind,
     VisibilityScope,
@@ -76,7 +76,7 @@ from .scratchpad import (
     read_own_scratchpad,
     write_scratchpad_entry,
 )
-from .session_context import KoraSessionContext, assemble_session_context
+from isokron_client.session_context import KoraSessionContext, assemble_session_context
 
 logger = logging.getLogger(__name__)
 

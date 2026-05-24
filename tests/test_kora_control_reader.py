@@ -360,7 +360,7 @@ async def test_mark_failed_logs_reason_at_warn_locally(caplog):
 
     with caplog.at_level(
         logging.WARNING,
-        logger="plugins.memory.isokron.kora_control_reader",
+        logger="isokron_client.kora_control_reader",
     ):
         await reader.mark_failed(
             "command-id-xyz", reason="enforcement raised TimeoutError"

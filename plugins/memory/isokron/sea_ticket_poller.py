@@ -63,15 +63,15 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 
-from plugins.memory.isokron.claim_heartbeat import (
+from isokron_client.claim_heartbeat import (
     HeartbeatHandle,
     start_heartbeat,
 )
-from plugins.memory.isokron.kora_control_reader import (
+from isokron_client.kora_control_reader import (
     KoraControlCommand,
     KoraControlReader,
 )
-from plugins.memory.isokron.kora_operation_ledger import (
+from isokron_client.kora_operation_ledger import (
     KoraOperationLedger,
     KoraOperationLedgerError,
 )

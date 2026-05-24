@@ -121,8 +121,14 @@ def test_module_has_no_network_or_db_imports_at_load_time():
     of a one-line change.
     """
     # Fresh-load the module so any import-time side effects are visible
-    # in sys.modules even if a previous test already triggered them.
-    mod_name = "plugins.memory.isokron.capability_check"
+    # in sys.modules even if a previous test already triggered them. The
+    # canonical module name is ``isokron_client.capability_check`` post
+    # KR-KORA-PIP-RESTRUCTURE-PHASE-1; the legacy ``plugins.memory.isokron.
+    # capability_check`` is a sys.modules alias installed by the shim
+    # at ``plugins/memory/isokron/__init__.py`` and goes away when
+    # the alias is deleted. We target the canonical name so the fresh
+    # importlib reimport actually finds the source file.
+    mod_name = "isokron_client.capability_check"
     if mod_name in sys.modules:
         del sys.modules[mod_name]
     importlib.import_module(mod_name)

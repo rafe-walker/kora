@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isokron-client"
+version = "0.1.0a1"
+description = "IsoKron substrate client — BYOA library for any Hermes-based agent to read/write the IsoKron substrate (events, control, scratchpad, policy, constitution, capability, sea-tickets)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "CC#3 Kora Runtime", email = "kora-pm@stormhavenenterprises.com"},
+]
+# Runtime deps mirror the ``isokron`` extra in the top-level ``pyproject.toml``
+# (KR-2 footprint), which is what plugins/memory/isokron/ was running against
+# before extraction. Exact pins follow the supply-chain hygiene rule in the
+# top-level pyproject (Mini Shai-Hulud 2026-05-12).
+dependencies = [
+    "asyncpg==0.31.0",
+    "mcp==1.26.0",
+    "blake3==1.0.7",
+    "pydantic==2.12.5",
+]
+
+# NO ``[project.entry-points."hermes_agent.plugins"]`` block: isokron-client
+# is a LIBRARY, not a Hermes plugin. The Hermes-plugin shape (memory provider
+# subclass + ``register(ctx)``) stays in the Kora tree at
+# ``plugins/memory/isokron/`` and imports FROM this library. See
+# §"Two consumers" in README.md.
+
+[project.urls]
+"Source" = "https://github.com/rafe-walker/kora/tree/feature/phase2-upgrades/packages/isokron-client"
+"BYOA Vision" = "https://github.com/rafe-walker/kora-docs/blob/main/kora_docs/14_research/kora_pip_packaging_2026-05-24/AUDIT.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Self-contained pytest config — overrides the Kora-tree root
+# pyproject's xdist + timeout flags so the package can be tested
+# independently (the §A.5 dry-run install pattern: build wheel,
+# install into clean venv, run these tests against the installed
+# package — no Kora repo on the path).
+addopts = "--no-header -q"
+testpaths = ["tests"]

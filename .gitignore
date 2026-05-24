@@ -4,6 +4,14 @@
 *.pyc*
 __pycache__/
 .venv/
+
+# Wheel build artifacts (KR-KORA-PIP-RESTRUCTURE-PHASE-1) — the pip
+# packages under packages/ produce ``build/`` + ``dist/`` directories
+# when ``python -m build --wheel`` runs. Local-only; never committed.
+packages/*/build/
+packages/*/dist/
+packages/*/src/*.egg-info/
+
 .vscode/
 .env
 .env.local

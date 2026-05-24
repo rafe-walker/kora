@@ -271,7 +271,7 @@ async def emit_sea_ticket_resolved(
         return None
 
     try:
-        from plugins.memory.isokron.events import emit_kora_event
+        from isokron_client.events import emit_kora_event
 
         mcp_client = connection.get_mcp_client()
         import asyncio

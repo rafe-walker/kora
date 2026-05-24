@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kora-runtime"
+version = "0.1.0a1"
+description = "Kora — Architect of Will agent runtime as a Hermes plugin. The 7-sub-plugin orchestration that drives Kora's reasoning route-through, distributed as a pip package."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "CC#3 Kora Runtime", email = "kora-pm@stormhavenenterprises.com"},
+]
+# Runtime deps — declared deps install via PyPI:
+#   * isokron-client — sister Phase 1 package; provides the substrate
+#     primitives Kora's sub-plugins compose (events, reads, scratchpad).
+#     Once published to PyPI a fresh ``pip install kora-runtime`` pulls
+#     this transitively; today both packages install from local source
+#     in the same operation.
+#
+# Source-only deps — NOT declared here; operator must install before pip:
+#   * hermes-agent (provides ``agent.identity_spec.IdentitySpec`` +
+#     ``agent.cost_state_holder`` + ``agent.operational_state_holder`` +
+#     the ``PluginContext`` machinery). Per the 2026-05-25 operator
+#     decision: Hermes stays source-only until the architecture is
+#     battle-tested. See README §"Installation" for the order.
+#
+# Deferred Kora-side deps — NOT pulled at import time, only at call time:
+#   * kora_cli.audit / kora_cli.snapshot / kora_cli.reasoning.tool_registry
+#     / kora_constants / plugins.kora_hermes — accessed only at function-
+#     call time (per the existing in-function imports inside each sub-
+#     plugin) so the wheel imports cleanly without Kora on the path.
+dependencies = [
+    "isokron-client",
+]
+
+# Hermes plugin discovery entry point. Once ``pip install kora-runtime``
+# completes (after ``pip install -e ../hermes-agent``), Hermes's
+# ``PluginManager._scan_entry_points`` finds this and calls
+# ``kora_runtime.register:register``. The bundled-plugin shim at
+# ``plugins/kora_hermes/`` continues to work for in-tree dev.
+[project.entry-points."hermes_agent.plugins"]
+# Points at the package-level ``register`` callable re-exported from
+# ``kora_runtime/__init__.py`` (which itself comes from ``plugin.py``).
+# This avoids the naming collision between a hypothetical
+# ``register.py`` submodule and the ``register`` function — the
+# ``kora-runtime/__init__.py`` already re-exports ``register`` so
+# pointing here is one less indirection.
+kora = "kora_runtime:register"
+
+[project.urls]
+"Source" = "https://github.com/rafe-walker/kora/tree/feature/phase2-upgrades/packages/kora-runtime"
+"Phase 1 Audit" = "https://github.com/rafe-walker/kora-docs/blob/main/kora_docs/14_research/kora_pip_packaging_2026-05-24/AUDIT.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# Self-contained pytest config so the package can be tested independently
+# of the Kora-tree root pyproject (which adds -n / --timeout flags).
+addopts = "--no-header -q"
+testpaths = ["tests"]

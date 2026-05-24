@@ -32,7 +32,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List
 
-from ..relationlink import (
+from isokron_client.relationlink import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
     MAX_TRAVERSE_DEPTH,
@@ -44,7 +44,7 @@ from ..relationlink import (
     read_relationlink_for_node,
     traverse_relationlink,
 )
-from ..capability_check import CapabilityDeniedError, assert_kora_can_perform
+from isokron_client.capability_check import CapabilityDeniedError, assert_kora_can_perform
 from .iso_node import NODE_KINDS
 
 if TYPE_CHECKING:  # pragma: no cover

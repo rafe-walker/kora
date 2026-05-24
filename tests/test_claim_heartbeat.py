@@ -151,7 +151,7 @@ async def test_refresh_skipped_when_no_progress_signaled(caplog):
         mcp_invoke=invoke, interval=0.05, signal_progress_before_first_tick=False
     )
 
-    with caplog.at_level(logging.INFO, logger="plugins.memory.isokron.claim_heartbeat"):
+    with caplog.at_level(logging.INFO, logger="isokron_client.claim_heartbeat"):
         await asyncio.sleep(0.08)
         await handle.cancel()
 
