@@ -1,0 +1,57 @@
+# Default Kora DM phrasebook (KR-CHEAP-TRIVIAL-DM-SHORTCIRCUIT).
+#
+# Operator can override by creating ~/.kora/phrasebook/slack_dm.yml
+# with the same shape. The override REPLACES this file rather than
+# merging — copy this whole document as a starting point and edit.
+#
+# Patterns are case-insensitive Python regex (re.IGNORECASE).
+#
+# Reply templates support {snapshot.path.to.field} interpolation.
+# Paths walk nested dicts; missing fields OR a literal "unknown"
+# value triggers fall-through to the reasoning engine (we never
+# send a half-filled response). Punctuation outside the braces is
+# preserved verbatim.
+#
+# Tone target: Kora — direct, brief, conversational. NOT formal
+# bot phrasing. Operator (Joshua) reviews these before merge.
+
+entries:
+  - pattern: "^(hey|hi|hello|yo|sup)[\\s!.]*$"
+    category: greeting
+    description: Bare greeting with no other content
+    reply_template: "Hey. What's up?"
+
+  - pattern: "^(thanks|thx|ty|tysm|thank you|appreciate it|appreciate that)[\\s.!]*$"
+    category: thanks
+    description: Operator acknowledgment, no follow-up needed
+    reply_template: "Anytime."
+
+  - pattern: "^(ack|acknowledged|got it|k|ok|okay|kk|sounds good|cool)[\\s.!]*$"
+    category: ack
+    description: Operator ack, no reply substance needed
+    reply_template: "👍"
+
+  - pattern: "^(burn|cost|spend|how ?much|what'?s? my burn|what'?s? the burn|whats the spend)[\\s.?!]*$"
+    category: burn_query
+    description: Single-clause cost / burn inquiry
+    reply_template: "{snapshot.cost_ladder.monthly_budget_pct_used}% of monthly budget used. Tier: {snapshot.cost_ladder.current_tier}."
+
+  - pattern: "^(status|state|how ?are (you|things)|how'?s? it going|whats up|what'?s? up)[\\s.?!]*$"
+    category: status_query
+    description: General "are you alive / how are things"
+    reply_template: "Operational state: {snapshot.operational_state.primary}. {snapshot.alerts.active_count} active alert(s)."
+
+  - pattern: "^(any alerts|alerts|what'?s? alerting|what'?s? firing|whats firing)[\\s.?!]*$"
+    category: alert_query
+    description: Direct alert-count inquiry
+    reply_template: "{snapshot.alerts.active_count} active: {snapshot.alerts.by_severity.critical} crit / {snapshot.alerts.by_severity.warning} warn / {snapshot.alerts.by_severity.info} info."
+
+  - pattern: "^(health|service health|services?|service status)[\\s.?!]*$"
+    category: health_query
+    description: External-service health rollup
+    reply_template: "Supabase: {snapshot.service_health.supabase} · Fly: {snapshot.service_health.fly} · Vercel: {snapshot.service_health.vercel} · Sentry: {snapshot.service_health.sentry} · Doppler: {snapshot.service_health.doppler}."
+
+  - pattern: "^(are you paused|paused\\?|you paused\\??|are you stopped|stopped\\??)[\\s.?!]*$"
+    category: pause_check
+    description: Quick "are you running" probe
+    reply_template: "Primary state: {snapshot.operational_state.primary}. Paused: {snapshot.operational_state.paused}."
