@@ -10324,12 +10324,13 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "computer-use",
+        "acp", "auth", "backup", "boot", "bundles", "checkpoints", "claw",
+        "completion", "computer-use",
         "config", "cron", "curator", "daemon", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "migrate-hermes-home", "model", "pairing", "plugins", "postinstall",
+        "profile", "promote", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",

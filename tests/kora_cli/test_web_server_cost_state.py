@@ -48,11 +48,18 @@ def _isolate_config(tmp_path, monkeypatch):
 @pytest.fixture
 def _no_holder(monkeypatch):
     """Force the CostStateHolder getter to return None — happens in CI /
-    dev where init_cost_holder hasn't run."""
+    dev where init_cost_holder hasn't run.
+
+    KR-PER-TENANT-COST-LADDER-FOUNDATION (#202): the singleton
+    ``_HOLDER`` was replaced with ``_HOLDERS_BY_TENANT``. Use the
+    canonical reset hook instead of poking the private attribute.
+    """
     import agent.cost_state_holder as holder_mod
 
-    monkeypatch.setattr(holder_mod, "_HOLDER", None, raising=False)
-    monkeypatch.setattr(holder_mod, "get_cost_holder", lambda: None)
+    monkeypatch.setattr(holder_mod, "_HOLDERS_BY_TENANT", {}, raising=False)
+    monkeypatch.setattr(
+        holder_mod, "get_cost_holder", lambda tenant_id=None: None
+    )
     return None
 
 
@@ -91,9 +98,15 @@ def _make_live_holder(
 
 
 def _install_holder(monkeypatch, holder):
+    # KR-PER-TENANT-COST-LADDER-FOUNDATION (#202): get_cost_holder
+    # now accepts an optional tenant_id kwarg. Adapt the test stub
+    # to match the new signature so call sites passing tenant_id
+    # don't TypeError.
     import agent.cost_state_holder as holder_mod
 
-    monkeypatch.setattr(holder_mod, "get_cost_holder", lambda: holder)
+    monkeypatch.setattr(
+        holder_mod, "get_cost_holder", lambda tenant_id=None: holder
+    )
 
 
 def _install_no_provider(monkeypatch):

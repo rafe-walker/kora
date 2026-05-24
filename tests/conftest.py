@@ -37,6 +37,25 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# KR-TEST-STABILITY (#202): Pre-load kora_bootstrap at conftest IMPORT
+# time so its one-shot ``init_kora_home_env`` runs HERE (with whatever
+# env vars exist at pytest startup), not inside an autouse fixture
+# (where ``monkeypatch.setenv("HERMES_HOME", tmp_path)`` has already
+# fired and the mirror would set ``KORA_HOME=tmp_path``, beating
+# per-test ``patch.dict({"HERMES_HOME": "..."})`` overrides).
+#
+# Without this preload: the first test in each xdist worker that
+# *imports* kora_bootstrap (via a fixture or test body) triggers the
+# mirror against the conftest's tmp_path HERMES_HOME — leaving
+# KORA_HOME stuck at the tmp_path for the rest of the worker's life.
+# Subsequent tests that try to override only HERMES_HOME see the
+# stale mirrored KORA_HOME win in get_kora_home's resolution order.
+import kora_bootstrap  # noqa: F401, E402 — must precede any other
+# imports that might trigger kora_bootstrap fresh (e.g. monkeypatch
+# fixture body re-imports). Side effect: init_kora_home_env runs
+# once here, sets the flag, never re-fires.
+
+
 # ── Credential env-var filter ──────────────────────────────────────────────
 #
 # Any env var in the current process matching ONE of these patterns is
@@ -329,6 +348,11 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
+    # KR-TEST-STABILITY (#202): KORA_HOME stays absent per test.
+    # kora_bootstrap is module-level imported at conftest load (above)
+    # so its mirror flag is already True by the time this fixture
+    # runs — the mirror never re-fires from within a test fixture.
+    monkeypatch.delenv("KORA_HOME", raising=False)
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.

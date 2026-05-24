@@ -104,6 +104,8 @@ def test_compute_snapshot_has_all_required_top_level_keys(env):
         "cost_telemetry",
         # KR-SNAPSHOT-DAEMON-HEALTH v4 addition.
         "daemon_health",
+        # KR-PER-TENANT-COST-LADDER-FOUNDATION v6 addition (#202).
+        "cost_ladder_by_tenant",
     }
 
 
@@ -377,13 +379,19 @@ def test_cost_ladder_populated_from_holder(env, monkeypatch):
 # ===========================================================================
 
 
-def test_schema_version_is_v5(env):
-    """KR-SNAPSHOT-TASKS bumps schema_version 4 → 5 for the
-    tasks-fields-populated change. Stable contract for consumer
-    branches — FE TS type at web/src/lib/api.ts must stay in sync."""
-    assert SCHEMA_VERSION == 5
+def test_schema_version_is_v6(env):
+    """KR-PER-TENANT-COST-LADDER-FOUNDATION bumps schema_version
+    5 → 6 for the new ``cost_ladder_by_tenant`` block (per-tenant
+    cost ladder rollups; sibling of the legacy ``cost_ladder``
+    block so v5 consumers keep working unchanged)."""
+    assert SCHEMA_VERSION == 6
     snap = compute_snapshot()
-    assert snap["schema_version"] == 5
+    assert snap["schema_version"] == 6
+    # The new sibling block is always present, even when empty
+    # (no tenants registered) — consumers can branch on emptiness
+    # without needing key-presence checks.
+    assert "cost_ladder_by_tenant" in snap
+    assert isinstance(snap["cost_ladder_by_tenant"], dict)
 
 
 def test_credit_pool_env_override_truthy(env, monkeypatch):
@@ -842,3 +850,96 @@ async def test_tasks_refresh_provider_error_preserves_prior(env, monkeypatch):
     # Prior values preserved.
     assert snap["tasks"]["in_progress_count"] == 2
     assert snap["tasks"]["open_count"] == 3
+
+
+# ===========================================================================
+# KR-PER-TENANT-COST-LADDER-FOUNDATION v6 — cost_ladder_by_tenant
+# ===========================================================================
+
+
+def test_cost_ladder_by_tenant_empty_when_no_holders(env, monkeypatch):
+    """No tenants registered → cost_ladder_by_tenant is an empty
+    dict (not absent). Consumers can iterate without crashing."""
+    from agent.cost_state_holder import _reset_cost_holder_for_tests
+
+    _reset_cost_holder_for_tests()
+    snap = compute_snapshot()
+    assert snap["cost_ladder_by_tenant"] == {}
+
+
+def test_cost_ladder_by_tenant_surfaces_every_registered_tenant(
+    env, monkeypatch
+):
+    """Multiple tenants → cost_ladder_by_tenant has one block per
+    tenant; each block matches the legacy ``cost_ladder`` shape so
+    consumers can re-use the same renderer."""
+    from datetime import datetime, timezone
+
+    from agent.cost_state_holder import (
+        _reset_cost_holder_for_tests,
+        init_cost_holder,
+    )
+
+    _reset_cost_holder_for_tests()
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD_MARVIN", "500")
+    init_cost_holder(
+        billing_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    init_cost_holder(
+        billing_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        tenant_id="marvin",
+    )
+
+    snap = compute_snapshot()
+    by_tenant = snap["cost_ladder_by_tenant"]
+    assert set(by_tenant.keys()) == {"default", "marvin"}
+    # Per-tenant block shape mirrors the legacy ``cost_ladder``
+    # block (minus model_default which is router-side, not
+    # per-tenant in v6).
+    for tenant_id, block in by_tenant.items():
+        assert set(block.keys()) == {
+            "current_tier",
+            "monthly_budget_pct_used",
+            "spent_to_date_usd",
+            "credit_pool_usd",
+        }
+    # Per-tenant env override surfaced correctly.
+    assert by_tenant["marvin"]["credit_pool_usd"] == 500.0
+    # Default tenant uses the canonical default ($200) absent an
+    # explicit env override.
+    assert by_tenant["default"]["credit_pool_usd"] == 200.0
+
+
+def test_cost_ladder_legacy_block_continues_to_reflect_default_tenant(
+    env, monkeypatch
+):
+    """The legacy ``cost_ladder`` block must keep reading from the
+    default tenant — every v5 consumer (CC#2 CostPanel, snapshot-
+    based reasoning shortcircuits) reads this key directly + would
+    break if we'd silently moved it to the multi-tenant sibling."""
+    from datetime import datetime, timezone
+
+    from agent.cost_state_holder import (
+        _reset_cost_holder_for_tests,
+        init_cost_holder,
+    )
+
+    _reset_cost_holder_for_tests()
+    init_cost_holder(
+        billing_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    init_cost_holder(
+        billing_period_start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        tenant_id="marvin",
+    )
+
+    snap = compute_snapshot()
+    # Legacy block present with current_tier + spend + pool.
+    cl = snap["cost_ladder"]
+    assert "current_tier" in cl
+    assert "spent_to_date_usd" in cl
+    assert "credit_pool_usd" in cl
+    # And matches the by-tenant default entry.
+    assert cl["credit_pool_usd"] == snap["cost_ladder_by_tenant"]["default"][
+        "credit_pool_usd"
+    ]

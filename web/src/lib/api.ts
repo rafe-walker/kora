@@ -2034,6 +2034,21 @@ export interface SnapshotResponse {
     spent_to_date_usd: number | "unknown";
     credit_pool_usd: number;
   };
+  // cost_ladder_by_tenant: schema v6 (KR-PER-TENANT-COST-LADDER-FOUNDATION,
+  // #202). Per-tenant projection of every registered cost-ladder
+  // holder. Sibling of ``cost_ladder`` (which keeps reflecting the
+  // ``"default"`` tenant for backward compat with every v5 consumer).
+  // Empty dict on single-tenant deployments — render as "single
+  // tenant" view in the cockpit. Multi-tenant deployments (Marvin
+  // operator + Kora operator + ...) get one block per tenant; each
+  // block mirrors the v5 cost_ladder shape minus model_default
+  // (which is router-side, not per-tenant in v6).
+  cost_ladder_by_tenant?: Record<string, {
+    current_tier: string;
+    monthly_budget_pct_used: number | null;
+    spent_to_date_usd: number | "unknown";
+    credit_pool_usd: number;
+  }>;
   service_health: {
     supabase: string;
     fly: string;

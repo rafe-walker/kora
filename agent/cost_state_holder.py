@@ -61,7 +61,7 @@ import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Final, Optional
+from typing import Dict, Final, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
@@ -537,11 +537,87 @@ class CostStateHolder:
 
 
 # ---------------------------------------------------------------------------
-# Singleton + accessors
+# Per-tenant holder registry (KR-PER-TENANT-COST-LADDER-FOUNDATION, #202)
 # ---------------------------------------------------------------------------
+#
+# Pre-#202: a single process-wide ``_HOLDER`` covered single-tenant
+# Kora (just Joshua's operator account).
+#
+# #202: per-tenant accessors. Each tenant gets an independent
+# CostStateHolder instance — independent rung accumulation +
+# independent credit pool. Foundation for multi-tenant Kora
+# distribution (other IsoKron operators running ``pip install
+# kora-plugin`` each need their own cost ladder, not Joshua's).
+#
+# Backward compat: the legacy singleton-shaped call sites
+# ``init_cost_holder(...)`` + ``get_cost_holder()`` (no tenant_id
+# kwarg) still work — they bind to the canonical ``DEFAULT_TENANT_ID``
+# tenant. Every existing operator gets ``"default"`` implicitly;
+# Marvin's operator (when CC#3's #430 lands) will pass a distinct
+# ``tenant_id`` at boot via the identity-plugin's
+# ``IdentitySpec.identity_metadata``.
+
+#: Tenant id used by legacy singleton-shaped callers. Every existing
+#: production code path (pre-multi-tenant) binds to this tenant
+#: implicitly — they don't pass tenant_id and the accessors default
+#: to it.
+DEFAULT_TENANT_ID: Final[str] = "default"
 
 
-_HOLDER: Optional[CostStateHolder] = None
+_HOLDERS_BY_TENANT: Dict[str, CostStateHolder] = {}
+
+
+def _resolve_credit_pool_for_tenant(tenant_id: str) -> float:
+    r"""Resolve the credit pool for ``tenant_id`` from env, falling
+    back to the canonical default.
+
+    Resolution order:
+      1. ``KORA_CREDIT_POOL_USD_<TENANT>`` (operator-set per-tenant
+         override; tenant_id normalized to uppercase with non-alnum
+         replaced by ``_``).
+      2. ``KORA_CREDIT_POOL_USD`` (legacy single-tenant env; preserves
+         pre-multi-tenant behavior for the default tenant).
+      3. :data:`DEFAULT_CREDIT_POOL_USD` (\$200 — the Max 20x bundle).
+
+    Fail-soft: malformed env values log + fall through to the next
+    source. Operators can grep the warning when their per-tenant
+    pool is mis-set.
+    """
+    import os
+
+    # Normalize tenant_id → env-safe suffix. ``marvin`` stays
+    # ``MARVIN``; ``ops/main`` becomes ``OPS_MAIN``; etc.
+    safe_suffix = "".join(
+        ch.upper() if ch.isalnum() else "_" for ch in tenant_id
+    ).strip("_")
+    for env_name in (
+        f"KORA_CREDIT_POOL_USD_{safe_suffix}" if safe_suffix else None,
+        "KORA_CREDIT_POOL_USD",
+    ):
+        if not env_name:
+            continue
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning(
+                "[kora.cost_ladder] %s=%r is not numeric — falling "
+                "back to next source",
+                env_name,
+                raw,
+            )
+            continue
+        if value <= 0:
+            logger.warning(
+                "[kora.cost_ladder] %s=%s must be > 0 — falling back",
+                env_name,
+                value,
+            )
+            continue
+        return value
+    return DEFAULT_CREDIT_POOL_USD
 
 
 def init_cost_holder(
@@ -549,39 +625,77 @@ def init_cost_holder(
     billing_period_start: datetime,
     credit_pool_usd: float = DEFAULT_CREDIT_POOL_USD,
     extra_usage_off: bool = True,
+    tenant_id: Optional[str] = None,
 ) -> CostStateHolder:
-    """Initialize the process-wide holder. Idempotent: subsequent
-    calls return the existing instance and ignore arguments.
+    """Initialize a per-tenant holder. Idempotent per (tenant_id):
+    subsequent calls for the same tenant return the existing
+    instance and ignore arguments.
+
+    Legacy call sites that pass no ``tenant_id`` bind to
+    :data:`DEFAULT_TENANT_ID` — the holder shape + behavior is
+    unchanged for the single-tenant case.
+
+    Args:
+        billing_period_start: monthly billing-period anchor.
+        credit_pool_usd: per-tenant credit pool. When omitted, the
+            default is resolved via
+            :func:`_resolve_credit_pool_for_tenant` so per-tenant
+            env overrides (``KORA_CREDIT_POOL_USD_<TENANT>``) work
+            even when the caller doesn't pass the value explicitly.
+        extra_usage_off: forwarded to :class:`CostStateHolder`.
+        tenant_id: tenant binding for this holder. ``None`` →
+            :data:`DEFAULT_TENANT_ID`.
 
     Typical first call sits in agent boot after the operational-state
     holder is initialized — the cost holder is independent of the
     operational state machine but ST4 will wire a transition listener
     that consumes ``active_rung()``.
     """
-    global _HOLDER
-    if _HOLDER is None:
-        _HOLDER = CostStateHolder(
-            billing_period_start=billing_period_start,
-            credit_pool_usd=credit_pool_usd,
-            extra_usage_off=extra_usage_off,
-        )
-    return _HOLDER
+    resolved_tenant = tenant_id or DEFAULT_TENANT_ID
+    if resolved_tenant in _HOLDERS_BY_TENANT:
+        return _HOLDERS_BY_TENANT[resolved_tenant]
+    # If the caller didn't pass an explicit credit_pool_usd (i.e. used
+    # the default sentinel), let the per-tenant env override fire.
+    # A caller that DID pass a value explicitly gets that value
+    # verbatim — backward-compat for tests + explicit-config paths.
+    if credit_pool_usd == DEFAULT_CREDIT_POOL_USD:
+        credit_pool_usd = _resolve_credit_pool_for_tenant(resolved_tenant)
+    _HOLDERS_BY_TENANT[resolved_tenant] = CostStateHolder(
+        billing_period_start=billing_period_start,
+        credit_pool_usd=credit_pool_usd,
+        extra_usage_off=extra_usage_off,
+    )
+    return _HOLDERS_BY_TENANT[resolved_tenant]
 
 
-def get_cost_holder() -> Optional[CostStateHolder]:
-    """Return the process-wide holder, or ``None`` if uninitialized.
+def get_cost_holder(
+    tenant_id: Optional[str] = None,
+) -> Optional[CostStateHolder]:
+    """Return a per-tenant holder, or ``None`` if uninitialized.
+
+    Legacy callers that pass no ``tenant_id`` resolve to
+    :data:`DEFAULT_TENANT_ID` — same behavior as pre-#202.
 
     ST2's wire-in checks for ``None`` before calling ``record_inference``
     so an uninitialized holder doesn't cascade into the inference
-    response handler.
+    response handler. That contract is preserved per-tenant: a tenant
+    whose holder hasn't been initialized yet returns ``None``.
     """
-    return _HOLDER
+    resolved_tenant = tenant_id or DEFAULT_TENANT_ID
+    return _HOLDERS_BY_TENANT.get(resolved_tenant)
+
+
+def list_cost_holder_tenants() -> tuple[str, ...]:
+    """Return the tenant_ids currently registered, sorted. Used by
+    the snapshot to project per-tenant cost-ladder blocks (#202)."""
+    return tuple(sorted(_HOLDERS_BY_TENANT.keys()))
 
 
 def _reset_cost_holder_for_tests() -> None:
-    """Test escape hatch — drop the singleton so each test starts fresh."""
-    global _HOLDER
-    _HOLDER = None
+    """Test escape hatch — drop EVERY tenant's holder so each test
+    starts fresh. Single-call covers both pre- and post-multi-tenant
+    test patterns."""
+    _HOLDERS_BY_TENANT.clear()
 
 
 # ---------------------------------------------------------------------------

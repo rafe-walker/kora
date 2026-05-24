@@ -72,7 +72,23 @@ logger = logging.getLogger(__name__)
 #          gateway-to-substrate boundary so we cap frequency. Stays
 #          "unknown" when the provider isn't registered (early-boot /
 #          non-daemon paths).
-SCHEMA_VERSION = 5
+# v5 → v6: KR-PER-TENANT-COST-LADDER-FOUNDATION (#202). Adds the
+#          ``cost_ladder_by_tenant`` block alongside the existing
+#          ``cost_ladder`` block. The existing block continues to
+#          reflect the ``DEFAULT_TENANT_ID`` ("default") tenant
+#          (backward-compat for every consumer pre-multi-tenant —
+#          CC#2's cockpit, the cost-panel snapshot reader, etc.
+#          keep their current single-tenant reads). The new block
+#          surfaces every registered tenant's current_tier /
+#          monthly_budget_pct_used / spent_to_date_usd /
+#          credit_pool_usd so the cockpit can render multi-tenant
+#          state without inferring it from the singleton block.
+#          Design choice rationale: side-by-side rather than
+#          replacing — keeps the v5 block stable for every existing
+#          consumer + adds a forward-compat sibling for multi-tenant
+#          readers. See the per-tenant cost ladder design discussion
+#          in the PR body.
+SCHEMA_VERSION = 6
 SNAPSHOT_FRESH_THRESHOLD_SECONDS = 600  # 10 min — spec §2(a) is_snapshot_fresh
 
 # KR-SNAPSHOT-TASKS — refresh cadence for the Sea_Tickets read. 30 min
@@ -391,6 +407,113 @@ def _collect_cost_ladder() -> Dict[str, Any]:
         "spent_to_date_usd": spent_to_date_usd,
         "credit_pool_usd": credit_pool_usd,
     }
+
+
+def _project_holder_for_snapshot(holder: Any) -> Dict[str, Any]:
+    """Project a per-tenant CostStateHolder into the cost-ladder
+    snapshot block shape used by v6's ``cost_ladder_by_tenant``.
+
+    Tolerant of holder-side failures (any attribute read raising
+    leaves the field at ``"unknown"`` / ``None``). The shape mirrors
+    :func:`_collect_cost_ladder`'s legacy return so v6 consumers
+    (cockpit) can render the per-tenant view with the same renderer
+    used for the legacy single-tenant block.
+    """
+    block: Dict[str, Any] = {
+        "current_tier": "unknown",
+        "monthly_budget_pct_used": None,
+        "spent_to_date_usd": "unknown",
+        "credit_pool_usd": _resolve_credit_pool_usd_fallback(),
+    }
+    try:
+        rung = holder.active_rung()
+        block["current_tier"] = getattr(rung, "name", str(rung))
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] tenant rung read raised %r — tier degraded",
+            exc,
+        )
+    try:
+        block["monthly_budget_pct_used"] = round(
+            holder.current_pct_used() * 100, 2
+        )
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] tenant pct_used read raised %r — degraded",
+            exc,
+        )
+    try:
+        state = holder.current
+        spent_raw = getattr(state, "spent_to_date_usd", None)
+        if isinstance(spent_raw, (int, float)):
+            block["spent_to_date_usd"] = round(float(spent_raw), 6)
+        pool_raw = getattr(state, "credit_pool_usd", None)
+        if isinstance(pool_raw, (int, float)) and pool_raw > 0:
+            block["credit_pool_usd"] = round(float(pool_raw), 2)
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] tenant holder.current raised %r — degraded",
+            exc,
+        )
+    return block
+
+
+def _collect_cost_ladder_by_tenant() -> Dict[str, Dict[str, Any]]:
+    """v6 (KR-PER-TENANT-COST-LADDER-FOUNDATION) — per-tenant
+    projection of every registered cost-ladder holder.
+
+    Returns a dict keyed by tenant_id; each value matches the
+    block shape of :func:`_collect_cost_ladder`'s legacy v5 return.
+    Empty dict when no tenants are registered (early-boot / non-
+    daemon paths) — consumers can branch on emptiness without
+    crashing.
+
+    Why a sibling block rather than replacing ``cost_ladder``:
+    every existing snapshot consumer (cockpit CostPanel, snapshot-
+    based reasoning shortcircuits, telemetry CLI) reads
+    ``snapshot["cost_ladder"]`` directly. Keeping that block stable
+    + adding a sibling avoids a coordinated breaking change with
+    CC#2 and lets multi-tenant readers opt in incrementally.
+    """
+    try:
+        from agent.cost_state_holder import (
+            get_cost_holder,
+            list_cost_holder_tenants,
+        )
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] cost_state_holder multi-tenant import "
+            "failed: %r — by_tenant block degraded to {}",
+            exc,
+        )
+        return {}
+
+    try:
+        tenants = list_cost_holder_tenants()
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot] list_cost_holder_tenants raised %r — "
+            "by_tenant block degraded to {}",
+            exc,
+        )
+        return {}
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for tenant_id in tenants:
+        try:
+            holder = get_cost_holder(tenant_id)
+        except Exception as exc:
+            logger.warning(
+                "[kora.snapshot] get_cost_holder(%r) raised %r — "
+                "tenant skipped",
+                tenant_id,
+                exc,
+            )
+            continue
+        if holder is None:
+            continue
+        out[tenant_id] = _project_holder_for_snapshot(holder)
+    return out
 
 
 def _collect_service_health() -> Dict[str, Any]:
@@ -856,6 +979,12 @@ def compute_snapshot() -> Dict[str, Any]:
         "operational_state": _collect_operational_state(),
         "alerts": _collect_alerts(),
         "cost_ladder": _collect_cost_ladder(),
+        # v6 (KR-PER-TENANT-COST-LADDER-FOUNDATION) — per-tenant
+        # projection. Empty dict on single-tenant deployments where
+        # only the default tenant's holder is registered (the
+        # legacy ``cost_ladder`` block above already covers it,
+        # so duplicating it here would be noise).
+        "cost_ladder_by_tenant": _collect_cost_ladder_by_tenant(),
         "tasks": _collect_tasks(),
         "service_health": _collect_service_health(),
         "cost_telemetry": _collect_cost_telemetry(),

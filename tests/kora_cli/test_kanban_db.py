@@ -2299,7 +2299,15 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
-    assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+    # KR-TEST-STABILITY (#202): the `kora --version` banner now leads
+    # with "Kora 0.1.0" (the renamed entry point) rather than the
+    # original "Hermes Agent". Either marker is acceptable as proof
+    # that the module ran + emitted the version banner — exact prefix
+    # changes again post-rename and re-encoding the pin too tightly
+    # would just re-break next time.
+    assert "Kora" in r.stdout or "Hermes" in r.stdout, (
+        f"unexpected output: {r.stdout[:200]!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -675,8 +675,11 @@ async def test_cost_ladder_record_inference_called_on_success(
     )
 
     # Spy on holder.record_inference to verify the call.
-    from agent import cost_state_holder as csh_mod
-    real_holder = csh_mod._HOLDER
+    # KR-PER-TENANT-COST-LADDER-FOUNDATION (#202): cost_state_holder
+    # migrated from a singleton ``_HOLDER`` to a per-tenant
+    # ``_HOLDERS_BY_TENANT`` dict. Use the canonical accessor.
+    from agent.cost_state_holder import get_cost_holder
+    real_holder = get_cost_holder()
     record_calls: list = []
 
     original = real_holder.record_inference
@@ -758,12 +761,16 @@ async def test_cost_ladder_skipped_on_canned_fallback(
     )
 
     record_calls: list = []
-    original = csh_mod._HOLDER.record_inference
+    # KR-PER-TENANT-COST-LADDER-FOUNDATION (#202): use the canonical
+    # ``get_cost_holder()`` accessor; ``_HOLDER`` is gone.
+    from agent.cost_state_holder import get_cost_holder
+    _live_holder = get_cost_holder()
+    original = _live_holder.record_inference
 
     def _spy(canonical_usage, *, model_name, provider=None, base_url=None):
         record_calls.append(model_name)
 
-    monkeypatch.setattr(csh_mod._HOLDER, "record_inference", _spy)
+    monkeypatch.setattr(_live_holder, "record_inference", _spy)
 
     # Engine returns an error → canned fallback → NO cost-ladder write.
     engine = _make_reasoning_engine(

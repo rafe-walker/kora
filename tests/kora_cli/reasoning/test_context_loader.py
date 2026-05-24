@@ -77,12 +77,19 @@ def _write_jsonl(path: Path, entries: List[Dict[str, Any]]) -> Path:
 @pytest.fixture(autouse=True)
 def _reset_holders(monkeypatch):
     """No holders by default → state strings 'unknown'. Tests that
-    want a holder override per-test."""
+    want a holder override per-test.
+
+    KR-PER-TENANT-COST-LADDER-FOUNDATION (#202): cost_state_holder
+    moved from a singleton ``_HOLDER`` to a per-tenant
+    ``_HOLDERS_BY_TENANT`` dict. Use the canonical reset hook
+    rather than poking the module-private attribute directly so
+    future shape changes don't break this fixture again.
+    """
     from agent import operational_state_holder as h_mod
-    from agent import cost_state_holder as c_mod
+    from agent.cost_state_holder import _reset_cost_holder_for_tests
 
     monkeypatch.setattr(h_mod, "_HOLDER", None)
-    monkeypatch.setattr(c_mod, "_HOLDER", None)
+    _reset_cost_holder_for_tests()
 
 
 # ---------------------------------------------------------------------------
