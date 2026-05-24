@@ -20,6 +20,11 @@ import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { usePanelView } from "@/hooks/usePanelView";
+import {
+  ALL_TENANTS_SENTINEL,
+  DEFAULT_TENANT_ID,
+  useActiveTenant,
+} from "@/hooks/useActiveTenant";
 import type {
   CostRung,
   CostStateResponse,
@@ -339,6 +344,8 @@ function ReconciliationTable({ entries }: ReconciliationTableProps) {
 export default function CostStatePage() {
   usePanelView("CostStatePage");
 
+  const { activeTenant, isAllTenants } = useActiveTenant();
+
   const [data, setData] = useState<CostStateResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -347,12 +354,21 @@ export default function CostStatePage() {
   const [historyExpanded, setHistoryExpanded] = useState<boolean | null>(null);
   const { toast, showToast } = useToast();
 
+  // KR-FE-TENANT-PICKER-COCKPIT-CHROME — the live cost-state read is
+  // a single-tenant view (the holder is per-tenant). "All tenants"
+  // falls back to default for this page since there's no
+  // aggregate-cost-state endpoint yet; the snapshot's
+  // cost_ladder_by_tenant block is the right cross-tenant surface
+  // (rendered on DashboardPage) — a dedicated aggregate panel is a
+  // follow-on bucket.
+  const tenantForRead = isAllTenants ? DEFAULT_TENANT_ID : activeTenant;
+
   const loadState = useCallback(
     (isManual: boolean) => {
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
-        .getCostState()
+        .getCostState({ tenantId: tenantForRead })
         .then((resp) => {
           setData(resp);
           if (historyExpanded === null) {
@@ -368,14 +384,14 @@ export default function CostStatePage() {
           if (isManual) setRefreshing(false);
         });
     },
-    [historyExpanded, showToast],
+    [historyExpanded, showToast, tenantForRead],
   );
 
   useEffect(() => {
     loadState(false);
-    // Mount-only; loadState carries the cold-start guard.
+    // Re-fetch when the operator switches tenants.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tenantForRead]);
 
   const sortedReconciliation = useMemo(
     () =>
@@ -406,6 +422,23 @@ export default function CostStatePage() {
             Kora's monthly Agent SDK credit burn — rung, downshift state,
             deferred tickets.
           </p>
+          {/* KR-FE-TENANT-PICKER-COCKPIT-CHROME — surface which
+              tenant's holder we're reading. Hidden for the default
+              (no operator-noise on single-tenant deployments). */}
+          {tenantForRead !== DEFAULT_TENANT_ID && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Viewing tenant:{" "}
+              <span className="font-mono text-foreground">{tenantForRead}</span>
+            </p>
+          )}
+          {activeTenant === ALL_TENANTS_SENTINEL && (
+            <p className="text-xs text-muted-foreground italic mt-1">
+              "All tenants" aggregate view: falling back to{" "}
+              <span className="font-mono">default</span> for live cost-state
+              (aggregate cost panel is a follow-on bucket; see Dashboard
+              for the snapshot per-tenant cost block).
+            </p>
+          )}
         </div>
         <Button size="sm" ghost disabled={refreshing} onClick={() => loadState(true)}>
           <RefreshCw className={`h-3 w-3 ${refreshing ? "animate-spin" : ""}`} />

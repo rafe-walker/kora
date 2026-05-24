@@ -50,6 +50,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
+import { useActiveTenant } from "@/hooks/useActiveTenant";
 import { api } from "@/lib/api";
 import {
   PROMOTION_LOOP_NAMES,
@@ -1378,6 +1379,9 @@ function LoopTypeTabs({ selected, onSelect, counts }: LoopTypeTabsProps) {
 export default function PromotionReviewPage() {
   usePanelView("PromotionReviewPage");
 
+  const { activeTenant, isAllTenants } = useActiveTenant();
+  const tenantForRead = isAllTenants ? undefined : activeTenant;
+
   const location = useLocation();
   const focusedId = useMemo(() => {
     const qs = new URLSearchParams(location.search);
@@ -1433,7 +1437,9 @@ export default function PromotionReviewPage() {
           setSnapshotExpandData(resp);
         } else {
           const slug = PROMOTION_LOOP_SLUGS[loop];
-          const resp = await api.getPromotionProposals(slug);
+          const resp = await api.getPromotionProposals(slug, {
+            tenantId: tenantForRead,
+          });
           setLoopData((prev) => ({ ...prev, [loop]: resp }));
         }
       } catch (e) {
@@ -1446,7 +1452,7 @@ export default function PromotionReviewPage() {
         setLoopLoading(false);
       }
     },
-    [],
+    [tenantForRead],
   );
 
   useEffect(() => {

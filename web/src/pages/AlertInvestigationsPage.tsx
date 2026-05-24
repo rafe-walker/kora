@@ -38,6 +38,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
+import { useActiveTenant } from "@/hooks/useActiveTenant";
 import { api } from "@/lib/api";
 import {
   PROBE_DM_STATUS_VALUES,
@@ -347,22 +348,31 @@ export default function AlertInvestigationsPage() {
 
   const [window, setWindow] = useState<Window>("24h");
   const [dmStatusFilter, setDmStatusFilter] = useState<FilterValue<ProbeDmStatus>>("all");
+  const { activeTenant, isAllTenants } = useActiveTenant();
+  const tenantForRead = isAllTenants ? undefined : activeTenant;
+
   const [data, setData] = useState<AlertInvestigationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (w: Window) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await api.getAlertInvestigations({ window: w });
-      setData(resp);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (w: Window) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const resp = await api.getAlertInvestigations({
+          window: w,
+          tenantId: tenantForRead,
+        });
+        setData(resp);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [tenantForRead],
+  );
 
   useEffect(() => {
     void load(window);
