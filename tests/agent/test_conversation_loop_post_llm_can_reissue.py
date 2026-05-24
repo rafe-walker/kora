@@ -161,3 +161,76 @@ def test_reissue_plugin_dispatch_via_plugin_manager():
         "session_id",
         "route",
     }
+
+
+# ---------------------------------------------------------------------------
+# KR-CC3-CLEANUP follow-up A — escalation_reason structured telemetry
+# ---------------------------------------------------------------------------
+
+
+def test_source_threads_escalation_reason_from_plugin_to_telemetry():
+    """The reissue site MUST read ``escalation_reason`` from the
+    plugin result and pass it through ``record_inference_from_response``
+    so the cost-telemetry per-reason breakdown lights up."""
+    # The literal that pins both the plugin-read and the telemetry-pass.
+    assert '_reissue_result.get(\n                    "escalation_reason"\n                )' in _LOOP_SOURCE or '_reissue_result.get("escalation_reason")' in _LOOP_SOURCE, (
+        "reissue site must read escalation_reason from plugin result"
+    )
+    assert "escalation_reason=_escalation_reason" in _LOOP_SOURCE, (
+        "reissue telemetry call must forward escalation_reason"
+    )
+
+
+# ---------------------------------------------------------------------------
+# KR-CC3-CLEANUP follow-up B — api_call_count accounting pin
+# ---------------------------------------------------------------------------
+
+
+def test_source_does_not_bump_api_call_count_on_reissue():
+    """The post-#189 confirmation: re-issue is part of the SAME
+    iteration; ``api_call_count`` is NOT incremented when a
+    re-issue fires. Pin the absence of a bump between the hook
+    start and the post_api_request observer.
+
+    Strategy: slice the source from the hook firing line to the
+    post_api_request observer fire site, then assert there is no
+    ``api_call_count += `` (any variant) inside that slice.
+    """
+    hook = "post_llm_call_can_reissue"
+    observer_marker = '"post_api_request"'
+    h_idx = _LOOP_SOURCE.find(hook)
+    o_idx = _LOOP_SOURCE.find(observer_marker)
+    assert h_idx != -1 and o_idx != -1 and h_idx < o_idx
+    slice_text = _LOOP_SOURCE[h_idx:o_idx]
+    # Any of these forms would be a bump:
+    for bump in (
+        "api_call_count += 1",
+        "api_call_count = api_call_count + 1",
+        "api_call_count+=1",
+    ):
+        assert bump not in slice_text, (
+            f"reissue path must NOT bump api_call_count "
+            f"(found {bump!r}); per #189 follow-up B (transparent "
+            f"upgrade semantic) the re-issue is part of the same "
+            f"iteration."
+        )
+
+
+def test_source_does_not_consume_iteration_budget_on_reissue():
+    """Mirror of the api_call_count pin for ``iteration_budget``.
+    The budget tracks logical iterations; a transparent re-issue
+    upgrade must not consume an extra slot."""
+    hook = "post_llm_call_can_reissue"
+    observer_marker = '"post_api_request"'
+    h_idx = _LOOP_SOURCE.find(hook)
+    o_idx = _LOOP_SOURCE.find(observer_marker)
+    assert h_idx != -1 and o_idx != -1 and h_idx < o_idx
+    slice_text = _LOOP_SOURCE[h_idx:o_idx]
+    for consume in (
+        "iteration_budget.consume(",
+        "iteration_budget.use(",
+    ):
+        assert consume not in slice_text, (
+            f"reissue path must NOT consume iteration_budget "
+            f"(found {consume!r}); per #189 follow-up B"
+        )

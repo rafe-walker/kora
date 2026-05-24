@@ -84,6 +84,7 @@ def record_inference_from_response(
     api_mode: Optional[str] = None,
     route: str = "unknown",
     escalated_to_opus: bool = False,
+    escalation_reason: Optional[str] = None,
 ) -> None:
     """Feed the cost-ladder estimator from an inference response.
 
@@ -133,6 +134,7 @@ def record_inference_from_response(
             base_url=base_url,
             route=route,
             escalated_to_opus=escalated_to_opus,
+            escalation_reason=escalation_reason,
         )
     except Exception as exc:
         # Fail-soft per the contract — estimator failures must not

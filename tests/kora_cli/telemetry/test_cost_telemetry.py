@@ -178,6 +178,98 @@ def test_model_breakdown_tracks_per_model_calls(telemetry):
     }
 
 
+# ---------------------------------------------------------------------------
+# KR-CC3-CLEANUP follow-up A — escalation_reason structured field
+# ---------------------------------------------------------------------------
+
+
+def test_escalation_reason_breakdown_increments_per_reason(telemetry):
+    """When ``escalation_reason`` is passed alongside
+    ``escalated_to_opus=True``, the per-reason breakdown counter
+    increments — cockpit can show "X% low_confidence_marker, Y%
+    short_response_for_long_input" rather than just one bucket."""
+    for reason in (
+        "low_confidence_marker",
+        "low_confidence_marker",
+        "short_response_for_long_input",
+    ):
+        telemetry.record_call(
+            route=ROUTE_SLACK_DM,
+            model="claude-opus-4-7",
+            canonical_usage=_FakeUsage(),
+            cost_estimate_usd=0.01,
+            escalated_to_opus=True,
+            escalation_reason=reason,
+        )
+    row = telemetry.snapshot()[WINDOW_PROCESS_LIFETIME][ROUTE_SLACK_DM]
+    assert row["escalation_count"] == 3
+    assert row["escalation_reason_breakdown"] == {
+        "low_confidence_marker": 2,
+        "short_response_for_long_input": 1,
+    }
+
+
+def test_escalation_reason_omitted_keeps_existing_behavior(telemetry):
+    """Legacy callers that don't pass ``escalation_reason`` keep
+    working — escalation_count still increments; only the per-
+    reason breakdown stays empty."""
+    telemetry.record_call(
+        route=ROUTE_SLACK_DM,
+        model="claude-opus-4-7",
+        canonical_usage=_FakeUsage(),
+        cost_estimate_usd=0.01,
+        escalated_to_opus=True,
+        # escalation_reason omitted
+    )
+    row = telemetry.snapshot()[WINDOW_PROCESS_LIFETIME][ROUTE_SLACK_DM]
+    assert row["escalation_count"] == 1
+    assert row["escalation_reason_breakdown"] == {}
+
+
+def test_escalation_reason_ignored_when_not_escalated(telemetry):
+    """Defensive: if a caller passes a reason but
+    ``escalated_to_opus=False`` (the call was NOT an escalation),
+    the per-reason breakdown is NOT incremented. Keeps the
+    semantic clean: reason-breakdown ⊆ escalation_count."""
+    telemetry.record_call(
+        route=ROUTE_SLACK_DM,
+        model="claude-haiku-4-5-20251001",
+        canonical_usage=_FakeUsage(),
+        cost_estimate_usd=0.001,
+        escalated_to_opus=False,
+        escalation_reason="some_reason",
+    )
+    row = telemetry.snapshot()[WINDOW_PROCESS_LIFETIME][ROUTE_SLACK_DM]
+    assert row["escalation_count"] == 0
+    assert row["escalation_reason_breakdown"] == {}
+
+
+def test_escalation_reason_empty_or_non_string_dropped(telemetry):
+    """Defensive: empty string / None / non-string reason → no
+    breakdown entry. Escalation_count still increments."""
+    for reason in (None, "", 42):  # type: ignore[list-item]
+        telemetry.record_call(
+            route=ROUTE_SLACK_DM,
+            model="claude-opus-4-7",
+            canonical_usage=_FakeUsage(),
+            cost_estimate_usd=0.01,
+            escalated_to_opus=True,
+            escalation_reason=reason,  # type: ignore[arg-type]
+        )
+    row = telemetry.snapshot()[WINDOW_PROCESS_LIFETIME][ROUTE_SLACK_DM]
+    assert row["escalation_count"] == 3
+    assert row["escalation_reason_breakdown"] == {}
+
+
+def test_snapshot_shape_includes_escalation_reason_breakdown(telemetry):
+    """Snapshot consumers (cockpit panels, etc.) need a stable shape.
+    Every route row must include ``escalation_reason_breakdown`` even
+    when no escalations have fired — empty dict, not absent key."""
+    row = telemetry.snapshot()[WINDOW_PROCESS_LIFETIME][ROUTE_SLACK_DM]
+    assert "escalation_reason_breakdown" in row
+    assert row["escalation_reason_breakdown"] == {}
+
+
 # ===========================================================================
 # Route taxonomy
 # ===========================================================================

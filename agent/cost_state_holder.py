@@ -278,6 +278,7 @@ class CostStateHolder:
         base_url: Optional[str] = None,
         route: str = "unknown",
         escalated_to_opus: bool = False,
+        escalation_reason: Optional[str] = None,
     ) -> None:
         """Per-call estimator update.
 
@@ -322,6 +323,16 @@ class CostStateHolder:
                 tunable. When True, the telemetry counters increment
                 ``escalation_count`` for this route in addition to
                 the normal call+token counters.
+            escalation_reason: Optional reason tag — used together
+                with ``escalated_to_opus=True`` to populate the
+                per-reason breakdown in cost telemetry. KR-CC3-
+                CLEANUP follow-up to #189: today the post-call
+                haiku_router escalator passes ``low_confidence_marker``
+                / ``short_response_for_long_input``; pre-call paths
+                (force_opus_env / opus_prefix / decision_language /
+                tool_loop_iteration) pass their corresponding
+                ``RoutingDecision.reason``. Free-form tag — telemetry
+                buckets it under whatever string is supplied.
         """
         cost_result = estimate_usage_cost(
             model_name,
@@ -351,6 +362,7 @@ class CostStateHolder:
                 canonical_usage=canonical_usage,
                 cost_estimate_usd=cost_estimate_for_telemetry,
                 escalated_to_opus=escalated_to_opus,
+                escalation_reason=escalation_reason,
             )
         except Exception as exc:
             logger.debug(

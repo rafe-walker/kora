@@ -125,6 +125,17 @@ class _RouteCounters:
     cost_estimate_usd_total: float = 0.0
     escalation_count: int = 0
     model_breakdown: Dict[str, int] = field(default_factory=dict)
+    # KR-CC3-CLEANUP — escalation reason breakdown. Increments
+    # only when ``escalated_to_opus=True`` AND a reason was
+    # supplied. Reasons are free-form strings sourced by the
+    # caller (today: ``low_confidence_marker`` /
+    # ``short_response_for_long_input`` from the post-call
+    # haiku_router escalator). Lets cockpit panels show "X% of
+    # escalations were low-confidence-marker, Y% were short-
+    # response-heuristic, Z% were untagged".
+    escalation_reason_breakdown: Dict[str, int] = field(
+        default_factory=dict
+    )
 
     def add(
         self,
@@ -133,6 +144,7 @@ class _RouteCounters:
         cost_estimate_usd: Optional[float],
         model: str,
         escalated_to_opus: bool,
+        escalation_reason: Optional[str] = None,
     ) -> None:
         """Increment counters from one call's worth of usage."""
         self.calls_count += 1
@@ -162,6 +174,16 @@ class _RouteCounters:
                 pass
         if escalated_to_opus:
             self.escalation_count += 1
+            # Reason breakdown bumps only when both signal and
+            # reason are present — untagged escalations (legacy
+            # callers) just contribute to escalation_count.
+            if escalation_reason:
+                self.escalation_reason_breakdown[escalation_reason] = (
+                    self.escalation_reason_breakdown.get(
+                        escalation_reason, 0
+                    )
+                    + 1
+                )
         if model:
             self.model_breakdown[model] = (
                 self.model_breakdown.get(model, 0) + 1
@@ -179,6 +201,9 @@ class _RouteCounters:
             ),
             "escalation_count": self.escalation_count,
             "model_breakdown": dict(self.model_breakdown),
+            "escalation_reason_breakdown": dict(
+                self.escalation_reason_breakdown
+            ),
         }
 
 
@@ -220,6 +245,7 @@ class CostRouteTelemetry:
         canonical_usage: Any,
         cost_estimate_usd: Optional[float],
         escalated_to_opus: bool = False,
+        escalation_reason: Optional[str] = None,
     ) -> None:
         """Increment counters for this route across all live windows.
 
@@ -227,6 +253,12 @@ class CostRouteTelemetry:
         caller (a hot-path inference completion handler) never sees
         a telemetry failure. Unknown routes silently bucket to
         ``"unknown"`` rather than raising.
+
+        ``escalation_reason`` (optional) is a free-form tag — when
+        present alongside ``escalated_to_opus=True`` it increments
+        the per-reason breakdown counter so cockpit panels can
+        differentiate "low-confidence Haiku" escalations from
+        "short-response-heuristic" or future variants.
         """
         try:
             self._record_call_inner(
@@ -235,6 +267,11 @@ class CostRouteTelemetry:
                 canonical_usage=canonical_usage,
                 cost_estimate_usd=cost_estimate_usd,
                 escalated_to_opus=bool(escalated_to_opus),
+                escalation_reason=(
+                    escalation_reason
+                    if isinstance(escalation_reason, str) and escalation_reason
+                    else None
+                ),
             )
         except Exception as exc:
             logger.warning(
@@ -252,6 +289,7 @@ class CostRouteTelemetry:
         canonical_usage: Any,
         cost_estimate_usd: Optional[float],
         escalated_to_opus: bool,
+        escalation_reason: Optional[str] = None,
     ) -> None:
         normalized_route = (
             route
@@ -265,6 +303,7 @@ class CostRouteTelemetry:
                     cost_estimate_usd=cost_estimate_usd,
                     model=model,
                     escalated_to_opus=escalated_to_opus,
+                    escalation_reason=escalation_reason,
                 )
 
     def snapshot(self) -> Dict[str, Any]:
