@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marvin-runtime"
+version = "0.1.0a1"
+description = "Marvin — Paranoid-android plugin POC for the Hermes Option C identity-as-plugin architecture. Validates the pip-installable distribution surface for external IsoKron users (KR-PIP-PACKAGING-FOUNDATION, CC#3 #204)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "CC#3 Kora Runtime", email = "kora-pm@stormhavenenterprises.com"},
+]
+# No runtime dependencies declared here. Marvin imports
+# ``agent.identity_spec`` from Hermes itself — that package is
+# expected to be present in the install environment via the Hermes
+# runtime (not packaged here). See §3 of MARVIN_DEMO_TRANSCRIPT.md
+# (kora-docs) for the documented dependency contract.
+dependencies = []
+
+[project.entry-points."hermes_agent.plugins"]
+marvin = "marvin:register"
+
+[project.urls]
+"Source" = "https://github.com/rafe-walker/kora/tree/feature/phase2-upgrades/plugins/marvin"
+"Documentation" = "https://github.com/rafe-walker/kora-docs/blob/main/kora_docs/14_research/plugin_identity_option_c_2026-05-24/HOW_TO_BUILD_YOUR_OWN_AGENT.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Bundle the identity markdown files inside the wheel so the
+# relocated package finds them at <site-packages>/marvin/data/.
+marvin = ["data/*.md"]

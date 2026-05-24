@@ -754,6 +754,7 @@ class PluginContext:
         *,
         periodic_task: Optional[Any] = None,
         shutdown_timeout: float = 5.0,
+        fatal_on_startup_failure: bool = False,
     ) -> None:
         """Register a background-daemon plugin entry.
 
@@ -775,6 +776,14 @@ class PluginContext:
             interval-based callbacks. ``None`` → event-driven only.
           shutdown_timeout: max seconds to wait on ``shutdown()``
             before force-cancel. Default 5s.
+          fatal_on_startup_failure: when ``True``, an uncaught
+            exception from ``startup`` MUST abort the consumer's
+            daemon boot (process exits non-zero). When ``False``
+            (default), the consumer logs + continues. See
+            :class:`agent.background_daemon_registry.BackgroundDaemonEntry`
+            docstring for the full contract. Use ``True`` for
+            daemons whose absence makes the runtime non-functional
+            (reasoning engine, etc.).
 
         The actual lifecycle execution (running startup, driving
         periodic_task, calling shutdown) is the consumer's
@@ -796,6 +805,7 @@ class PluginContext:
             periodic_task=periodic_task,
             shutdown_timeout=shutdown_timeout,
             plugin_name=self.manifest.name,
+            fatal_on_startup_failure=fatal_on_startup_failure,
         )
         background_daemon_registry().register(entry)
         logger.debug(

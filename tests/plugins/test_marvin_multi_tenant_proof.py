@@ -100,16 +100,21 @@ def test_marvin_plugin_manifest_exists_and_well_formed():
 
 def test_marvin_plugin_identity_files_exist():
     """Marvin's two identity files (MARVIN.md + marvin_system_prompt.md)
-    must exist in the plugin directory at module-import time
-    (the __init__.py reads them eagerly)."""
-    plugin_dir = (
-        Path(__file__).resolve().parents[2] / "plugins" / "marvin"
+    must exist inside the package data dir at module-import time
+    (the canonical ``src/marvin/__init__.py`` reads them eagerly).
+
+    Post-#204 restructure: data files live at
+    ``plugins/marvin/src/marvin/data/`` (relocatable package layout
+    so the wheel install lands them at ``<site-packages>/marvin/data/``)."""
+    data_dir = (
+        Path(__file__).resolve().parents[2]
+        / "plugins" / "marvin" / "src" / "marvin" / "data"
     )
-    assert (plugin_dir / "MARVIN.md").exists()
-    assert (plugin_dir / "marvin_system_prompt.md").exists()
+    assert (data_dir / "MARVIN.md").exists()
+    assert (data_dir / "marvin_system_prompt.md").exists()
     # Both non-empty.
-    assert (plugin_dir / "MARVIN.md").read_text().strip() != ""
-    assert (plugin_dir / "marvin_system_prompt.md").read_text().strip() != ""
+    assert (data_dir / "MARVIN.md").read_text().strip() != ""
+    assert (data_dir / "marvin_system_prompt.md").read_text().strip() != ""
 
 
 # ---------------------------------------------------------------------------

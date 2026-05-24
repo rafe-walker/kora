@@ -197,6 +197,48 @@ class DaemonCoordinator:
         )
 
     # ------------------------------------------------------------------
+    # FATAL-on-startup-failure lookup (KR-PIP-PACKAGING-FOUNDATION #204)
+    # ------------------------------------------------------------------
+
+    def _is_startup_failure_fatal(self, listener_name: str) -> bool:
+        """Return True iff the listener's startup-raise should abort
+        the daemon coordinator boot.
+
+        Lookup strategy (preserves backward compat):
+
+          1. Look up the listener's ``BackgroundDaemonEntry`` in the
+             Hermes registry. If present, return ``entry.fatal_on_
+             startup_failure`` (default False per the dataclass).
+          2. If the listener has no Hermes entry (Kora-only HTTP
+             service mounts: web/mcp/webhooks), return ``True`` —
+             preserves pre-flag behavior of "abort on any startup
+             raise" for these unmigrated listeners.
+
+        Registry-lookup failures (import error, registry singleton
+        broken) fall back to ``True`` (fatal) so the daemon doesn't
+        silently degrade on infrastructure errors.
+        """
+        try:
+            from agent.background_daemon_registry import (
+                background_daemon_registry,
+            )
+            entry = background_daemon_registry().by_name(listener_name)
+            if entry is None:
+                # Kora-only listener (no Hermes registration); preserve
+                # pre-flag behavior.
+                return True
+            return bool(entry.fatal_on_startup_failure)
+        except Exception as exc:
+            logger.warning(
+                "[kora.daemon] _is_startup_failure_fatal lookup for %r "
+                "raised %r — defaulting to fatal (preserves pre-flag "
+                "behavior)",
+                listener_name,
+                exc,
+            )
+            return True
+
+    # ------------------------------------------------------------------
     # Programmatic shutdown
     # ------------------------------------------------------------------
 
@@ -228,7 +270,14 @@ class DaemonCoordinator:
 
         self._install_signal_handlers()
 
-        # FIFO startup — bail at first failure.
+        # FIFO startup — abort on critical-daemon failure, log + continue
+        # for non-critical. KR-PIP-PACKAGING-FOUNDATION-AND-DAEMON-FATAL-FLAG
+        # (#204): the BackgroundDaemonEntry.fatal_on_startup_failure flag
+        # (looked up via :meth:`_is_startup_failure_fatal`) controls behavior.
+        # Listeners with a Hermes-registry entry inherit the flag value
+        # (default False — log + continue); Kora-only listeners (HTTP
+        # service mounts: web/mcp/webhooks) have no Hermes entry and
+        # default to fatal (preserves pre-flag behavior).
         startup_failed = False
         for idx, listener in enumerate(self._listeners):
             try:
@@ -237,16 +286,29 @@ class DaemonCoordinator:
                 self._started_idx.append(idx)
                 logger.info("[kora.daemon] listener %s started", listener.name)
             except Exception as exc:
-                logger.error(
+                is_fatal = self._is_startup_failure_fatal(listener.name)
+                if is_fatal:
+                    logger.error(
+                        "[kora.daemon] listener %s startup FAILED: %r — "
+                        "aborting daemon start (fatal_on_startup_failure=True), "
+                        "shutting down already-started listeners",
+                        listener.name,
+                        exc,
+                    )
+                    startup_failed = True
+                    self.request_shutdown(f"startup failure in {listener.name}: {exc!r}")
+                    break
+                # Non-fatal: log + continue. The listener didn't start
+                # successfully; we skip its entry in _started_idx so
+                # shutdown doesn't call its shutdown(). Other listeners
+                # proceed normally.
+                logger.warning(
                     "[kora.daemon] listener %s startup FAILED: %r — "
-                    "aborting daemon start, shutting down already-started "
-                    "listeners",
+                    "non-fatal (fatal_on_startup_failure=False); logging "
+                    "and continuing with remaining listeners",
                     listener.name,
                     exc,
                 )
-                startup_failed = True
-                self.request_shutdown(f"startup failure in {listener.name}: {exc!r}")
-                break
 
         # Block on shutdown signal — unless startup already failed,
         # in which case shutdown is already requested + we proceed

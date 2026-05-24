@@ -75,3 +75,8 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+# KR-PIP-PACKAGING-FOUNDATION (#204): exclude wheel build artifacts
+plugins/*/dist/
+plugins/*/build/
+plugins/*/*.egg-info/
+plugins/*/src/*.egg-info/
