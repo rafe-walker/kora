@@ -119,6 +119,25 @@ async def run_all_probes(
             )
         results[probe.name] = snapshot
         _snapshot_cache[probe.name] = snapshot
+
+    # KR-PROBE-AUDIT-AND-CONVERT — post-cycle issue-detection hook.
+    # Classifies each snapshot into Issue objects + emits one
+    # ``probe.wake_requested`` audit row per Issue. Routine probing
+    # remains $0 LLM cost; the audit emission is in-memory + JSONL
+    # append. Fail-soft per the wake emitter's own contract — any
+    # exception here logs + continues.
+    try:
+        from kora_cli.probes import detect_issues, emit_wake_event
+
+        for issue in detect_issues(results.values()):
+            emit_wake_event(issue)
+    except Exception as exc:
+        logger.warning(
+            "[kora.heartbeat_probes] post-cycle issue detection raised "
+            "%r — wake events not emitted this cycle",
+            exc,
+        )
+
     return results
 
 

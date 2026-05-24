@@ -90,6 +90,14 @@ SeamName = Literal[
     # success/failure; failures are visible in the audit panel
     # alongside the alerts panel.
     "notification.dispatched",
+    # KR-PROBE-AUDIT-AND-CONVERT — per-probe issue-detection wake
+    # signal. Probe cron post-hook detects an issue criterion
+    # crossing, writes one of these to flag that Kora's reasoning
+    # SHOULD investigate. The consumer side (reasoning-engine
+    # wake) is a follow-on bucket (KR-PROBE-WAKE-CONSUMER); v1
+    # ships the emission for operator visibility via the audit
+    # panel + alerts panel without invoking LLM.
+    "probe.wake_requested",
 ]
 
 SourceName = Literal[
