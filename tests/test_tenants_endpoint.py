@@ -229,3 +229,63 @@ def test_fe_aggregate_and_deeplink_pins():
         "cost_ladder_by_tenant block — sole canonical per-tenant "
         "cost surface"
     )
+
+
+def test_fe_keyboard_nav_and_url_toggle_and_tab_title_pins():
+    """KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+    pin the keyboard contract + URL-toggle storage key + browser-tab
+    title format. Each of these is part of the operator-facing
+    contract; renaming a key on one side without the other silently
+    breaks documented behavior.
+    """
+    repo = Path(__file__).parent.parent
+
+    # A.4 — keyboard shortcuts pin. The TENANT_PICKER_KEYBOARD_SHORTCUTS
+    # object is the single source of truth; the implementation key
+    # checks below assert the documented keys actually appear in
+    # the handler.
+    picker_src = (
+        repo / "web" / "src" / "components" / "TenantPicker.tsx"
+    ).read_text(encoding="utf-8")
+    assert "TENANT_PICKER_KEYBOARD_SHORTCUTS" in picker_src
+    # Implementation handles each of the documented keys.
+    for key in ('"ArrowDown"', '"ArrowUp"', '"Enter"', '"Escape"'):
+        assert key in picker_src, (
+            f"TenantPicker keyboard handler must reference {key} — "
+            "pinned by TENANT_PICKER_KEYBOARD_SHORTCUTS"
+        )
+    # Letter-jump cycling exists (matches §4 STOP-ASK resolution
+    # to prefer cycling over first-match-only).
+    assert "cycleLetterJump" in picker_src
+
+    # B.1 — URL-toggle storage key pinned in the hook + checkbox
+    # rendered in the picker.
+    hook_src = (
+        repo / "web" / "src" / "hooks" / "useActiveTenant.ts"
+    ).read_text(encoding="utf-8")
+    assert (
+        'TENANT_PICKER_URL_TOGGLE_STORAGE_KEY =\n  "kora_tenant_picker_update_url"'
+        in hook_src
+        or 'TENANT_PICKER_URL_TOGGLE_STORAGE_KEY = "kora_tenant_picker_update_url"'
+        in hook_src
+    ), (
+        "URL-toggle localStorage key must be 'kora_tenant_picker_update_url' "
+        "— pinned for operator-facing localStorage stability"
+    )
+    assert "useTenantUrlToggle" in hook_src
+    assert "useTenantUrlToggle" in picker_src, (
+        "TenantPicker must render the URL-toggle checkbox via "
+        "useTenantUrlToggle"
+    )
+
+    # C.1 — tab-title prefix format. Pin the brand suffix +
+    # bracket-prefix shape so a future refactor can't silently
+    # change what shows up in the browser tab.
+    pageheader_src = (
+        repo / "web" / "src" / "contexts" / "PageHeaderProvider.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'TAB_TITLE_SUFFIX = "Hermes Agent"' in pageheader_src
+    assert "formatBrowserTabTitle" in pageheader_src
+    # Format pins: `[<tenant>] <title> · Hermes Agent`.
+    assert "[all tenants]" in pageheader_src
+    assert "document.title = formatBrowserTabTitle(" in pageheader_src

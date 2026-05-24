@@ -124,6 +124,14 @@ function useResolvedTenant(): [string, (next: string) => void] {
   const setActiveTenant = useCallback((next: string) => {
     writeStored(next);
     setStored(next);
+    // KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+    // when the operator opted in, also mirror the pick into the URL.
+    // Read the toggle live (not via the hook) so this stays usable
+    // from callers outside React (e.g., the badge's share-URL flow
+    // could trigger this in principle).
+    if (readUrlToggle()) {
+      updateUrlTenantParam(next);
+    }
   }, []);
 
   return [resolved, setActiveTenant];
@@ -149,6 +157,99 @@ export const OPEN_TENANT_PICKER_EVENT = "kora:open-tenant-picker" as const;
 export function requestOpenTenantPicker(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(OPEN_TENANT_PICKER_EVENT));
+}
+
+// KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+// opt-in "also update URL when picking a tenant" preference. When
+// enabled, picker selections write the ``?tenant=`` query param to
+// the current URL (preserving every other param) in addition to
+// localStorage. Useful for power-operators who want their browser
+// history / open-tab URLs to reflect the active tenant.
+//
+// Default is off — preserves the #207 picker-vs-URL precedence
+// (URL anchors a deep-link; operator picks update only their own
+// localStorage and don't mutate a shared link's URL).
+export const TENANT_PICKER_URL_TOGGLE_STORAGE_KEY =
+  "kora_tenant_picker_update_url" as const;
+
+function readUrlToggle(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return (
+      window.localStorage.getItem(TENANT_PICKER_URL_TOGGLE_STORAGE_KEY) ===
+      "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function writeUrlToggle(enabled: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (enabled) {
+      window.localStorage.setItem(
+        TENANT_PICKER_URL_TOGGLE_STORAGE_KEY,
+        "1",
+      );
+    } else {
+      window.localStorage.removeItem(TENANT_PICKER_URL_TOGGLE_STORAGE_KEY);
+    }
+    window.dispatchEvent(new Event("kora:tenant-url-toggle-changed"));
+  } catch {
+    // Best-effort.
+  }
+}
+
+/**
+ * KR-FE-TENANT-PICKER-KEYBOARD-NAV-AND-URL-TOGGLE-AND-TAB-TITLE —
+ * write ``?tenant=<value>`` to the current URL while preserving
+ * every other query param. Uses ``history.replaceState`` so the
+ * change doesn't push a new entry onto the back-stack (operators
+ * picking through tenants shouldn't pollute history). ``default``
+ * removes the param entirely so the URL stays clean.
+ */
+function updateUrlTenantParam(next: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (next === DEFAULT_TENANT_ID) {
+      url.searchParams.delete(TENANT_ID_QUERY_PARAM);
+    } else {
+      url.searchParams.set(TENANT_ID_QUERY_PARAM, tenantToUrlValue(next));
+    }
+    window.history.replaceState(
+      window.history.state,
+      "",
+      url.pathname + url.search + url.hash,
+    );
+  } catch {
+    // history API restrictions (rare) — silent. localStorage
+    // still updated, so the picker still works as before.
+  }
+}
+
+/**
+ * Read + persist the "also update URL" toggle. Listens for in-tab
+ * + cross-tab changes so the picker checkbox stays in sync if the
+ * operator changes the setting from another tab.
+ */
+export function useTenantUrlToggle(): [boolean, (enabled: boolean) => void] {
+  const [enabled, setEnabled] = useState(() => readUrlToggle());
+  useEffect(() => {
+    const reread = () => setEnabled(readUrlToggle());
+    window.addEventListener("storage", reread);
+    window.addEventListener("kora:tenant-url-toggle-changed", reread);
+    return () => {
+      window.removeEventListener("storage", reread);
+      window.removeEventListener("kora:tenant-url-toggle-changed", reread);
+    };
+  }, []);
+  const set = useCallback((nextEnabled: boolean) => {
+    writeUrlToggle(nextEnabled);
+    setEnabled(nextEnabled);
+  }, []);
+  return [enabled, set];
 }
 
 export function useActiveTenant(): UseActiveTenantResult {
