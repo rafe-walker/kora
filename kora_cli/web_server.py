@@ -6508,6 +6508,173 @@ async def get_phrasebook_backups() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Email-intent audit lens (KR-FE-EMAIL-INTENT-LOG-PANEL)
+# ---------------------------------------------------------------------------
+#
+# Operator-facing view of email-to-Sea_Ticket intent evaluations
+# (PR #176 KR-INTENT-EMAIL-TO-SEA-TICKET). Reads the audit JSONL
+# filtered to seam=intent.email_to_sea_ticket, projects per-row
+# to the FE EmailIntentEvent shape, and surfaces by-action counts
+# in the response so the panel can render its summary band
+# without re-aggregating client-side.
+#
+# Discipline (carried forward from KR-AUDIT-PANEL-ENDPOINTS PR #155):
+# one endpoint per audit seam — the alternative of a single generic
+# /api/audit-events?seam=X was considered but rejected (security
+# projection lives per-seam; a generic endpoint would either over-
+# expose details or require seam-routing logic to do the projection).
+#
+# SECURITY:
+#   * details.error is repr(exc) on the failed branch — could
+#     leak stack-traceish content. Truncated to first 200 chars
+#     so a runaway repr doesn't dump diagnostic state to a panel
+#     consumer.
+#   * details.proposed_title (dry_run branch) is whatever the
+#     intent's proposed_sea_ticket title is — operator-author
+#     content, safe to render.
+#   * subject is the inbound email subject — same operator-author
+#     content; truncated to 200 chars defensively.
+
+
+_EMAIL_INTENT_ACTION_VALUES = (
+    "created",
+    "logged_only",
+    "dry_run",
+    "cap_exceeded",
+    "failed",
+)
+
+
+def _project_email_intent_audit(entry: "AuditEntry", lineno: int) -> Dict[str, Any]:
+    """Project an intent.email_to_sea_ticket audit row to the
+    FE's EmailIntentEvent shape. NEVER includes the raw audit
+    details dict — only the per-branch fields the panel renders,
+    truncated to bounded lengths."""
+    d = entry.details
+    action_raw = str(d.get("action", "unknown"))
+    action = action_raw if action_raw in _EMAIL_INTENT_ACTION_VALUES else "unknown"
+
+    out: Dict[str, Any] = {
+        "id": f"intent-{lineno}",
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "action": action,
+        "pattern_matched": str(d.get("pattern_matched", "")),
+        "confidence": str(d.get("confidence", "")),
+        "subject": str(d.get("subject", ""))[:200],
+        # caller_session_id = "email:<message-id>" per the
+        # _derive_caller_session_id email branch; surfaced so
+        # operator can grep their inbox for the original.
+        "caller_session_id": entry.caller_session_id or "",
+    }
+
+    # Per-branch optional fields. Each is only present when the
+    # writer emitted it (see kora_cli/intent/email_to_sea_ticket.py
+    # branches 1-5 — _safe_audit call sites).
+    if action == "created":
+        ticket_id = d.get("ticket_id")
+        if ticket_id is not None:
+            out["ticket_id"] = str(ticket_id)
+        tags = d.get("tags")
+        if isinstance(tags, list):
+            out["tags"] = [str(t) for t in tags][:20]
+    elif action == "logged_only":
+        reason = d.get("reason")
+        if reason is not None:
+            out["reason"] = str(reason)[:120]
+    elif action == "dry_run":
+        proposed_title = d.get("proposed_title")
+        if proposed_title is not None:
+            out["proposed_title"] = str(proposed_title)[:200]
+    elif action == "cap_exceeded":
+        hourly_cap = d.get("hourly_cap")
+        if hourly_cap is not None:
+            out["hourly_cap"] = int(hourly_cap) if isinstance(hourly_cap, (int, float)) else None
+    elif action == "failed":
+        # repr(exc) truncated — defensive against runaway repr
+        err = d.get("error")
+        if err is not None:
+            out["error"] = str(err)[:200]
+
+    return out
+
+
+@app.get("/api/email-intent/recent")
+async def list_recent_email_intent(limit: int = 100) -> Dict[str, Any]:
+    """Return recent email-intent audit events for the operator lens.
+
+    Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to seam=
+    intent.email_to_sea_ticket (written by KR-INTENT-EMAIL-TO-SEA-TICKET
+    PR #176's emitter), projects each row, returns newest-first
+    with 24h-window count aggregation by action.
+
+    Query params:
+      limit — number of newest entries to return; default 100,
+              capped at 500. Higher default than other panels
+              since the panel renders all visible at once (no
+              pagination in v1) + intent events are sparse
+              compared to e.g. mcp.tool_called.
+    """
+    from datetime import datetime, timedelta, timezone
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    capped_limit = max(1, min(int(limit or 100), 500))
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+
+    all_rows = read_audit_entries(seam="intent.email_to_sea_ticket")
+
+    in_24h = [e for e in all_rows if e.emitted_at >= cutoff_24h]
+    by_action_24h: Dict[str, int] = {a: 0 for a in _EMAIL_INTENT_ACTION_VALUES}
+    by_action_24h["unknown"] = 0
+    for e in in_24h:
+        a = str(e.details.get("action", "unknown"))
+        if a not in by_action_24h:
+            a = "unknown"
+        by_action_24h[a] = by_action_24h.get(a, 0) + 1
+
+    # Daily-created counts over the last 14 days for the sparkline.
+    # Buckets keyed by YYYY-MM-DD (UTC); operator gets a 2-week
+    # rolling sense of "is Kora creating Sea_Tickets from email or
+    # has the intent been quiet."
+    # Bucket window: [today - 13d, today] inclusive = 14 buckets
+    # ending TODAY. Event filter uses 14d back from `now` so
+    # boundary events (emitted just after midnight UTC of day
+    # `today - 13`) are still included.
+    daily_created: Dict[str, int] = {}
+    for d_offset in range(14):
+        bucket = (now - timedelta(days=13 - d_offset)).strftime("%Y-%m-%d")
+        daily_created[bucket] = 0
+    cutoff_14d = now - timedelta(days=14)
+    for e in all_rows:
+        if e.emitted_at < cutoff_14d:
+            continue
+        if str(e.details.get("action", "")) != "created":
+            continue
+        key = e.emitted_at.strftime("%Y-%m-%d")
+        if key in daily_created:
+            daily_created[key] += 1
+
+    projected = [
+        _project_email_intent_audit(e, lineno=i + 1)
+        for i, e in enumerate(all_rows[:capped_limit])
+    ]
+
+    return {
+        "events": projected,
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total_recent_24h": len(in_24h),
+        "by_action_24h": by_action_24h,
+        # Ordered list of {date, count} so the FE can render the
+        # sparkline in chronological order without re-sorting.
+        "daily_created_14d": [
+            {"date": k, "count": v}
+            for k, v in sorted(daily_created.items())
+        ],
+        "action_values": list(_EMAIL_INTENT_ACTION_VALUES),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Probe investigations xref — KR-FE-PROBE-INVESTIGATION-VIEWER
 # ---------------------------------------------------------------------------
 #

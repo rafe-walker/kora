@@ -93,6 +93,7 @@ import WebhookEventsPanel from "@/pages/WebhookEventsPanel";
 import AgentActivityPanel from "@/pages/AgentActivityPanel";
 import SlackDMPanel from "@/pages/SlackDMPanel";
 import EmailPanel from "@/pages/EmailPanel";
+import EmailIntentLogPage from "@/pages/EmailIntentLogPage";
 import ReasoningPanel from "@/pages/ReasoningPanel";
 import AlertsPanel from "@/pages/AlertsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
@@ -159,6 +160,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/alerts": AlertsPanel,
   "/slack-dm": SlackDMPanel,
   "/email": EmailPanel,
+  "/email-intent-log": EmailIntentLogPage,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -275,6 +277,17 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "email",
     label: "Email",
     icon: Mail,
+  },
+  {
+    // KR-FE-EMAIL-INTENT-LOG-PANEL — audit-derived per-email-intent
+    // panel. Placed right after /email so the operator-flow is
+    // "Email (inbox lens) → Email Intent Log (what Kora decided
+    // to do with each)." Inbox icon distinguishes from the
+    // raw-email panel's Mail icon.
+    path: "/email-intent-log",
+    labelKey: "emailIntentLog",
+    label: "Email Intent Log",
+    icon: Inbox,
   },
   {
     path: "/mcp-clients",
