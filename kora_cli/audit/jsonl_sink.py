@@ -98,6 +98,17 @@ SeamName = Literal[
     # ships the emission for operator visibility via the audit
     # panel + alerts panel without invoking LLM.
     "probe.wake_requested",
+    # KR-INTENT-EMAIL-TO-SEA-TICKET — operator-driven Sea_Ticket
+    # creation from inbound email. Emitted from the email-inbound
+    # handler when intent recognition runs on a Joshua-authored
+    # message: one entry per email evaluated, with ``details``
+    # capturing the matched pattern + confidence + action taken
+    # (``created`` / ``dry_run`` / ``logged_only`` /
+    # ``cap_exceeded`` / ``failed``) and the resulting
+    # ``ticket_id`` when a Sea_Ticket was written. Future
+    # KR-FE-EMAIL-INTENT-LOG-PANEL surfaces this seam in the
+    # cockpit.
+    "intent.email_to_sea_ticket",
 ]
 
 SourceName = Literal[
