@@ -55,13 +55,86 @@ from utils import atomic_replace
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 2  # v1 → v2: added cost_telemetry section (KR-CHEAP-COST-TELEMETRY)
+# v1 → v2: added cost_telemetry section (KR-CHEAP-COST-TELEMETRY)
+# v2 → v3: cost_ladder.spent_to_date_usd + credit_pool_usd populated;
+#          cost_ladder.model_default resolved from KR-HAIKU-ROUTER's
+#          DEFAULT_HAIKU_MODEL constant (was "unknown" in v1/v2).
+SCHEMA_VERSION = 3
 SNAPSHOT_FRESH_THRESHOLD_SECONDS = 600  # 10 min — spec §2(a) is_snapshot_fresh
 
 # Probe names the snapshot exposes. Matches the 5 default probes in
 # ``kora_cli/heartbeat_probes/runner.default_probes()`` so the
 # snapshot shape is stable even when no probes have run yet.
 _KNOWN_PROBES = ("vercel", "sentry", "doppler", "supabase", "fly")
+
+# KR-SNAPSHOT-EXPAND-COST-FIELDS — credit pool env override. Per the
+# reference-anthropic-sdk-billing-split memory the default Max 20x
+# SDK pool is $200/mo. Operator can override (different account
+# tier / multiple pools) via ``KORA_CREDIT_POOL_USD``. Used ONLY as
+# fallback when the live cost holder isn't wired — when the holder
+# is up, ``holder.current.credit_pool_usd`` is the authoritative
+# value (it's the figure rungs are computed against).
+CREDIT_POOL_USD_ENV = "KORA_CREDIT_POOL_USD"
+
+
+def _resolve_credit_pool_usd_fallback() -> float:
+    """Read ``KORA_CREDIT_POOL_USD`` with fail-soft default.
+
+    Used when the cost-state holder isn't wired (early-boot windows
+    or test paths). Malformed env → log warning + return the
+    canonical Max 20x default ($200).
+    """
+    from agent.cost_state_holder import DEFAULT_CREDIT_POOL_USD
+
+    raw = os.environ.get(CREDIT_POOL_USD_ENV, "").strip()
+    if not raw:
+        return float(DEFAULT_CREDIT_POOL_USD)
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "[kora.snapshot] malformed %s=%r — falling back to default "
+            "$%.2f",
+            CREDIT_POOL_USD_ENV,
+            raw,
+            DEFAULT_CREDIT_POOL_USD,
+        )
+        return float(DEFAULT_CREDIT_POOL_USD)
+    if value <= 0:
+        logger.warning(
+            "[kora.snapshot] %s=%s must be > 0 — falling back to "
+            "default $%.2f",
+            CREDIT_POOL_USD_ENV,
+            value,
+            DEFAULT_CREDIT_POOL_USD,
+        )
+        return float(DEFAULT_CREDIT_POOL_USD)
+    return value
+
+
+def _resolve_default_model() -> str:
+    """Resolve the router-side default model. Returns
+    :data:`kora_cli.router.cost_router.DEFAULT_HAIKU_MODEL` if the
+    router is importable (post-#165 default), else ``"unknown"``.
+
+    Reading from the router's MODULE CONSTANT (not a holder field /
+    accessor) because the router never moves the default at runtime —
+    the default IS Haiku per KR-HAIKU-ROUTER's earned-Opus-escalation
+    design. Per-call escalators (cost_clamp, force_opus_env,
+    iteration_2+, /opus prefix, decision_language) are call-time
+    signals, not snapshot state.
+    """
+    try:
+        from kora_cli.router.cost_router import DEFAULT_HAIKU_MODEL
+
+        return str(DEFAULT_HAIKU_MODEL)
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] router DEFAULT_HAIKU_MODEL import failed: "
+            "%r — degrading model_default to 'unknown'",
+            exc,
+        )
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -193,13 +266,24 @@ def _collect_alerts() -> Dict[str, Any]:
 def _collect_cost_ladder() -> Dict[str, Any]:
     """Read the cost-ladder holder. Returns the cost_ladder section.
 
-    ``model_default`` is degraded to ``"unknown"`` in v1 — the model
-    routed at any moment depends on the active-rung downshift in
-    ``agent.cost_downshift`` which is per-call, not a holder field.
-    Surface a stable "unknown" here rather than a misleading
-    snapshot value; a follow-on bucket can wire a per-rung default-
-    model accessor if operators want it.
+    Schema v3 changes (KR-SNAPSHOT-EXPAND-COST-FIELDS):
+      * ``spent_to_date_usd`` — from ``holder.current.spent_to_date_usd``
+        when holder wired; ``"unknown"`` otherwise.
+      * ``credit_pool_usd`` — from ``holder.current.credit_pool_usd``
+        when holder wired; ``KORA_CREDIT_POOL_USD`` env fallback when
+        holder unavailable; ``DEFAULT_CREDIT_POOL_USD`` ($200) when
+        both unset / malformed.
+      * ``model_default`` — populated from KR-HAIKU-ROUTER's
+        ``DEFAULT_HAIKU_MODEL`` constant (post-#165). Per-call
+        escalators (cost_clamp / force_opus_env / iteration_2+ /
+        /opus prefix / decision_language) are call-time signals,
+        NOT snapshot state — the snapshot surfaces the router's
+        stable default-path model.
     """
+    # Default model is resolvable independent of the holder — the
+    # router constant lives in ``kora_cli/router/cost_router.py``.
+    model_default = _resolve_default_model()
+
     try:
         from agent.cost_state_holder import get_cost_holder
     except Exception as exc:
@@ -211,7 +295,9 @@ def _collect_cost_ladder() -> Dict[str, Any]:
         return {
             "current_tier": "unknown",
             "monthly_budget_pct_used": None,
-            "model_default": "unknown",
+            "model_default": model_default,
+            "spent_to_date_usd": "unknown",
+            "credit_pool_usd": _resolve_credit_pool_usd_fallback(),
         }
 
     try:
@@ -223,13 +309,17 @@ def _collect_cost_ladder() -> Dict[str, Any]:
         return {
             "current_tier": "unknown",
             "monthly_budget_pct_used": None,
-            "model_default": "unknown",
+            "model_default": model_default,
+            "spent_to_date_usd": "unknown",
+            "credit_pool_usd": _resolve_credit_pool_usd_fallback(),
         }
     if holder is None:
         return {
             "current_tier": "unknown",
             "monthly_budget_pct_used": None,
-            "model_default": "unknown",
+            "model_default": model_default,
+            "spent_to_date_usd": "unknown",
+            "credit_pool_usd": _resolve_credit_pool_usd_fallback(),
         }
 
     current_tier = "unknown"
@@ -251,11 +341,37 @@ def _collect_cost_ladder() -> Dict[str, Any]:
         )
         pct_used = None
 
+    # KR-SNAPSHOT-EXPAND-COST-FIELDS v3 — surface holder state for
+    # spend + pool. ``holder.current`` is the @property snapshot of
+    # the CostState dataclass (PR #112 K-DG catch + #126 active_rung
+    # method confirmation). Both fields are float on the dataclass;
+    # defensive try/except guards against future shape drift.
+    spent_to_date_usd: Any = "unknown"
+    credit_pool_usd: Any = _resolve_credit_pool_usd_fallback()
+    try:
+        state = holder.current
+        spent_raw = getattr(state, "spent_to_date_usd", None)
+        if isinstance(spent_raw, (int, float)):
+            spent_to_date_usd = round(float(spent_raw), 6)
+        pool_raw = getattr(state, "credit_pool_usd", None)
+        if isinstance(pool_raw, (int, float)) and pool_raw > 0:
+            # Holder-configured pool wins over env fallback when
+            # the holder is wired — it's the figure the rungs are
+            # actually computed against, so the snapshot must agree.
+            credit_pool_usd = round(float(pool_raw), 2)
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] holder.current read raised %r — spend/pool "
+            "fields degraded",
+            exc,
+        )
+
     return {
         "current_tier": current_tier,
         "monthly_budget_pct_used": pct_used,
-        # Dynamic per-call downshift — see module docstring.
-        "model_default": "unknown",
+        "model_default": model_default,
+        "spent_to_date_usd": spent_to_date_usd,
+        "credit_pool_usd": credit_pool_usd,
     }
 
 

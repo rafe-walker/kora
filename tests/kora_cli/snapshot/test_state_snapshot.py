@@ -149,6 +149,9 @@ def test_cost_ladder_section_shape(env):
         "current_tier",
         "monthly_budget_pct_used",
         "model_default",
+        # KR-SNAPSHOT-EXPAND-COST-FIELDS v3 additions.
+        "spent_to_date_usd",
+        "credit_pool_usd",
     }
 
 
@@ -192,10 +195,20 @@ def test_cost_ladder_no_holder_degrades_to_unknown(env, monkeypatch):
     monkeypatch.setattr(
         "agent.cost_state_holder.get_cost_holder", lambda: None
     )
+    # No env override → credit_pool_usd falls back to the default
+    # ($200 from agent.cost_state_holder.DEFAULT_CREDIT_POOL_USD).
+    monkeypatch.delenv("KORA_CREDIT_POOL_USD", raising=False)
     cl = _collect_cost_ladder()
     assert cl["current_tier"] == "unknown"
     assert cl["monthly_budget_pct_used"] is None
-    assert cl["model_default"] == "unknown"
+    # model_default is now router-resolved post-#165, NOT "unknown".
+    # Router constant is the source of truth — if router import
+    # succeeds we get the haiku model id.
+    assert cl["model_default"] != "unknown"
+    # KR-SNAPSHOT-EXPAND-COST-FIELDS v3: spend degrades to "unknown"
+    # (no observed-state env), pool falls back to default $200.
+    assert cl["spent_to_date_usd"] == "unknown"
+    assert cl["credit_pool_usd"] == 200.0
 
 
 def test_cost_ladder_active_rung_raises_partial_degrade(env, monkeypatch):
@@ -328,11 +341,23 @@ def test_alerts_populated_when_aggregator_returns_alerts(env, monkeypatch):
 
 
 def test_cost_ladder_populated_from_holder(env, monkeypatch):
-    from agent.cost_state_holder import CostRung
+    from agent.cost_state_holder import CostRung, CostState
 
+    fake_state = CostState(
+        credit_pool_usd=200.00,
+        spent_to_date_usd=164.73,
+        billing_period_start=datetime.now(timezone.utc),
+        last_reconciled_at=None,
+        last_reconciled_anthropic_usd=None,
+        extra_usage_off=False,
+    )
     fake_holder = MagicMock()
     fake_holder.active_rung.return_value = CostRung.WARN_75
     fake_holder.current_pct_used.return_value = 0.82
+    # holder.current is a @property on the real class — mock with
+    # PropertyMock-style assignment so attribute access returns the
+    # CostState instance.
+    type(fake_holder).current = property(lambda self: fake_state)
     monkeypatch.setattr(
         "agent.cost_state_holder.get_cost_holder",
         lambda: fake_holder,
@@ -340,6 +365,121 @@ def test_cost_ladder_populated_from_holder(env, monkeypatch):
     cl = _collect_cost_ladder()
     assert cl["current_tier"] == "WARN_75"
     assert cl["monthly_budget_pct_used"] == 82.0
+    # KR-SNAPSHOT-EXPAND-COST-FIELDS v3 — values flow from holder.current.
+    assert cl["spent_to_date_usd"] == 164.73
+    assert cl["credit_pool_usd"] == 200.0
+
+
+# ===========================================================================
+# KR-SNAPSHOT-EXPAND-COST-FIELDS — schema v3 + env-override coverage
+# ===========================================================================
+
+
+def test_schema_version_is_v3(env):
+    """Spec §2: schema_version bumps from 2 to 3 for the cost-field
+    expansion. Stable contract for consumer branches."""
+    assert SCHEMA_VERSION == 3
+    snap = compute_snapshot()
+    assert snap["schema_version"] == 3
+
+
+def test_credit_pool_env_override_truthy(env, monkeypatch):
+    """KORA_CREDIT_POOL_USD overrides the $200 default when holder
+    is unavailable. Operator-tunable for non-Max-20x plans."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD", "500")
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder", lambda: None
+    )
+    cl = _collect_cost_ladder()
+    assert cl["credit_pool_usd"] == 500.0
+
+
+def test_credit_pool_env_malformed_fails_soft(env, monkeypatch, caplog):
+    """Malformed env values warn + fall back to default — never raise."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD", "not-a-number")
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder", lambda: None
+    )
+    with caplog.at_level(logging.WARNING):
+        cl = _collect_cost_ladder()
+    assert cl["credit_pool_usd"] == 200.0
+    assert any(
+        "KORA_CREDIT_POOL_USD" in record.message for record in caplog.records
+    )
+
+
+def test_credit_pool_env_zero_or_negative_fails_soft(env, monkeypatch):
+    """Non-positive env values also fall back — pool must be > 0
+    for the rung percentages to compute meaningfully."""
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD", "0")
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder", lambda: None
+    )
+    cl = _collect_cost_ladder()
+    assert cl["credit_pool_usd"] == 200.0
+
+
+def test_credit_pool_holder_wins_over_env(env, monkeypatch):
+    """When holder is wired, holder.current.credit_pool_usd wins —
+    rungs compute against that pool, snapshot must agree."""
+    from agent.cost_state_holder import CostRung, CostState
+
+    fake_state = CostState(
+        credit_pool_usd=350.00,
+        spent_to_date_usd=10.00,
+        billing_period_start=datetime.now(timezone.utc),
+        last_reconciled_at=None,
+        last_reconciled_anthropic_usd=None,
+        extra_usage_off=False,
+    )
+    fake_holder = MagicMock()
+    fake_holder.active_rung.return_value = CostRung.NORMAL
+    fake_holder.current_pct_used.return_value = 0.03
+    type(fake_holder).current = property(lambda self: fake_state)
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder", lambda: fake_holder
+    )
+    monkeypatch.setenv("KORA_CREDIT_POOL_USD", "999")
+    cl = _collect_cost_ladder()
+    assert cl["credit_pool_usd"] == 350.0
+
+
+def test_model_default_resolved_from_router(env):
+    """Post-#165, model_default reads DEFAULT_HAIKU_MODEL from the
+    router. Resolves PR #157's 'unknown' placeholder."""
+    from kora_cli.router.cost_router import DEFAULT_HAIKU_MODEL
+
+    cl = _collect_cost_ladder()
+    assert cl["model_default"] == DEFAULT_HAIKU_MODEL
+
+
+def test_model_default_degrades_when_router_unavailable(env, monkeypatch):
+    """If the router import fails, model_default degrades to
+    'unknown' but the snapshot still produces."""
+    import sys
+
+    # Force import-time failure on the cost_router module.
+    monkeypatch.setitem(sys.modules, "kora_cli.router.cost_router", None)
+    cl = _collect_cost_ladder()
+    assert cl["model_default"] == "unknown"
+
+
+def test_holder_current_raises_degrades_spend_and_pool(env, monkeypatch):
+    """If holder.current raises mid-collection, spend degrades to
+    'unknown' and pool falls back to env-default — never raises."""
+    fake_holder = MagicMock()
+    fake_holder.active_rung.side_effect = RuntimeError("rung gone")
+    fake_holder.current_pct_used.side_effect = RuntimeError("pct gone")
+    type(fake_holder).current = property(
+        lambda self: (_ for _ in ()).throw(RuntimeError("state gone"))
+    )
+    monkeypatch.setattr(
+        "agent.cost_state_holder.get_cost_holder", lambda: fake_holder
+    )
+    cl = _collect_cost_ladder()
+    assert cl["spent_to_date_usd"] == "unknown"
+    assert cl["credit_pool_usd"] == 200.0
+    assert cl["current_tier"] == "unknown"
 
 
 def test_operational_state_populated_when_holder_live(env, monkeypatch):
