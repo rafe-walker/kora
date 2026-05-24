@@ -90,24 +90,101 @@ def _pre_api_request_mutable(
     *,
     route: str = "",
     api_kwargs: Optional[dict] = None,
+    api_call_count: int = 0,
+    user_message: str = "",
     **kw,
 ) -> Optional[dict]:
-    """KR-HERMES-LOCAL-EXTENSIONS hook. For Kora calls, delegate
-    to the router for model selection + caching markers.
+    """KR-HERMES-LOCAL-EXTENSIONS hook — ST2 real wiring.
 
-    ST1: returns None (no override). ST2 will delegate to
-    ``kora_hermes_plugin.cost_ladder_and_caching`` which calls
-    ``cost_router.select_model_pre_call(...)`` + adds
-    ``cache_control: ephemeral`` to system + last tool.
+    For Kora-tagged calls:
+      1. Call the cost-router (``select_model_pre_call``) to
+         pick Haiku-default-or-Opus-earned based on iteration +
+         decision-language + cost rung + force-Opus env signals.
+      2. Wrap ``system`` + ``tools`` with
+         ``cache_control: ephemeral`` markers so Anthropic
+         caches them (KR-CHEAP-PROMPT-CACHING semantic via the
+         hook layer rather than the bypass loop's inline wrap).
+
+    Returns ``{"override": {...}}`` with the keys to replace in
+    api_kwargs. None / no-op for non-Kora calls.
     """
     if not _is_kora_call(route):
         return None
-    logger.debug(
-        "[kora_hermes] pre_api_request_mutable fired for route=%s "
-        "(ST1: no override; ST2 will plumb cost-router + caching)",
-        route,
-    )
-    return None
+
+    if not isinstance(api_kwargs, dict):
+        return None
+
+    override: dict = {}
+
+    # --- Cost-ladder model selection ---
+    # Use the existing router. iteration semantics: Hermes's
+    # ``api_call_count`` is 1-indexed per-call; matches Kora's
+    # iteration count from the bypass loop. cost_rung comes from
+    # the process-global CostStateHolder.
+    try:
+        from kora_cli.router import select_model_pre_call
+
+        cost_rung = _current_cost_rung()
+        decision = select_model_pre_call(
+            message_text=user_message or "",
+            iteration=max(int(api_call_count or 1), 1),
+            cost_rung=cost_rung,
+        )
+        if decision.model is not None:
+            override["model"] = decision.model
+    except Exception as exc:
+        logger.warning(
+            "[kora_hermes] cost-ladder select_model_pre_call raised "
+            "%r — leaving api_kwargs['model'] unchanged",
+            exc,
+        )
+
+    # --- Caching: wrap system + tools with cache_control markers ---
+    try:
+        from kora_cli.reasoning.anthropic_engine import (
+            _wrap_system_as_cacheable,
+            _wrap_tools_as_cacheable,
+        )
+
+        # System: may be str (Hermes default) OR already a list
+        # (e.g. test fixture passed a content-block list). Wrap
+        # only the str case so we don't double-wrap.
+        existing_system = api_kwargs.get("system")
+        if isinstance(existing_system, str) and existing_system:
+            override["system"] = _wrap_system_as_cacheable(existing_system)
+
+        # Tools: tools_for_api is a list (may be empty in
+        # toolless v1 route-through). The wrapper handles empty
+        # list by returning empty list — safe to always call.
+        existing_tools = api_kwargs.get("tools") or []
+        if isinstance(existing_tools, list) and existing_tools:
+            override["tools"] = _wrap_tools_as_cacheable(existing_tools)
+    except Exception as exc:
+        logger.warning(
+            "[kora_hermes] caching wrap raised %r — leaving "
+            "api_kwargs unchanged",
+            exc,
+        )
+
+    if not override:
+        return None
+    return {"override": override}
+
+
+def _current_cost_rung() -> str:
+    """Read the active cost-ladder rung. Defaults to ``"normal"``
+    on any failure (holder unwired, exception, etc.) — matches
+    cost_router's expectation."""
+    try:
+        from agent.cost_state_holder import get_cost_holder
+
+        holder = get_cost_holder()
+        if holder is None:
+            return "normal"
+        rung = holder.active_rung()
+        return getattr(rung, "value", str(rung)) or "normal"
+    except Exception:
+        return "normal"
 
 
 def _pre_tool_list_finalized(
@@ -173,16 +250,38 @@ def _post_tool_call(
 def _post_llm_call(
     *,
     route: str = "",
+    model: str = "",
     **kw,
 ) -> None:
-    """Per-call cost-ladder write + telemetry record_call. ST1:
-    no-op (Kora's handler today calls _record_inference_to_cost_
-    ladder directly; ST2 wires this to the same code)."""
+    """ST2 real wiring — per-call cost-telemetry record_call.
+
+    Records the call to the telemetry counter so the cockpit's
+    cost panel shows Kora's route-through spend alongside the
+    bypass path's spend (same telemetry vocabulary; the route
+    discriminator is the only diff).
+
+    Note: ``post_llm_call`` fires per CONVERSATION END (not per
+    API roundtrip). The conversation-loop accumulates tokens
+    across iterations; the response_text + final usage is what
+    we see here. For per-iteration accounting (which the bypass
+    loop does via ``_record_call_to_telemetry`` per call) we'd
+    need a different hook or the existing ``post_api_request``
+    observer — out of scope for ST2 (ST2B follow-on).
+    """
     if not _is_kora_call(route):
         return
-    logger.debug(
-        "[kora_hermes] post_llm_call fired for route=%s (ST1 no-op)",
+
+    # Hermes's post_llm_call kwargs don't include a usage object
+    # (the assistant_response is a string). For ST2 the cost-
+    # ladder write happens at the handler layer when the
+    # ResponseResult comes back; this hook is a structured-log
+    # marker for the telemetry timeline. Per-call CanonicalUsage
+    # accumulation lives in the handler (slack_dm_handler's
+    # ``_record_inference_to_cost_ladder``).
+    logger.info(
+        "[kora.gateway.post_llm_call] route=%s model=%s",
         route,
+        model or "<unknown>",
     )
 
 

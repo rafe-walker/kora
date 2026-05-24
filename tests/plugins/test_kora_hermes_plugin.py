@@ -153,24 +153,10 @@ def test_pre_api_request_mutable_returns_none_on_non_kora(caplog):
     assert result is None
 
 
-def test_pre_api_request_mutable_returns_none_on_kora_st1(caplog):
-    """Even on a Kora-tagged call, ST1's handler returns None (ST2
-    plumbs the actual override). This pins the ST1 contract so a
-    later partial-extraction commit can't accidentally start
-    overriding while leaving the rest of the wiring incomplete."""
-    import logging
-
-    from plugins.kora_hermes import _pre_api_request_mutable
-
-    caplog.set_level(logging.DEBUG)
-    result = _pre_api_request_mutable(
-        route="slack_dm",
-        api_kwargs={"model": "claude-opus-4-7"},
-    )
-    assert result is None
-    # Sanity: the debug log fired for the Kora-tagged path.
-    msgs = [r.getMessage() for r in caplog.records]
-    assert any("route=slack_dm" in m for m in msgs)
+# ``test_pre_api_request_mutable_returns_none_on_kora_st1`` — removed
+# in ST2 wire-up. ST2 replaced the stub with the real cost-router +
+# caching logic; the new contract (override dict returned for Kora-
+# tagged calls) is covered in test_kora_hermes_plugin_st2.py.
 
 
 def test_pre_tool_list_finalized_returns_none_st1():
@@ -336,50 +322,12 @@ async def test_toggle_explicit_false_uses_bypass(
     assert result.error is None
 
 
-@pytest.mark.asyncio
-async def test_toggle_on_routes_to_gateway_st1_not_implemented(
-    monkeypatch, system_prompt_path
-):
-    """KORA_REASONING_USE_GATEWAY=true → _respond_via_gateway
-    raises NotImplementedError pointing to ST2 (by design — ST1
-    ships the scaffolding so ST2 can fill in the body)."""
-    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "true")
-
-    engine = _make_engine(system_prompt_path, _fake_response("hi"))
-    with pytest.raises(NotImplementedError, match="ST2"):
-        await engine.respond(_make_incoming(), _make_context())
-
-
-@pytest.mark.asyncio
-async def test_toggle_on_resolves_route_before_raising(
-    monkeypatch, system_prompt_path
-):
-    """The NotImplementedError message should include the resolved
-    route literal so operator triage knows the source→route
-    mapping fired correctly even though the route-through itself
-    isn't wired."""
-    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "true")
-
-    engine = _make_engine(system_prompt_path, _fake_response())
-    with pytest.raises(NotImplementedError) as excinfo:
-        await engine.respond(
-            _make_incoming(source="email"), _make_context()
-        )
-    # The exception message names the route the helper resolved.
-    assert "email_inbound" in str(excinfo.value)
-
-
-@pytest.mark.asyncio
-async def test_toggle_on_unknown_source_resolves_to_empty_route(
-    monkeypatch, system_prompt_path
-):
-    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "true")
-
-    engine = _make_engine(system_prompt_path, _fake_response())
-    with pytest.raises(NotImplementedError) as excinfo:
-        await engine.respond(
-            _make_incoming(source="weird"), _make_context()
-        )
-    # Empty-string route signaled (kora_hermes plugin gate would
-    # no-op on this).
-    assert "route=''" in str(excinfo.value)
+# ``test_toggle_on_routes_to_gateway_st1_not_implemented`` +
+# ``test_toggle_on_resolves_route_before_raising`` +
+# ``test_toggle_on_unknown_source_resolves_to_empty_route`` —
+# removed in ST2 wire-up. ST2 replaced the NotImplementedError
+# stub with the actual AIAgent route-through path; toggle-on
+# behavior is now covered by tests in
+# test_kora_hermes_plugin_st2.py (end_to_end + paused +
+# hard_stop + interrupted + exception + route-threading
+# variants).
