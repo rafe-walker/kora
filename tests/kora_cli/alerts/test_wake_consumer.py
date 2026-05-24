@@ -335,3 +335,51 @@ async def test_reset_debounce_state_clears_map():
     assert consumer.debounce_map_size == 1
     consumer.reset_debounce_state()
     assert consumer.debounce_map_size == 0
+
+
+# ===========================================================================
+# KR-CC1-POLISH (#198) — fallback DM wording + dm_status assertion
+# ===========================================================================
+
+
+def test_format_fallback_text_includes_review_manually_footer():
+    """The fallback footer must include the explicit "review +
+    act manually" guidance so the operator isn't left wondering
+    whether Kora will retry."""
+    text = format_fallback_text(
+        _make_event(), reason="engine_unavailable"
+    )
+    assert "Kora is unavailable to investigate" in text
+    assert "Review the alerts panel" in text
+    assert "act manually" in text
+    assert "Kora will not retry" in text
+    # Identity preserved.
+    assert "cost_ladder" in text
+    assert "cost_warn_75" in text
+
+
+@pytest.mark.asyncio
+async def test_fallback_dm_records_engine_unavailable_dm_status(
+    tmp_path,
+):
+    """Engine None → DM sent successfully (fallback path) →
+    investigation_completed audit must carry
+    dm_status="engine_unavailable_fallback" verbatim. CC#2's
+    KR-FE-ALERT-INVESTIGATIONS-VIEWER renders that enum value."""
+    consumer = _make_consumer(engine=None, slack=_make_slack())
+    outcome = await consumer.consume_alert_event(_make_event())
+    assert outcome.dm_sent is True
+    assert outcome.reasoning_invoked is False
+    audit = _read_audit(tmp_path)
+    completed = [
+        r for r in audit if r["seam"] == "alert.investigation_completed"
+    ]
+    assert len(completed) == 1
+    details = completed[0]["details"]
+    assert details["dm_status"] == "engine_unavailable_fallback"
+    # investigation_summary_text contains the fallback wording,
+    # not an empty / placeholder string.
+    assert "Kora is unavailable to investigate" in details[
+        "investigation_summary_text"
+    ]
+    assert details["reasoning_error"] == "engine_unavailable"

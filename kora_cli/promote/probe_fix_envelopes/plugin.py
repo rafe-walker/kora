@@ -193,6 +193,30 @@ async def run_probe_fix_envelopes_cycle(
             exc,
         )
 
+    # KR-CC1-POLISH — auto-approve sweep AFTER fresh proposals
+    # land. Order matters: a freshly-proposed low-risk proposal
+    # spends its full wait window in pending before the NEXT
+    # cycle's sweep picks it up. Sweep is a no-op when the
+    # operator env opt-in is falsy (default).
+    try:
+        from .auto_approve import run_auto_approve_sweep
+
+        sweep = run_auto_approve_sweep(now=started_dt)
+        summary["auto_approved_low_risk_count"] = sweep.approved_count
+        summary["auto_approve_candidates_considered"] = (
+            sweep.candidates_considered
+        )
+        summary["auto_approve_under_wait_window"] = (
+            sweep.candidates_under_wait_window
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote.probe_fix_envelopes] auto_approve sweep "
+            "raised %r — cycle continues",
+            exc,
+        )
+        summary["auto_approved_low_risk_count"] = 0
+
     summary["duration_ms"] = int(
         (time.monotonic() - started_monotonic) * 1000
     )

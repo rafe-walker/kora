@@ -284,6 +284,26 @@ SeamName = Literal[
     # mirrors probe.wake_requested for alert investigations. Reads return [] until
     # the alert wake consumer writes these rows.
     "alert.wake_requested",
+    # KR-CC1-POLISH — auto-approve sweep for low-risk probe-fix-
+    # envelope proposals. Emitted by the post-cycle auto-approve
+    # sweep ONLY when:
+    #   * The proposal's ``blast_radius_level == "low"`` (matches
+    #     a known-narrow envelope action; see
+    #     ``kora_cli/promote/probe_fix_envelopes/proposer.py``
+    #     ``_KNOWN_LOW_RISK_PATTERNS``)
+    #   * Operator opted in via
+    #     ``KORA_PROMOTE_PROBE_FIX_AUTO_APPROVE_LOW_RISK=true``
+    #   * The proposal has been pending ≥
+    #     ``KORA_PROMOTE_PROBE_FIX_AUTO_APPROVE_WAIT_HOURS``
+    #     (default 1h) — operator's window to manually reject
+    # Two-tier gating preserved: this seam means "the proposal is
+    # now in the envelope vocabulary"; actual fix-attempt execution
+    # STILL requires ``KORA_PROBE_AUTOFIX_<NAME>_ENABLED=true``.
+    # Payload mirrors ``promotion.probe_envelope_action_proposed``
+    # + adds ``auto_approve_wait_hours`` (the actual wait the
+    # sweep applied) + ``auto_approved_at`` (ISO ts) so operator
+    # triage can reconstruct the timeline.
+    "promotion.probe_envelope_action_auto_approved",
 ]
 
 SourceName = Literal[
