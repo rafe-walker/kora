@@ -510,10 +510,11 @@ def _fake_anthropic_response(text: str = "bypass reply"):
 async def test_toggle_off_uses_bypass_path_unchanged(
     monkeypatch, system_prompt_path
 ):
-    """Default behavior: toggle unset → bypass path runs +
-    returns ResponseResult with the existing shape. AIAgent
-    construction is NOT triggered."""
-    monkeypatch.delenv("KORA_REASONING_USE_GATEWAY", raising=False)
+    """Toggle explicit-false → bypass path runs + returns
+    ResponseResult with the existing shape. AIAgent construction
+    is NOT triggered. (ST3 default-flip: bypass is opt-IN via
+    ``KORA_REASONING_USE_GATEWAY=false``.)"""
+    monkeypatch.setenv("KORA_REASONING_USE_GATEWAY", "false")
     from kora_cli.listeners import mcp_tools
 
     monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
