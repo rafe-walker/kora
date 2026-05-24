@@ -23,6 +23,7 @@
 // _DM_STATUS_VALUES in web_server.py.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Activity,
   AlertCircle,
@@ -34,6 +35,7 @@ import {
   MailX,
   MessageSquare,
   RefreshCw,
+  Search,
   Sparkles,
   Wrench,
   XCircle,
@@ -351,18 +353,30 @@ function InvestigationCard({ item }: { item: ProbeInvestigationItem }) {
 
         <div className="ml-8 space-y-2">
           <InvestigationCompletedSummary item={item} />
-          <div className="text-xs text-muted-foreground">
+          <div className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
             <span className="font-mono">
               caller_session_id: {item.caller_session_id}
             </span>
-            <span className="mx-2">·</span>
+            {/* KR-FE-INVESTIGATION-DRILL-DOWN — drill into the unified
+                per-session timeline (wake + autofix + completed + DM
+                row, all in one chronological list with raw-JSON
+                expansion per row). */}
+            <Link
+              to={`/investigations/${encodeURIComponent(item.caller_session_id)}`}
+              className="inline-flex items-center gap-1 text-primary hover:underline"
+              title="Drill into the full audit timeline for this investigation"
+            >
+              <Search className="h-3 w-3" />
+              drill
+            </Link>
+            <span>·</span>
             <span>
               envelope:{" "}
               {item.envelope_enabled
                 ? `${item.envelope_fix_name} (ENABLED)`
                 : "diagnose-only"}
             </span>
-            <span className="mx-2">·</span>
+            <span>·</span>
             <span>
               current probe health:{" "}
               <span className="font-mono">{item.current_probe_health}</span>

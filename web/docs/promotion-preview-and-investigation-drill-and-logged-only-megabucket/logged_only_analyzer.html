@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Email Intent · Logged-Only</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Email Intent · Logged-Only (Deliverable B)</h1>
+  <p class="preamble">
+    Lens onto inbound emails Kora evaluated that DIDN'T match a
+    high-confidence intent pattern. Two operator uses: triage
+    (Kora missed something) + training data (corpus for the
+    future KR-PROMOTE-EMAIL-INTENT loop). Reuses
+    <code>/api/email-intent/recent</code> + filters client-side
+    to <code>action="logged_only"</code> — no new BE endpoint.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">📥 Email Intent · Logged-Only</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Why-this-view explainer -->
+  <div class="card" style="border-color: rgba(96,165,250,0.3); background: rgba(96,165,250,0.05);">
+    <div style="display: flex; gap: 8px; align-items: flex-start; font-size: 12px;">
+      <span style="color: var(--primary); margin-top: 2px;">?</span>
+      <div style="color: var(--muted);">
+        <div style="color: var(--fg); font-weight: 500;">Why this view</div>
+        <div style="margin-top: 4px;">
+          Inbound emails Kora evaluated that <code>DIDN'T</code> match a
+          high-confidence intent pattern (action=<code>logged_only</code> from PR #176's
+          intent.email_to_sea_ticket seam). Two operator uses:
+        </div>
+        <ul style="margin: 4px 0 0 18px; padding: 0;">
+          <li><strong style="color: var(--fg);">Triage:</strong> spot patterns Kora SHOULD have recognized — "this forward asked me to save an article; the pattern was <em>too narrow</em>."</li>
+          <li><strong style="color: var(--fg);">Training data:</strong> this corpus is what the eventual KR-PROMOTE-EMAIL-INTENT loop will observe to propose new patterns.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary band -->
+  <div class="card">
+    <div class="row" style="font-size: 13px;">
+      📥 <strong>12</strong> <span class="italic-muted">logged-only events in the last 7 days</span>
+      <span class="italic-muted">·</span>
+      <span class="italic-muted">23 total in the audit window</span>
+    </div>
+  </div>
+
+  <!-- Logged-only event 1 -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--muted); margin-top: 2px;">✉</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">2h ago</span>
+          <span style="font-size: 13px; font-weight: 500;">"Save this article about Anthropic prompting"</span>
+        </div>
+        <div class="row" style="margin-top: 4px; font-size: 11px;">
+          <span class="badge" style="font-family: ui-monospace, monospace;">pattern: fwd_with_url</span>
+          <span class="italic-muted">confidence: 0.34</span>
+          <span class="italic-muted">reason: pattern_confidence_below_threshold</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 10px; color: var(--muted);">
+          <span style="font-family: ui-monospace, monospace;">caller_session_id: email:&lt;CAH1ZcAB9k9V@mail.gmail.com&gt;</span>
+        </div>
+        <button class="btn" style="margin-top: 6px; font-size: 11px; color: var(--muted); opacity: 0.5; cursor: not-allowed;">💡 Suggest pattern (coming soon)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logged-only event 2 -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--muted); margin-top: 2px;">✉</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">5h ago</span>
+          <span style="font-size: 13px; font-weight: 500;">"Calendar — thoughts on next week's offsite?"</span>
+        </div>
+        <div class="row" style="margin-top: 4px; font-size: 11px;">
+          <span class="badge" style="font-family: ui-monospace, monospace;">pattern: (none)</span>
+          <span class="italic-muted">confidence: (n/a)</span>
+          <span class="italic-muted">reason: no_pattern_matched</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 10px; color: var(--muted);">
+          <span style="font-family: ui-monospace, monospace;">caller_session_id: email:&lt;CAH4Xn82@offsite-planning.com&gt;</span>
+        </div>
+        <button class="btn" style="margin-top: 6px; font-size: 11px; color: var(--muted); opacity: 0.5; cursor: not-allowed;">💡 Suggest pattern (coming soon)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logged-only event 3 -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--muted); margin-top: 2px;">✉</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-size: 11px;">1d ago</span>
+          <span style="font-size: 13px; font-weight: 500;">"Forwarding the supabase migration steps"</span>
+        </div>
+        <div class="row" style="margin-top: 4px; font-size: 11px;">
+          <span class="badge" style="font-family: ui-monospace, monospace;">pattern: explicit_save_phrase</span>
+          <span class="italic-muted">confidence: 0.41</span>
+          <span class="italic-muted">reason: pattern_confidence_below_threshold</span>
+        </div>
+        <div style="margin-top: 4px; font-size: 10px; color: var(--muted);">
+          <span style="font-family: ui-monospace, monospace;">caller_session_id: email:&lt;db-migration-thread@stormhaven&gt;</span>
+        </div>
+        <button class="btn" style="margin-top: 6px; font-size: 11px; color: var(--muted); opacity: 0.5; cursor: not-allowed;">💡 Suggest pattern (coming soon)</button>
+      </div>
+    </div>
+  </div>
+
+</body></html>

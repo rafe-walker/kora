@@ -107,6 +107,8 @@ import CostStatePage from "@/pages/CostStatePage";
 import CostTelemetryPage from "@/pages/CostTelemetryPage";
 import PhrasebookPage from "@/pages/PhrasebookPage";
 import PromotionReviewPage from "@/pages/PromotionReviewPage";
+import EmailLoggedOnlyAnalyzerPage from "@/pages/EmailLoggedOnlyAnalyzerPage";
+import InvestigationDrillDownPage from "@/pages/InvestigationDrillDownPage";
 import ProbeInvestigationsPage from "@/pages/ProbeInvestigationsPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
@@ -178,6 +180,14 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/phrasebook": PhrasebookPage,
   "/promotions/phrasebook": PromotionReviewPage,
   "/probe-investigations": ProbeInvestigationsPage,
+  "/email-intent-log/logged-only": EmailLoggedOnlyAnalyzerPage,
+  // KR-FE-INVESTIGATION-DRILL-DOWN — drill into the unified
+  // per-caller_session_id timeline. ``:callerSessionId`` is a path
+  // segment captured by react-router; the page reads useParams.
+  // Deep-linked from KoraActionsPage + ProbeInvestigationsPage
+  // rows; no sidebar nav (the page only makes sense reached from
+  // a specific row).
+  "/investigations/:callerSessionId": InvestigationDrillDownPage,
   "/capabilities": CapabilitiesPage,
   "/charter": CharterPage,
   "/kora-control": KoraControlPage,
@@ -299,6 +309,18 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "emailIntentLog",
     label: "Email Intent Log",
     icon: Inbox,
+  },
+  {
+    // KR-FE-EMAIL-LOGGED-ONLY-ANALYZER — un-acted-on lens. Sits
+    // right after /email-intent-log so operator-flow is
+    // "Intent Log (everything Kora evaluated) → Logged-Only
+    // (what Kora DIDN'T act on)." Sparkles icon signals "lens
+    // for finding patterns to teach Kora" (a forward-looking
+    // surface, distinct from the triage-y Inbox of the parent).
+    path: "/email-intent-log/logged-only",
+    labelKey: "emailLoggedOnly",
+    label: "Logged-Only",
+    icon: Sparkles,
   },
   {
     // KR-FE-OUTBOUND-EMAIL-LOG-PANEL — symmetric to the inbound
