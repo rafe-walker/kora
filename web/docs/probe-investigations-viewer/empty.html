@@ -1,0 +1,115 @@
+<!--
+  Static preview of ProbeInvestigationsPage EMPTY STATE for PR
+  review. Per spec — "empty state matters here, data has only just
+  started flowing. Render a calm 'everything's healthy' message
+  when zero wakes in window, not an empty card list." This is what
+  most operators will see at first since PR #166 just landed.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kora — ProbeInvestigationsPage empty state</title>
+  <style>
+    :root {
+      --bg: #0a0a0a; --fg: #ededed; --muted: #8b8b8b;
+      --card: #131313; --border: #2a2a2a; --success: #4ade80;
+      --primary: #60a5fa;
+    }
+    body { background: var(--bg); color: var(--fg);
+           font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+           padding: 32px; max-width: 1100px; margin: 0; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+    .preamble { color: var(--muted); font-size: 12px; max-width: 760px; line-height: 1.5; }
+    .card { background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .card.empty { border-color: rgba(74,222,128,0.3); background: rgba(74,222,128,0.05); }
+    .card.info-banner { border-color: rgba(96, 165, 250, 0.3); background: rgba(96,165,250,0.05); padding: 10px 14px; }
+    .header-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .btn { padding: 6px 14px; font-size: 12px; border: 1px solid var(--border);
+           background: transparent; color: var(--fg); border-radius: 6px; cursor: pointer; }
+    .btn-group { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .btn-group button { padding: 4px 12px; font-size: 11px; font-family: ui-monospace, monospace;
+                        background: transparent; border: 0; color: var(--fg); cursor: pointer; }
+    .btn-group button.active { background: var(--primary); color: #001; }
+    .badge { padding: 1px 6px; border: 1px solid var(--border);
+             border-radius: 4px; font-size: 10px;
+             display: inline-flex; align-items: center; gap: 4px;
+             font-family: ui-monospace, monospace; }
+    .badge.success { border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.1); color: var(--success); }
+    .summary-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+    .health-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 12px; }
+    .right { margin-left: auto; }
+    .empty-state { text-align: center; padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .empty-state .glyph { font-size: 36px; color: var(--success); line-height: 1; }
+    .empty-state .title { font-size: 18px; font-weight: 500; }
+    .empty-state .body { font-size: 13px; color: var(--muted); max-width: 480px; line-height: 1.5; }
+  </style>
+</head>
+<body id="root">
+
+  <!-- Page chrome -->
+  <div class="header-row" style="margin-bottom: 16px; justify-content: space-between;">
+    <h1>Probe Investigations</h1>
+    <div class="header-row" style="gap: 8px;">
+      <div class="btn-group">
+        <button class="active">24h</button>
+        <button>7d</button>
+        <button>All</button>
+      </div>
+      <button class="btn">↻ Refresh</button>
+    </div>
+  </div>
+  <p class="preamble" style="margin-bottom: 14px;">
+    Heartbeat-probe wake events joined with the reasoning calls Kora made to
+    investigate them and current probe health for resolution status. Joined on
+    <span style="font-family: ui-monospace, monospace;">caller_session_id="probe:{probe}:{category}"</span>
+    (set by <span style="font-family: ui-monospace, monospace;">_derive_caller_session_id</span> in
+    the reasoning engine).
+  </p>
+
+  <!-- Summary header — total is zero -->
+  <div class="card">
+    <div class="summary-row">
+      <span>⚡ <strong>0</strong> <span style="color: var(--muted);">wakes</span></span>
+      <span class="right" style="font-size: 11px; color: var(--muted);">generated 2026-05-23 16:32:08</span>
+    </div>
+    <div class="health-row">
+      <span>Probe health right now:</span>
+      <span class="badge success">vercel: healthy</span>
+      <span class="badge success">sentry: healthy</span>
+      <span class="badge success">doppler: healthy</span>
+      <span class="badge success">supabase: healthy</span>
+      <span class="badge success">fly: healthy</span>
+    </div>
+  </div>
+
+  <!-- v1 notes banner (still rendered so deferred scope is visible) -->
+  <div class="card info-banner">
+    <div style="display: flex; align-items: flex-start; gap: 8px; font-size: 11px;">
+      <span style="color: var(--primary); flex-shrink: 0;">ⓘ</span>
+      <div style="color: var(--muted);">
+        <strong style="color: var(--fg);">v1 scope:</strong>
+        this panel joins audit rows + snapshot health. Per-call cost and DM-sent
+        confirmation aren't yet recorded —
+        <em>not durably recorded; see /api/cost_telemetry route=probe_investigation for aggregate</em>;
+        <em>probe DMs bypass slack_dm_log.jsonl in v1; follow-on KR-PROBE-DM-JSONL-WIRE</em>.
+      </div>
+    </div>
+  </div>
+
+  <!-- THE empty state — calm, not "no data" -->
+  <div class="card empty">
+    <div class="empty-state">
+      <div class="glyph">✦</div>
+      <div class="title">No probe wakes in the last 24 hours.</div>
+      <div class="body">
+        Everything's healthy — none of the heartbeat probes have escalated an
+        issue worth Kora investigating. This page will populate when probes
+        detect something that needs attention.
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
