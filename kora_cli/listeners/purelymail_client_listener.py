@@ -31,6 +31,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 
 logger = logging.getLogger(__name__)
@@ -75,7 +79,7 @@ def current_purelymail_client() -> Optional["object"]:
 class PurelymailClientListener:
     """Holds the live :class:`PurelymailClient`."""
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         """Try to construct a PurelymailClient; fail-soft if env unset.
 
         The daemon boots regardless — outbound email is a capability,
@@ -130,9 +134,47 @@ class PurelymailClientListener:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 3.
+# Singleton-holder shape: both registries point at the same instance
+# so the cross-cutting current_purelymail_client() accessor returns
+# the same client object regardless of which consumer ran startup.
+# Note: this listener is for OUTBOUND SMTP (not the IMAP poller —
+# that's email_inbound_imap_listener.py per CC#3's #199 clarification).
+_listener_singleton = PurelymailClientListener()
+
+
 def _factory():
-    listener = PurelymailClientListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("purelymail_client", _factory)
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 3; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+# No periodic_task — outbound SMTP is event-driven (other code paths
+# call current_purelymail_client() to send; no scheduled work owned
+# by this listener). The Hermes entry carries only the lifecycle hooks.
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="purelymail_client",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=None,
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.purelymail_client_listener] hermes registry already had "
+        "'purelymail_client' entry: %s — skipping duplicate registration",
+        _exc,
+    )

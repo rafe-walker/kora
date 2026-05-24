@@ -38,6 +38,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 
 logger = logging.getLogger(__name__)
@@ -82,7 +86,7 @@ def current_slack_client() -> Optional["object"]:
 class SlackClientListener:
     """Holds the live :class:`SlackClient` for the daemon's lifetime."""
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         """Try to construct a SlackClient; fail-soft if env unset.
 
         The daemon boots regardless — Slack outbound is a capability,
@@ -134,9 +138,45 @@ class SlackClientListener:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 3.
+# Singleton-holder shape: both registries point at the same instance
+# so the cross-cutting current_slack_client() accessor returns the
+# same client object regardless of which consumer ran startup.
+_listener_singleton = SlackClientListener()
+
+
 def _factory():
-    listener = SlackClientListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("slack_client", _factory)
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 3; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+# No periodic_task — SlackClient is event-driven (other code paths call
+# current_slack_client() to send; no scheduled work owned by this
+# listener). The Hermes entry carries only the lifecycle hooks.
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="slack_client",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=None,
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.slack_client_listener] hermes registry already had "
+        "'slack_client' entry: %s — skipping duplicate registration",
+        _exc,
+    )
