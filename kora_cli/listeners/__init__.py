@@ -58,3 +58,10 @@ from kora_cli.listeners import email_inbound_imap_listener  # noqa: F401
 # + the email inbound listener so the lazy factories resolve to
 # live singletons by the time the first cycle ticks.
 from kora_cli.listeners import alert_notifier_listener  # noqa: F401
+# KR-CHEAP-PRE-WARMED-SNAPSHOT — periodic compute + atomic-write of
+# a daemon-state snapshot for $0-LLM-cost status queries. Read-only
+# consumer of operational_state_holder + cost_state_holder +
+# heartbeat_probes + alerts aggregator. Imported LAST so all
+# upstream holders + the periodic-task scheduler are guaranteed
+# registered before the snapshot task gets enqueued.
+from kora_cli.listeners import snapshot_listener  # noqa: F401
