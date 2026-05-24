@@ -219,3 +219,178 @@ async def test_cycle_generates_persists_and_audits(tmp_path, monkeypatch):
     assert pending_dir.is_dir()
     files = list(pending_dir.iterdir())
     assert len(files) == 1
+
+
+# ===========================================================================
+# KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — loosen-path activation
+# ===========================================================================
+
+
+from datetime import timedelta
+
+from kora_cli.promote.router_tuning.observer import (
+    RouteOverrideRollup,
+    collect_route_overrides,
+)
+from kora_cli.promote.router_tuning.proposer import (
+    DEFAULT_LOOSEN_OVERRIDE_THRESHOLD,
+    LOOSEN_OVERRIDE_THRESHOLD_ENV,
+    generate_loosen_proposals,
+)
+
+
+def _write_audit_jsonl(tmp_path, entries):
+    path = tmp_path / "kora_audit_log.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8"
+    )
+
+
+def _override_entry(
+    *,
+    route: str = "slack_dm",
+    message_text: str = "please tell me the right call here",
+    source: str = "operator_prefix",
+    reason: str = "opus_prefix",
+    emitted_at=None,
+) -> dict:
+    if emitted_at is None:
+        emitted_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    return {
+        "emitted_at": emitted_at.isoformat(),
+        "seam": "opus_override.applied",
+        "details": {
+            "original_message_text": message_text,
+            "pre_call_decision_reason": reason,
+            "override_source": source,
+            "route": route,
+        },
+        "caller_session_id": "slack_dm:D1:1.001",
+        "source": "reasoning",
+    }
+
+
+def test_collect_route_overrides_groups_by_route(tmp_path):
+    _write_audit_jsonl(
+        tmp_path,
+        [
+            _override_entry(route="slack_dm"),
+            _override_entry(route="slack_dm"),
+            _override_entry(route="email_inbound"),
+        ],
+    )
+    out = collect_route_overrides(
+        since=datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    by_route = {r.route: r for r in out}
+    assert by_route["slack_dm"].override_count == 2
+    assert by_route["email_inbound"].override_count == 1
+
+
+def test_collect_route_overrides_per_source_breakdown(tmp_path):
+    _write_audit_jsonl(
+        tmp_path,
+        [
+            _override_entry(source="operator_prefix"),
+            _override_entry(source="operator_prefix"),
+            _override_entry(source="force_env"),
+        ],
+    )
+    out = collect_route_overrides(
+        since=datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    assert len(out) == 1
+    assert out[0].by_source == {"operator_prefix": 2, "force_env": 1}
+
+
+def test_collect_route_overrides_captures_sample_texts(tmp_path):
+    _write_audit_jsonl(
+        tmp_path,
+        [
+            _override_entry(message_text="should I ship the migration"),
+            _override_entry(message_text="what's the right call here"),
+            _override_entry(message_text="explain the tradeoff"),
+            _override_entry(message_text="another override"),
+        ],
+    )
+    out = collect_route_overrides(
+        since=datetime.now(timezone.utc) - timedelta(days=1)
+    )
+    # _SAMPLE_TEXT_CAP = 3 — only first 3 captured.
+    assert len(out[0].sample_message_texts) == 3
+
+
+def _override_rollup(
+    route: str = "slack_dm",
+    override_count: int = 5,
+) -> RouteOverrideRollup:
+    return RouteOverrideRollup(
+        route=route,
+        override_count=override_count,
+        sample_message_texts=["should I ship migration X"],
+        by_source={"operator_prefix": override_count},
+    )
+
+
+def test_loosen_proposer_skips_under_threshold(monkeypatch):
+    monkeypatch.delenv(LOOSEN_OVERRIDE_THRESHOLD_ENV, raising=False)
+    rollups = [_override_rollup(override_count=2)]
+    out = generate_loosen_proposals(rollups, now=datetime.now(timezone.utc))
+    assert out == []
+
+
+def test_loosen_proposer_emits_when_threshold_crossed():
+    rollups = [_override_rollup(override_count=5)]
+    out = generate_loosen_proposals(rollups, now=datetime.now(timezone.utc))
+    assert len(out) == 1
+    assert out[0].recommendation_kind == "loosen_review"
+    assert out[0].override_count == 5
+    assert "should I ship migration X" in out[0].rationale
+
+
+def test_loosen_proposer_env_override_threshold(monkeypatch):
+    monkeypatch.setenv(LOOSEN_OVERRIDE_THRESHOLD_ENV, "1")
+    rollups = [_override_rollup(override_count=1)]
+    out = generate_loosen_proposals(rollups, now=datetime.now(timezone.utc))
+    assert len(out) == 1
+
+
+@pytest.mark.asyncio
+async def test_cycle_loosen_path_end_to_end(tmp_path, monkeypatch):
+    """Synthetic opus_override.applied audit → cycle reads
+    overrides → loosen proposals emitted alongside the tighten
+    path."""
+    monkeypatch.setenv(LOOSEN_OVERRIDE_THRESHOLD_ENV, "2")
+    _write_audit_jsonl(
+        tmp_path,
+        [
+            _override_entry(route="slack_dm", message_text=f"override {i}")
+            for i in range(3)
+        ],
+    )
+    # No telemetry escalations — tighten path produces 0 proposals.
+    from unittest.mock import MagicMock as _MM
+
+    fake = _MM()
+    fake.snapshot.return_value = {"rolling_24h": {}, "monthly": {}}
+    monkeypatch.setattr(
+        "kora_cli.telemetry.cost_telemetry.get_telemetry", lambda: fake
+    )
+    monkeypatch.setattr(
+        "kora_cli.telemetry.get_telemetry", lambda: fake
+    )
+
+    summary = await run_router_tuning_cycle()
+    assert summary["overrides_observed"] == 1
+    assert summary["proposals_generated"] == 1
+    assert summary["proposals_persisted"] == 1
+
+    audit = _read_audit(tmp_path)
+    promo = [
+        r
+        for r in audit
+        if r["seam"] == "promotion.router_trigger_proposed"
+    ]
+    assert len(promo) == 1
+    assert promo[0]["details"]["recommendation_kind"] == "loosen_review"
+    assert promo[0]["details"]["override_count"] == 3

@@ -556,3 +556,136 @@ async def test_telemetry_route_mapping_covers_all_sources(
     await engine.respond(message, _ctx())
     assert len(telemetry_spy) >= 1
     assert telemetry_spy[0]["route"] == expected_route
+
+
+# ---------------------------------------------------------------------------
+# KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — opus_override.applied emission
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _audit_redirect(tmp_path, monkeypatch):
+    """Force per-emit sync audit writes for these tests so the
+    audit JSONL is readable immediately."""
+    import json as _json
+
+    from kora_cli.audit.jsonl_sink import (
+        BATCH_SIZE_ENV,
+        _reset_batching_for_tests,
+    )
+
+    monkeypatch.setenv("KORA_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "KORA_AUDIT_LOG_PATH", str(tmp_path / "kora_audit_log.jsonl")
+    )
+    monkeypatch.setenv(BATCH_SIZE_ENV, "0")
+    _reset_batching_for_tests()
+    yield tmp_path / "kora_audit_log.jsonl"
+    _reset_batching_for_tests()
+
+
+def _read_audit_rows(path):
+    import json as _json
+
+    if not path.is_file():
+        return []
+    return [
+        _json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_opus_prefix_emits_opus_override_audit(
+    monkeypatch, system_prompt_path, telemetry_spy, _audit_redirect
+):
+    """/opus prefix on iteration 1 → opus_override.applied audit
+    row with override_source=operator_prefix + truncated message
+    text + route from source."""
+    from kora_cli.listeners import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
+    client = _make_client([_response([_text_block("ok")])])
+    engine = AnthropicReasoningEngine(
+        system_prompt_path=system_prompt_path, client=client
+    )
+    await engine.respond(
+        _msg("/opus tell me about the migration"), _ctx()
+    )
+    rows = _read_audit_rows(_audit_redirect)
+    override_rows = [
+        r for r in rows if r["seam"] == "opus_override.applied"
+    ]
+    assert len(override_rows) == 1
+    details = override_rows[0]["details"]
+    assert details["override_source"] == "operator_prefix"
+    assert details["pre_call_decision_reason"] == "opus_prefix"
+    assert details["route"] == "slack_dm"
+    assert "tell me about the migration" in details["original_message_text"]
+
+
+@pytest.mark.asyncio
+async def test_force_opus_env_emits_opus_override_audit(
+    monkeypatch, system_prompt_path, telemetry_spy, _audit_redirect
+):
+    """KORA_FORCE_OPUS=true on iteration 1 → opus_override.applied
+    with override_source=force_env."""
+    from kora_cli.listeners import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
+    monkeypatch.setenv("KORA_FORCE_OPUS", "true")
+    client = _make_client([_response([_text_block("ok")])])
+    engine = AnthropicReasoningEngine(
+        system_prompt_path=system_prompt_path, client=client
+    )
+    await engine.respond(_msg("routine question"), _ctx())
+    rows = _read_audit_rows(_audit_redirect)
+    override_rows = [
+        r for r in rows if r["seam"] == "opus_override.applied"
+    ]
+    assert len(override_rows) == 1
+    assert override_rows[0]["details"]["override_source"] == "force_env"
+
+
+@pytest.mark.asyncio
+async def test_default_haiku_does_not_emit_opus_override(
+    monkeypatch, system_prompt_path, telemetry_spy, _audit_redirect
+):
+    """A routine call that the router leaves on Haiku must NOT emit
+    the override seam — only operator-driven overrides count."""
+    from kora_cli.listeners import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
+    client = _make_client([_response([_text_block("hi")])])
+    engine = AnthropicReasoningEngine(
+        system_prompt_path=system_prompt_path, client=client
+    )
+    await engine.respond(_msg("hello there"), _ctx())
+    rows = _read_audit_rows(_audit_redirect)
+    override_rows = [
+        r for r in rows if r["seam"] == "opus_override.applied"
+    ]
+    assert override_rows == []
+
+
+@pytest.mark.asyncio
+async def test_decision_language_does_not_emit_opus_override(
+    monkeypatch, system_prompt_path, telemetry_spy, _audit_redirect
+):
+    """Decision-language pattern → Opus, but that's a router-side
+    heuristic, NOT an operator override. Don't emit the seam."""
+    from kora_cli.listeners import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
+    client = _make_client([_response([_text_block("ok")])])
+    engine = AnthropicReasoningEngine(
+        system_prompt_path=system_prompt_path, client=client
+    )
+    # "should i ship" is a decision-language pattern per the router.
+    await engine.respond(_msg("should i ship this?"), _ctx())
+    rows = _read_audit_rows(_audit_redirect)
+    override_rows = [
+        r for r in rows if r["seam"] == "opus_override.applied"
+    ]
+    assert override_rows == []

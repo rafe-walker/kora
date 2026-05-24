@@ -238,6 +238,48 @@ SeamName = Literal[
     # recurring_recommendation_text / blast_radius_summary /
     # created_at / status. Source is ``reasoning``.
     "promotion.probe_envelope_action_proposed",
+    # KR-ALERT-INVESTIGATION-WAKE-CONSUMER — per-investigation summary
+    # for the alert wake consumer (parallels probe.investigation_completed).
+    # Emitted by ``kora_cli/alerts/wake_consumer.py`` after reasoning +
+    # DM dispatch complete. Payload: alert_id / category / severity /
+    # model_used / input_tokens / output_tokens /
+    # cache_creation_input_tokens / cache_read_input_tokens /
+    # total_cost_usd / investigation_duration_ms /
+    # investigation_summary_text / dm_status / autoaction_attempted
+    # (v1 always false; reserved for future alert-envelope autoaction
+    # parallel to probe autofix). Source is ``reasoning`` since the
+    # emit happens inside the wake consumer's reasoning flow. CC#2
+    # follow-on KR-FE-ALERT-INVESTIGATIONS-VIEWER reads this seam
+    # alongside the existing notification.dispatched + slack_dm_log.jsonl
+    # to render the 3-stream join (4 streams if/when autoaction lands).
+    "alert.investigation_completed",
+    # KR-PROMOTE-EMAIL-INTENT — 6th promotion loop. Reads
+    # ``intent.email_to_sea_ticket`` rows with ``action="logged_only"``
+    # (Joshua-authored emails that no existing intent pattern matched)
+    # + clusters by subject text similarity. Proposes new regex
+    # patterns to extend the email-intent registry. Payload:
+    # proposal_id / cluster_size / sample_subjects (up to 3) /
+    # proposed_pattern / proposed_action_kind ("save_note" |
+    # "log_only" | "save_with_reply" — operator picks at approve) /
+    # confidence / created_at / status / action ("proposed" or
+    # "auto_applied"). Source is ``email``. Auto-apply OFF by
+    # default per promotion-loop discipline.
+    "promotion.email_intent_pattern_proposed",
+    # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — captures operator-level
+    # "Haiku should have escalated here but didn't" signals. Emitted
+    # by the engine pre-call when ``select_model_pre_call`` returned
+    # ``reason in {opus_prefix, force_opus_env}`` on iteration 1 —
+    # i.e. operator manually forced Opus on a call that Haiku-router
+    # would have left on Haiku absent the override. Payload:
+    # original_message_text (truncated to 240 chars) /
+    # pre_call_decision_reason (verbatim from the router; v1
+    # observed reasons are ``opus_prefix`` / ``force_opus_env``) /
+    # override_source (``operator_prefix`` / ``force_env``) / route
+    # (the message source). The router-tuning observer (#193)
+    # consumes this seam to activate its dormant loosen-path
+    # proposer; the loosen proposal flags routes where operator
+    # overrode N+ times in the window.
+    "opus_override.applied",
 ]
 
 SourceName = Literal[

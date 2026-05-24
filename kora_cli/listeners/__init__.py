@@ -101,3 +101,15 @@ from kora_cli.listeners import promote_snapshot_expand_listener  # noqa: F401
 from kora_cli.listeners import promote_router_tuning_listener  # noqa: F401
 from kora_cli.listeners import promote_tool_trimming_listener  # noqa: F401
 from kora_cli.listeners import promote_probe_fix_envelopes_listener  # noqa: F401
+# KR-PROMOTE-EMAIL-INTENT — 6th promotion loop. Observes
+# ``intent.email_to_sea_ticket`` action="logged_only" rows + proposes
+# regex patterns to extend the email-intent registry. Same propose-
+# only discipline as probe-fix-envelopes (manual scaffolding into
+# kora_cli/intent/email_to_sea_ticket.py at approve-time).
+from kora_cli.listeners import promote_email_intent_listener  # noqa: F401
+# KR-ALERT-INVESTIGATION-WAKE-CONSUMER — alerts side of the unified-
+# operator-interface (parallels probe wake consumer #166). Tails
+# notification.dispatched audit + invokes reasoning + DMs operator.
+# Imported AFTER reasoning + slack client listeners so the lazy
+# factories resolve to live singletons by the first cycle tick.
+from kora_cli.listeners import alert_wake_listener  # noqa: F401

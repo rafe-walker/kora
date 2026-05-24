@@ -478,6 +478,28 @@ class AnthropicReasoningEngine:
                 iteration=iteration,
                 cost_rung=cost_rung,
             )
+            # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — capture the
+            # operator-loosen signal. When the operator manually
+            # forced Opus on iteration 1 (via /opus prefix or
+            # KORA_FORCE_OPUS env), record an audit row the
+            # router-tuning promotion loop's loosen-path consumes.
+            # The signal means "Haiku-router would have left this
+            # on Haiku, but the operator wanted Opus" — i.e. a
+            # trigger pattern that could be tightened toward Opus.
+            # Skip on iteration ≥2 (that's the loop's own
+            # iteration-earning signal, not an override) and on
+            # decision_language / cost_clamp / etc. (those aren't
+            # overrides).
+            if iteration == 1 and decision.reason in (
+                "opus_prefix",
+                "force_opus_env",
+            ):
+                self._emit_opus_override_audit(
+                    decision_reason=decision.reason,
+                    message_text=message_text,
+                    source=source,
+                    caller_session_id=caller_session_id,
+                )
             if decision.model is None:
                 # cost_rung == hard_stop_100 — caller (respond) already
                 # short-circuits on this rung BEFORE entering the loop,
@@ -840,6 +862,74 @@ class AnthropicReasoningEngine:
             logger.debug(
                 "[kora.reasoning.telemetry] record_call raised %r — "
                 "counters not updated",
+                exc,
+            )
+
+    # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — single-character map from
+    # router decision reason to the audit payload's override_source
+    # field. Kept as a module-private constant rather than inline so
+    # the test surface can assert against the exact emitted strings.
+    _OPUS_OVERRIDE_SOURCE_BY_REASON = {
+        "opus_prefix": "operator_prefix",
+        "force_opus_env": "force_env",
+    }
+
+    # Cap on the original message text recorded in the audit row —
+    # operator-decision-relevant per #182 precedent, but not so long
+    # that the audit JSONL grows unbounded on a long-message override.
+    _OPUS_OVERRIDE_MESSAGE_TEXT_CAP = 240
+
+    def _emit_opus_override_audit(
+        self,
+        *,
+        decision_reason: str,
+        message_text: str,
+        source: str,
+        caller_session_id: str,
+    ) -> None:
+        """Best-effort emit of the ``opus_override.applied`` audit row.
+
+        Captures the per-call signal that the router-tuning loop's
+        loosen-path consumer needs (#193 follow-on). Fail-soft —
+        any failure here logs at DEBUG + is swallowed; the
+        reasoning call is unaffected.
+
+        ``message_text`` is the RAW text (pre /opus-prefix stripping)
+        so the router-tuning observer can recover the trigger text
+        the operator wanted Opus to see; truncated to
+        :data:`_OPUS_OVERRIDE_MESSAGE_TEXT_CAP` chars.
+        """
+        try:
+            from kora_cli.audit.jsonl_sink import emit_audit
+        except Exception as exc:
+            logger.debug(
+                "[kora.reasoning.opus_override] audit import failed: %r "
+                "— audit row skipped",
+                exc,
+            )
+            return
+        override_source = self._OPUS_OVERRIDE_SOURCE_BY_REASON.get(
+            decision_reason, decision_reason
+        )
+        truncated_text = (message_text or "")[
+            : self._OPUS_OVERRIDE_MESSAGE_TEXT_CAP
+        ]
+        try:
+            emit_audit(
+                "opus_override.applied",
+                {
+                    "original_message_text": truncated_text,
+                    "pre_call_decision_reason": decision_reason,
+                    "override_source": override_source,
+                    "route": source,
+                },
+                caller_session_id=caller_session_id or None,
+                source="reasoning",
+            )
+        except Exception as exc:
+            logger.debug(
+                "[kora.reasoning.opus_override] emit_audit raised %r "
+                "— audit row skipped",
                 exc,
             )
 
