@@ -175,6 +175,16 @@ export const api = {
     ),
   getSlackDmPhrasebookBackups: () =>
     fetchJSON<PhrasebookBackupsResponse>("/api/phrasebook/slack_dm/backups"),
+  // KR-FE-EMAIL-INTENT-LOG-PANEL — read the audit JSONL filtered
+  // to seam=intent.email_to_sea_ticket. Endpoint pre-aggregates
+  // by-action counts + daily-created sparkline points so the
+  // panel can render without re-computing client-side.
+  getEmailIntentEventsRecent: (limit?: number) => {
+    const qs = limit !== undefined ? `?limit=${limit}` : "";
+    return fetchJSON<EmailIntentEventsResponse>(
+      `/api/email-intent/recent${qs}`,
+    );
+  },
   // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
   // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
   getProbeInvestigations: (opts?: {
@@ -2033,6 +2043,66 @@ export interface PhrasebookBackupItem {
 export interface PhrasebookBackupsResponse {
   backups: PhrasebookBackupItem[];
   rotation_keep: number;
+}
+
+// KR-FE-EMAIL-INTENT-LOG-PANEL — audit-derived per-event shape.
+// Mirrors the projection at
+// kora_cli/web_server.py:_project_email_intent_audit. Per-branch
+// fields are optional (writer only emits them on the matching
+// branch — see kora_cli/intent/email_to_sea_ticket.py for the
+// 5 _safe_audit call sites).
+export type EmailIntentAction =
+  | "created"
+  | "logged_only"
+  | "dry_run"
+  | "cap_exceeded"
+  | "failed"
+  | "unknown";
+
+// KR-FE-EMAIL-INTENT-LOG-PANEL — drift-guard pinned in the
+// Python test against the emit_audit call sites at
+// kora_cli/intent/email_to_sea_ticket.py. Exported so the panel
+// can iterate filter chips in canonical order without re-typing.
+export const EMAIL_INTENT_ACTION_VALUES: readonly EmailIntentAction[] = [
+  "created",
+  "logged_only",
+  "dry_run",
+  "cap_exceeded",
+  "failed",
+];
+
+export interface EmailIntentEvent {
+  id: string;
+  emitted_at: string;
+  action: EmailIntentAction;
+  pattern_matched: string;
+  confidence: string;
+  subject: string;
+  caller_session_id: string;
+  // Per-branch optional fields:
+  ticket_id?: string; // action=created
+  tags?: string[]; // action=created
+  reason?: string; // action=logged_only
+  proposed_title?: string; // action=dry_run
+  hourly_cap?: number | null; // action=cap_exceeded
+  error?: string; // action=failed
+}
+
+export interface EmailIntentDailyCount {
+  date: string; // YYYY-MM-DD UTC
+  count: number;
+}
+
+export interface EmailIntentEventsResponse {
+  events: EmailIntentEvent[];
+  generated_at: string;
+  total_recent_24h: number;
+  by_action_24h: Record<string, number>;
+  daily_created_14d: EmailIntentDailyCount[];
+  // Echoed from the BE so the FE doesn't need to hardcode the
+  // list a SECOND time — single source of truth at the wire.
+  // The drift-guard test pins both BE source + FE constant.
+  action_values: string[];
 }
 
 // KR-FE-PROBE-INVESTIGATION-VIEWER — joined wake event + downstream

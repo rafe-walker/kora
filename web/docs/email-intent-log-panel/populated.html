@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Email Intent Log — populated</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Email Intent Log — populated state</h1>
+  <p class="preamble">
+    Audit stream of inbound emails Kora evaluated for Sea_Ticket conversion (PR #176).
+    Filter chips select by action; created rows deep-link to the Sea_Tickets panel
+    (forward-compat <code>?focus=&lt;ticket_id&gt;</code> param). Sparkline shows daily
+    created counts over the last 14 days, plain SVG (no chart-library dep).
+  </p>
+
+  <div class="page-header">
+    <div class="title">Email Intent Log</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Audit stream of inbound emails Kora evaluated for Sea_Ticket conversion
+    (PR #176 KR-INTENT-EMAIL-TO-SEA-TICKET). The <code>logged_only</code>
+    action is the future promotion-loop training-data lens;
+    <code>failed</code> is the triage surface.
+  </p>
+
+  <!-- Summary card -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span><strong>12</strong> <span class="italic-muted">events · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">✓ <strong>8</strong> <span class="italic-muted">created</span></div>
+      <div class="summary-chip">📥 <strong>3</strong> <span class="italic-muted">logged-only</span></div>
+      <div class="summary-chip" style="color: var(--destructive);">✖ <strong>1</strong> <span class="italic-muted">failed</span></div>
+    </div>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36" aria-label="Daily created counts over the last 14 days">
+        <!-- 14 bars: heights chosen to show variation; 1 px gap; green for non-zero, muted for zero -->
+        <rect x="0" y="32" width="14.7" height="4" class="fill-muted/40" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="31.4" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="47.1" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="62.8" y="2" width="14.7" height="34" style="fill: var(--success);" />
+        <rect x="78.5" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="94.2" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="109.9" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="125.6" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="141.3" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="157.0" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="172.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="188.4" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="204.1" y="8" width="14.7" height="28" style="fill: var(--success);" />
+      </svg>
+      <span class="label">42 created · 14d</span>
+    </div>
+  </div>
+
+  <!-- Filter chips card -->
+  <div class="card">
+    <div class="row">
+      <button class="btn primary">All (12)</button>
+      <button class="btn outlined">✓ Created (8)</button>
+      <button class="btn outlined">📥 Logged-only (3)</button>
+      <button class="btn outlined">⏱ Dry-run (0)</button>
+      <button class="btn outlined">⛔ Cap-exceeded (0)</button>
+      <button class="btn outlined">✖ Failed (1)</button>
+    </div>
+  </div>
+
+  <!-- Event rows -->
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">✉</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">2m ago</span>
+          <span class="subject">Idea: try the new Haiku model for short_circuit fallback</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="pattern">subject_idea_prefix</span>
+          <span class="italic-muted">confidence: high</span>
+          <span class="badge success">✓ Created</span>
+          <a class="deep-link" href="#">⤴ STK-42</a>
+          <span class="badge">idea</span>
+          <span class="badge">kora-paper</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">✉</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">14m ago</span>
+          <span class="subject">Fwd: Article about prompt optimization in agentic systems</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="pattern">fwd_with_url</span>
+          <span class="italic-muted">confidence: high</span>
+          <span class="badge success">✓ Created</span>
+          <a class="deep-link" href="#">⤴ STK-41</a>
+          <span class="badge">read-later</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">✉</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">47m ago</span>
+          <span class="subject">Re: Quick question</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="pattern">unrecognized</span>
+          <span class="italic-muted">confidence: unrecognized</span>
+          <span class="badge">📥 Logged-only</span>
+          <span class="italic-muted">reason: no_pattern_matched</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">✉</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">1h ago</span>
+          <span class="subject">Save this design pattern doc</span>
+        </div>
+        <div class="event-meta" style="margin-top: 4px;">
+          <span class="pattern">explicit_save_phrase</span>
+          <span class="italic-muted">confidence: high</span>
+          <span class="badge destructive">✖ Failed</span>
+        </div>
+        <div class="error-line">SubstrateError(write timed out after 30s)</div>
+      </div>
+    </div>
+  </div>
+
+</body></html>
