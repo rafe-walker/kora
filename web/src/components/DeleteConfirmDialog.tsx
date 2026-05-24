@@ -31,7 +31,13 @@ export function DeleteConfirmDialog({
 interface DeleteConfirmDialogProps {
   cancelLabel?: string;
   confirmLabel?: string;
-  description?: string;
+  /**
+   * Required (KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP) —
+   * forwarded to ConfirmDialog.aria-describedby. Required for
+   * the same screen-reader-announcement reason as the underlying
+   * ConfirmDialog.
+   */
+  description: string;
   loading: boolean;
   onCancel: () => void;
   onConfirm: () => void;

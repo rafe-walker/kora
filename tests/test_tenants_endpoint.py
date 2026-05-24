@@ -415,3 +415,109 @@ def test_fe_forced_colors_and_axe_core_pins():
     # gate.
     assert "import.meta.env.DEV" in main_src
     assert '"@axe-core/react"' in main_src
+
+
+def test_fe_confirm_dialog_required_description_pin():
+    """KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP — pin that
+    ConfirmDialog + DeleteConfirmDialog require description (it
+    binds aria-describedby) AND that every <ConfirmDialog or
+    <DeleteConfirmDialog JSX call site in web/src/ actually passes
+    a description= attribute. A future call site omitting it would
+    silently fail screen-reader announcement.
+    """
+    import re
+
+    repo = Path(__file__).parent.parent
+
+    # Type-level pin: description is required (not ``description?``).
+    confirm_src = (
+        repo / "web" / "src" / "components" / "ui" / "confirm-dialog.tsx"
+    ).read_text(encoding="utf-8")
+    assert "description: string;" in confirm_src, (
+        "ConfirmDialog.description must be typed string (required) — "
+        "not optional ``description?``"
+    )
+    # Dev-mode runtime nudge for empty-string descriptions.
+    assert "[a11y] ConfirmDialog opened with empty description" in confirm_src
+
+    delete_src = (
+        repo / "web" / "src" / "components" / "DeleteConfirmDialog.tsx"
+    ).read_text(encoding="utf-8")
+    assert "description: string;" in delete_src
+
+    # Call-site pin: every JSX call site under web/src must include
+    # a description= prop in the same opening tag. Globs through
+    # the source tree; ignores .map/.d.ts files.
+    src_root = repo / "web" / "src"
+    offenders: list[str] = []
+    open_tag_re = re.compile(
+        r"<(ConfirmDialog|DeleteConfirmDialog)\b[^/>]*?>", re.DOTALL
+    )
+    for path in src_root.rglob("*.tsx"):
+        text = path.read_text(encoding="utf-8")
+        for m in open_tag_re.finditer(text):
+            block = m.group(0)
+            if "description=" not in block:
+                offenders.append(
+                    f"{path.relative_to(repo)}: <{m.group(1)} ...> missing description="
+                )
+    assert not offenders, (
+        "Every ConfirmDialog/DeleteConfirmDialog call site must pass "
+        "description= for screen-reader announcement. Offenders:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_fe_non_multi_tenant_a11y_sweep_pins():
+    """KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP — pin the
+    top a11y fixes applied on the five non-multi-tenant pages
+    (chat / sessions / models / plugins / OAuth). Each fix's hook
+    is grep-asserted so a refactor that drops the a11y wiring
+    fails CI.
+    """
+    repo = Path(__file__).parent.parent
+
+    # ChatPage — xterm host promoted to a labelled region.
+    chat_src = (
+        repo / "web" / "src" / "pages" / "ChatPage.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'aria-label="Hermes chat terminal"' in chat_src
+    assert 'role="region"' in chat_src
+
+    # SessionsPage — session row gets keyboard semantics +
+    # accessible name including session metadata.
+    sessions_src = (
+        repo / "web" / "src" / "pages" / "SessionsPage.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'role="button"' in sessions_src
+    assert "aria-expanded={isExpanded}" in sessions_src
+    assert 'aria-label={`Session ' in sessions_src
+
+    # ModelsPage — "Use as" trigger announces the menu affordance.
+    models_src = (
+        repo / "web" / "src" / "pages" / "ModelsPage.tsx"
+    ).read_text(encoding="utf-8")
+    assert 'aria-haspopup="menu"' in models_src
+    assert "aria-expanded={open}" in models_src
+    assert 'role="menu"' in models_src
+
+    # PluginsPage — Enable/Disable carry state-aware aria-label;
+    # Show/Hide button's decorative icons are aria-hidden.
+    plugins_src = (
+        repo / "web" / "src" / "pages" / "PluginsPage.tsx"
+    ).read_text(encoding="utf-8")
+    assert "is already enabled" in plugins_src
+    assert "is already disabled" in plugins_src
+    assert "Show ${row.name} in sidebar" in plugins_src
+    assert "Hide ${row.name} from sidebar" in plugins_src
+    # Eye / EyeOff marked aria-hidden so SRs don't double-read.
+    assert "<EyeOff aria-hidden" in plugins_src
+    assert "<Eye aria-hidden" in plugins_src
+
+    # OAuthProvidersCard — Login/Disconnect carry provider-aware
+    # aria-label so SR users disambiguate across multiple providers.
+    oauth_src = (
+        repo / "web" / "src" / "components" / "OAuthProvidersCard.tsx"
+    ).read_text(encoding="utf-8")
+    assert "${t.oauth.login} ${p.name}" in oauth_src
+    assert "${t.oauth.disconnect} ${p.name}" in oauth_src

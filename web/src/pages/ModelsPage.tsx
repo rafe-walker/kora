@@ -236,13 +236,23 @@ function UseAsMenu({
         outlined
         onClick={() => setOpen((v) => !v)}
         disabled={busy}
+        // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP — surface
+        // the menu affordance to screen readers. Without
+        // aria-haspopup + aria-expanded, SR users hear "button"
+        // and have no signal that clicking opens a menu.
+        aria-haspopup="menu"
+        aria-expanded={open}
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
       >
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div
+          role="menu"
+          aria-label="Use this model as"
+          className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg"
+        >
           <button
             type="button"
             onClick={() => assign("main", "")}
