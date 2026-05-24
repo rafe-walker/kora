@@ -96,6 +96,8 @@ import SlackDMPanel from "@/pages/SlackDMPanel";
 import EmailPanel from "@/pages/EmailPanel";
 import EmailIntentLogPage from "@/pages/EmailIntentLogPage";
 import OutboundEmailLogPage from "@/pages/OutboundEmailLogPage";
+import AutofixLogPage from "@/pages/AutofixLogPage";
+import KoraActionsPage from "@/pages/KoraActionsPage";
 import ReasoningPanel from "@/pages/ReasoningPanel";
 import AlertsPanel from "@/pages/AlertsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
@@ -164,6 +166,8 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/email": EmailPanel,
   "/email-intent-log": EmailIntentLogPage,
   "/outbound-email-log": OutboundEmailLogPage,
+  "/probe-autofix-log": AutofixLogPage,
+  "/kora-actions": KoraActionsPage,
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
@@ -302,6 +306,24 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "outboundEmailLog",
     label: "Outbound Email Log",
     icon: Send,
+  },
+  {
+    // KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora
+    // do" timeline. Placed prominently with the other action-
+    // surfaces. Activity icon to signal cross-seam aggregation.
+    path: "/kora-actions",
+    labelKey: "koraActions",
+    label: "Kora Actions",
+    icon: Activity,
+  },
+  {
+    // KR-FE-AUTOFIX-LOG-PANEL — per-seam panel for
+    // tool.probe_autofix_attempted (PR #182). Wrench icon
+    // matches the per-row card icon for visual consistency.
+    path: "/probe-autofix-log",
+    labelKey: "probeAutofixLog",
+    label: "Probe Autofix Log",
+    icon: Wrench,
   },
   {
     path: "/mcp-clients",

@@ -197,6 +197,23 @@ export const api = {
       `/api/outbound-email/recent${qs}`,
     );
   },
+  // KR-FE-AUTOFIX-LOG-PANEL — read the audit JSONL filtered to
+  // seam=tool.probe_autofix_attempted. Endpoint pre-aggregates
+  // by-status counts + daily-attempted sparkline.
+  getProbeAutofixRecent: (limit?: number) => {
+    const qs = limit !== undefined ? `?limit=${limit}` : "";
+    return fetchJSON<ProbeAutofixEventsResponse>(
+      `/api/probe-autofix/recent${qs}`,
+    );
+  },
+  // KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora do"
+  // chronological timeline joining all mutating-action seams.
+  getKoraActionsRecent: (limit?: number) => {
+    const qs = limit !== undefined ? `?limit=${limit}` : "";
+    return fetchJSON<KoraActionsResponse>(
+      `/api/kora-actions/recent${qs}`,
+    );
+  },
   // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
   // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
   getProbeInvestigations: (opts?: {
@@ -2177,6 +2194,103 @@ export interface OutboundEmailEventsResponse {
   // Echoed from the BE — single source of truth at the wire,
   // pinned by the 3-source drift-guard test.
   status_values: string[];
+}
+
+// KR-FE-AUTOFIX-LOG-PANEL — audit-derived shape for
+// tool.probe_autofix_attempted (PR #182). Per-status fields
+// optional (writer emits them only on the matching branch —
+// see kora_cli/tools/probe_autofix.py).
+export type ProbeAutofixStatus =
+  | "attempted"
+  | "rejected"
+  | "execution_failed"
+  | "unknown";
+
+export const PROBE_AUTOFIX_STATUS_VALUES: readonly ProbeAutofixStatus[] = [
+  "attempted",
+  "rejected",
+  "execution_failed",
+];
+
+export interface ProbeAutofixDailyCount {
+  date: string;
+  count: number;
+}
+
+export interface ProbeAutofixEvent {
+  id: string;
+  emitted_at: string;
+  status: ProbeAutofixStatus;
+  probe: string;
+  action: string;
+  action_canonical?: string;
+  target_id: string;
+  reason_from_reasoning: string;
+  caller_session_id: string;
+  // attempted-branch optional fields
+  action_taken?: string;
+  executor_duration_ms?: number;
+  before_state_label?: string;
+  after_state_label?: string;
+  // rejected-branch optional fields
+  rejection_reason?: string;
+  rejection_detail?: string;
+  // execution_failed-branch optional fields
+  error?: string;
+}
+
+export interface ProbeAutofixEventsResponse {
+  events: ProbeAutofixEvent[];
+  generated_at: string;
+  total_recent_24h: number;
+  by_status_24h: Record<string, number>;
+  daily_attempted_14d: ProbeAutofixDailyCount[];
+  status_values: string[];
+}
+
+// KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora do"
+// chronological timeline. Joins all mutating-action audit seams.
+// Drift-guarded action_categories pinned by the kora-actions
+// drift-guard test.
+export type KoraActionCategory =
+  | "email_sent"
+  | "sea_ticket_created"
+  | "autofix_attempted"
+  | "investigation_completed"
+  | "phrasebook_proposal_approved"
+  | "other";
+
+export const KORA_ACTION_CATEGORIES: readonly KoraActionCategory[] = [
+  "email_sent",
+  "sea_ticket_created",
+  "autofix_attempted",
+  "investigation_completed",
+  "phrasebook_proposal_approved",
+  "other",
+];
+
+export interface KoraActionItem {
+  id: string;
+  emitted_at: string;
+  action_category: KoraActionCategory;
+  caller_session_id: string;
+  summary: string;
+  status: string;
+  deep_link?: string;
+}
+
+export interface KoraActionDailyCount {
+  date: string;
+  count: number;
+}
+
+export interface KoraActionsResponse {
+  items: KoraActionItem[];
+  generated_at: string;
+  total_recent_24h: number;
+  by_category_24h: Record<string, number>;
+  daily_actions_14d: KoraActionDailyCount[];
+  action_categories: string[];
 }
 
 // KR-FE-PROBE-INVESTIGATION-VIEWER — joined wake event + downstream

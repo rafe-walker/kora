@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Kora Actions — apex timeline</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Kora Actions — apex "what did Kora do" timeline</h1>
+  <p class="preamble">
+    Joins ALL mutating-action audit seams into one chronological view. The
+    operator-trust apex surface. Per-row chip color-codes the action category;
+    deep-link drills into the per-seam panel for full detail.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">📊 What Kora Did</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Chronological timeline joining <code>tool.email_to_operator_sent</code>,
+    <code>intent.email_to_sea_ticket</code>, <code>tool.probe_autofix_attempted</code>, and
+    pending <code>probe.investigation_completed</code> + kora-driven
+    <code>phrasebook.updated</code> seams.
+  </p>
+
+  <!-- Summary -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span><strong>8</strong> <span class="italic-muted">actions · last 24h</span></span>
+      <span class="italic-muted">·</span>
+      <div class="summary-chip" style="color: var(--success);">↗ <strong>4</strong> <span class="italic-muted">email sent</span></div>
+      <div class="summary-chip" style="color: var(--primary);">📥 <strong>2</strong> <span class="italic-muted">Sea_Ticket created</span></div>
+      <div class="summary-chip" style="color: var(--warning);">🔧 <strong>2</strong> <span class="italic-muted">autofix attempted</span></div>
+    </div>
+    <div class="sparkline-row">
+      <svg width="220" height="36" viewBox="0 0 220 36">
+        <rect x="0" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="15.7" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="31.4" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="47.1" y="32" width="14.7" height="4" style="fill: rgba(143,143,143,0.4);" />
+        <rect x="62.8" y="2" width="14.7" height="34" style="fill: var(--success);" />
+        <rect x="78.5" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="94.2" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="109.9" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="125.6" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="141.3" y="8" width="14.7" height="28" style="fill: var(--success);" />
+        <rect x="157.0" y="20" width="14.7" height="16" style="fill: var(--success);" />
+        <rect x="172.7" y="14" width="14.7" height="22" style="fill: var(--success);" />
+        <rect x="188.4" y="26" width="14.7" height="10" style="fill: var(--success);" />
+        <rect x="204.1" y="8" width="14.7" height="28" style="fill: var(--success);" />
+      </svg>
+      <span class="label">63 actions · 14d</span>
+    </div>
+  </div>
+
+  <!-- Filter chips -->
+  <div class="card">
+    <div class="row">
+      <button class="btn primary">All actions (8)</button>
+      <button class="btn outlined">↗ Email sent (4)</button>
+      <button class="btn outlined">📥 Sea_Ticket created (2)</button>
+      <button class="btn outlined">🔧 Autofix attempted (2)</button>
+      <button class="btn outlined">🔍 Investigation completed (0)</button>
+      <button class="btn outlined">📚 Phrasebook proposal (0)</button>
+      <button class="btn outlined">⚠ Other (0)</button>
+    </div>
+  </div>
+
+  <!-- Timeline rows -->
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">🔧</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">2m ago</span>
+          <span class="badge warning">Autofix attempted</span>
+          <span class="pattern" style="font-size: 9px;">attempted</span>
+          <span class="subject" style="flex: 1;">restart_unhealthy_machine on fly/1781e9f6c12d83 · stopped→started</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">8m ago</span>
+          <span class="badge success">Email sent</span>
+          <span class="pattern" style="font-size: 9px;">sent</span>
+          <span class="subject" style="flex: 1;">Sent email to operator · 80-char subject · 1.8k-char body · 1 attachment</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">📥</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">14m ago</span>
+          <span class="badge secondary">Sea_Ticket created</span>
+          <span class="pattern" style="font-size: 9px;">created</span>
+          <span class="subject" style="flex: 1;">Saved Sea_Ticket #STK-42 from email · subject_idea_prefix</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">47m ago</span>
+          <span class="badge success">Email sent</span>
+          <span class="pattern" style="font-size: 9px;">sent</span>
+          <span class="subject" style="flex: 1;">Sent email to operator · 47-char subject · 894-char body</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">📥</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">1h ago</span>
+          <span class="badge secondary">Sea_Ticket created</span>
+          <span class="pattern" style="font-size: 9px;">created</span>
+          <span class="subject" style="flex: 1;">Saved Sea_Ticket #STK-41 from email · fwd_with_url</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">🔧</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">2h ago</span>
+          <span class="badge warning">Autofix attempted</span>
+          <span class="pattern" style="font-size: 9px;">attempted</span>
+          <span class="subject" style="flex: 1;">restart_unhealthy_machine on fly/9f9f9f00000000 · replacing→started</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">5h ago</span>
+          <span class="badge success">Email sent</span>
+          <span class="pattern" style="font-size: 9px;">sent</span>
+          <span class="subject" style="flex: 1;">Sent email to operator · 38-char subject · 1.2k-char body</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="event-row">
+      <span class="mail-icon">↗</span>
+      <div style="flex: 1;">
+        <div class="event-meta">
+          <span class="ts">8h ago</span>
+          <span class="badge success">Email sent</span>
+          <span class="pattern" style="font-size: 9px;">sent</span>
+          <span class="subject" style="flex: 1;">Sent email to operator · 24-char subject · 612-char body</span>
+          <a class="deep-link" href="#">⤴ detail</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>

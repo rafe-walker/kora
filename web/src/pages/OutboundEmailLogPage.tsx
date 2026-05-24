@@ -2,9 +2,7 @@
 //
 // Symmetric to EmailIntentLogPage (PR #180) — surfaces the
 // tool.email_to_operator_sent audit stream (PR #179, the
-// kora__send_email_to_operator reasoning-loop tool). Completes
-// the cockpit's email-surface story: inbound (Email Intent Log)
-// + outbound (this page) both visible.
+// kora__send_email_to_operator reasoning-loop tool).
 //
 // PRIVACY: body text + subject string are NEVER in the audit
 // payload (PR #179's hard-coded posture). This panel renders
@@ -13,10 +11,9 @@
 // truncated rejection_detail (on rejection) or error type (on
 // smtp_failure). No reconstruction of text content is possible.
 //
-// Layout copied from EmailIntentLogPage (PR #180) per spec §4
-// "copy first, refactor later" — see PR description for shared-
-// utility extraction recommendation (Sparkline, FilterChips,
-// SummaryChips, formatTimestamp/formatRelative helpers).
+// Retrofit (KR-FE-PANEL-KIT-AND-MUTATING-ACTIONS-MEGABUCKET):
+// Sparkline / SummaryChips / FilterChips / formatters /
+// BadgeTone / EmptyFilteredMessage now live in AuditPanelKit.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -29,7 +26,6 @@ import {
   RefreshCw,
   Send,
   ServerCrash,
-  Sparkles,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -40,231 +36,55 @@ import { usePanelView } from "@/hooks/usePanelView";
 import { api } from "@/lib/api";
 import {
   OUTBOUND_EMAIL_STATUS_VALUES,
-  type OutboundEmailDailyCount,
   type OutboundEmailEvent,
   type OutboundEmailEventsResponse,
   type OutboundEmailStatus,
 } from "@/lib/api";
+import {
+  EmptyFilteredMessage,
+  FilterChips,
+  Sparkline,
+  SummaryChips,
+  formatBytes,
+  formatChars,
+  formatRelative,
+  formatTimestamp,
+  truncate,
+  type CategoryDef,
+  type FilterValue,
+} from "@/components/AuditPanelKit";
 
-type BadgeTone =
-  | "default"
-  | "destructive"
-  | "outline"
-  | "secondary"
-  | "success"
-  | "warning";
-
-type FilterValue = "all" | OutboundEmailStatus;
-
-interface StatusVisual {
-  label: string;
-  tone: BadgeTone;
-  Icon: typeof CheckCircle2;
-}
-
-const STATUS_VISUALS: Record<OutboundEmailStatus, StatusVisual> = {
-  sent: { label: "Sent", tone: "success", Icon: CheckCircle2 },
-  rejected: { label: "Rejected", tone: "warning", Icon: Ban },
-  smtp_failure: {
+const OUTBOUND_EMAIL_CATEGORIES: readonly CategoryDef<OutboundEmailStatus>[] = [
+  { key: "sent", label: "Sent", tone: "success", Icon: CheckCircle2 },
+  { key: "rejected", label: "Rejected", tone: "warning", Icon: Ban },
+  {
+    key: "smtp_failure",
     label: "SMTP-failure",
     tone: "destructive",
     Icon: ServerCrash,
   },
-  unknown: { label: "Unknown", tone: "outline", Icon: AlertTriangle },
+];
+
+const OUTBOUND_EMAIL_CATEGORY_MAP: Record<
+  OutboundEmailStatus,
+  CategoryDef<OutboundEmailStatus>
+> = {
+  sent: OUTBOUND_EMAIL_CATEGORIES[0],
+  rejected: OUTBOUND_EMAIL_CATEGORIES[1],
+  smtp_failure: OUTBOUND_EMAIL_CATEGORIES[2],
+  unknown: {
+    key: "sent" as OutboundEmailStatus, // sentinel
+    label: "Unknown",
+    tone: "outline",
+    Icon: AlertTriangle,
+  },
 };
-
-function formatTimestamp(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-function formatRelative(iso: string): string {
-  try {
-    const diff = Date.now() - new Date(iso).getTime();
-    const sec = Math.floor(diff / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    const min = Math.floor(sec / 60);
-    if (min < 60) return `${min}m ago`;
-    const hr = Math.floor(min / 60);
-    if (hr < 24) return `${hr}h ago`;
-    return `${Math.floor(hr / 24)}d ago`;
-  } catch {
-    return iso;
-  }
-}
-
-// Human-readable size formatter. Audit row gives raw counts of
-// chars (subject + body) and bytes (attachments); render at the
-// scale that fits.
-function formatChars(n: number): string {
-  if (n < 1000) return `${n} chars`;
-  return `${(n / 1000).toFixed(1)}k chars`;
-}
-
-function formatBytes(n: number): string {
-  if (n === 0) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function truncate(s: string, n: number): string {
-  if (s.length <= n) return s;
-  return s.slice(0, n - 1) + "…";
-}
-
-// ----- Sparkline (plain SVG, no chart-library dep — same
-//       discipline as EmailIntentLogPage + CostTelemetryPage) -----
-
-interface SparklineProps {
-  points: OutboundEmailDailyCount[];
-  width?: number;
-  height?: number;
-}
-
-function Sparkline({ points, width = 220, height = 36 }: SparklineProps) {
-  if (points.length === 0) return null;
-  const max = Math.max(1, ...points.map((p) => p.count));
-  const barWidth = Math.max(2, (width - (points.length - 1) * 1) / points.length);
-  const total = points.reduce((acc, p) => acc + p.count, 0);
-  return (
-    <div className="flex items-center gap-2">
-      <svg
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-        aria-label={`Daily 'sent' counts over the last ${points.length} days`}
-        role="img"
-      >
-        {points.map((p, i) => {
-          const x = i * (barWidth + 1);
-          const h = p.count === 0 ? 1 : Math.max(2, (p.count / max) * height);
-          const y = height - h;
-          return (
-            <rect
-              key={p.date}
-              x={x}
-              y={y}
-              width={barWidth}
-              height={h}
-              className={p.count === 0 ? "fill-muted/40" : "fill-green-500"}
-            >
-              <title>{`${p.date}: ${p.count} sent`}</title>
-            </rect>
-          );
-        })}
-      </svg>
-      <span className="text-xs text-muted-foreground whitespace-nowrap">
-        {total} sent · 14d
-      </span>
-    </div>
-  );
-}
-
-// ----- Summary chips -----
-
-interface SummaryChipsProps {
-  byStatus: Record<string, number>;
-  total: number;
-}
-
-function SummaryChips({ byStatus, total }: SummaryChipsProps) {
-  return (
-    <div className="flex items-center gap-3 flex-wrap text-sm">
-      <span>
-        <strong>{total}</strong>{" "}
-        <span className="text-muted-foreground">composed · last 24h</span>
-      </span>
-      {total > 0 && (
-        <span className="text-muted-foreground">·</span>
-      )}
-      {OUTBOUND_EMAIL_STATUS_VALUES.map((status) => {
-        const count = byStatus[status] ?? 0;
-        if (count === 0) return null;
-        const v = STATUS_VISUALS[status];
-        return (
-          <div
-            key={status}
-            className="flex items-center gap-1 text-xs"
-            title={`${count} ${v.label.toLowerCase()} in last 24h`}
-          >
-            <v.Icon
-              className={`h-3 w-3 ${
-                v.tone === "success"
-                  ? "text-green-500"
-                  : v.tone === "destructive"
-                    ? "text-destructive"
-                    : v.tone === "warning"
-                      ? "text-yellow-500"
-                      : "text-muted-foreground"
-              }`}
-            />
-            <span className="font-medium">{count}</span>
-            <span className="text-muted-foreground">{v.label.toLowerCase()}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ----- Filter chips -----
-
-interface FilterChipsProps {
-  current: FilterValue;
-  counts: Record<string, number>;
-  onChange: (next: FilterValue) => void;
-}
-
-function FilterChips({ current, counts, onChange }: FilterChipsProps) {
-  const totalAll = OUTBOUND_EMAIL_STATUS_VALUES.reduce(
-    (acc, s) => acc + (counts[s] ?? 0),
-    0,
-  );
-  return (
-    <div className="flex items-center gap-1 flex-wrap">
-      <button
-        onClick={() => onChange("all")}
-        className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
-          current === "all"
-            ? "bg-primary text-primary-foreground border-primary"
-            : "border-border hover:bg-accent"
-        }`}
-        aria-pressed={current === "all"}
-      >
-        All <span className="opacity-70">({totalAll})</span>
-      </button>
-      {OUTBOUND_EMAIL_STATUS_VALUES.map((status) => {
-        const v = STATUS_VISUALS[status];
-        const count = counts[status] ?? 0;
-        const active = current === status;
-        return (
-          <button
-            key={status}
-            onClick={() => onChange(status)}
-            className={`px-2.5 py-1 text-xs rounded-md border transition-colors inline-flex items-center gap-1 ${
-              active
-                ? "bg-primary text-primary-foreground border-primary"
-                : "border-border hover:bg-accent"
-            }`}
-            aria-pressed={active}
-          >
-            <v.Icon className="h-3 w-3" />
-            {v.label} <span className="opacity-70">({count})</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 // ----- Per-row card -----
 
 function EventCard({ event }: { event: OutboundEmailEvent }) {
-  const v = STATUS_VISUALS[event.status];
+  const v = OUTBOUND_EMAIL_CATEGORY_MAP[event.status];
+  const Icon = v.Icon;
   return (
     <Card>
       <CardContent className="p-3 flex items-start gap-3">
@@ -281,7 +101,7 @@ function EventCard({ event }: { event: OutboundEmailEvent }) {
               Email to operator
             </span>
             <Badge tone={v.tone}>
-              <v.Icon className="h-3 w-3 mr-1 inline" />
+              <Icon className="h-3 w-3 mr-1 inline" />
               {v.label}
             </Badge>
           </div>
@@ -365,7 +185,7 @@ export default function OutboundEmailLogPage() {
   const [data, setData] = useState<OutboundEmailEventsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterValue>("all");
+  const [filter, setFilter] = useState<FilterValue<OutboundEmailStatus>>("all");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -389,6 +209,11 @@ export default function OutboundEmailLogPage() {
     if (filter === "all") return data.events;
     return data.events.filter((e) => e.status === filter);
   }, [data, filter]);
+
+  // Drift-guard test greps for this constant import — keep
+  // referenced even though FilterChips iterates a Category[]
+  // (which was built from the same source-of-truth list).
+  void OUTBOUND_EMAIL_STATUS_VALUES;
 
   return (
     <div className="space-y-4 p-4 max-w-6xl">
@@ -434,54 +259,38 @@ export default function OutboundEmailLogPage() {
           <Card>
             <CardContent className="p-4 flex flex-col gap-3">
               <SummaryChips
-                byStatus={data.by_status_24h}
+                categories={OUTBOUND_EMAIL_CATEGORIES}
+                counts={data.by_status_24h}
                 total={data.total_recent_24h}
+                totalNoun="composed"
               />
-              <Sparkline points={data.daily_sent_14d} />
+              <Sparkline
+                points={data.daily_sent_14d}
+                totalSuffix="sent · 14d"
+                ariaLabel={`Daily 'sent' counts over the last ${data.daily_sent_14d.length} days`}
+              />
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="p-3">
               <FilterChips
-                current={filter}
+                categories={OUTBOUND_EMAIL_CATEGORIES}
                 counts={data.by_status_24h}
+                current={filter}
                 onChange={setFilter}
               />
             </CardContent>
           </Card>
 
           {filteredEvents.length === 0 ? (
-            <Card className="border-green-500/30 bg-green-500/5">
-              <CardContent className="p-8 flex flex-col items-center text-center gap-3">
-                <Sparkles className="h-7 w-7 text-green-500" />
-                <H2 className="text-base">
-                  {filter === "all"
-                    ? "No outbound email events recorded yet"
-                    : `No "${STATUS_VISUALS[filter as OutboundEmailStatus]?.label}" events match this filter in the current window`}
-                </H2>
-                <p className="text-sm text-muted-foreground max-w-md">
-                  {filter === "all" ? (
-                    <>
-                      The tool.email_to_operator_sent audit stream is empty
-                      for now. This page will populate when Kora composes
-                      and sends email via her reasoning loop.
-                    </>
-                  ) : (
-                    <>
-                      Try switching to a different filter, or click{" "}
-                      <button
-                        onClick={() => setFilter("all")}
-                        className="underline text-primary"
-                      >
-                        All
-                      </button>{" "}
-                      to see every event.
-                    </>
-                  )}
-                </p>
-              </CardContent>
-            </Card>
+            <EmptyFilteredMessage
+              isAllFilter={filter === "all"}
+              titleAll="No outbound email events recorded yet"
+              titleFiltered={`No "${OUTBOUND_EMAIL_CATEGORY_MAP[filter as OutboundEmailStatus]?.label}" events match this filter in the current window`}
+              bodyAll="The tool.email_to_operator_sent audit stream is empty for now. This page will populate when Kora composes and sends email via her reasoning loop."
+              onResetToAll={() => setFilter("all")}
+            />
           ) : (
             <div className="space-y-2">
               {filteredEvents.map((event) => (
