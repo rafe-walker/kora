@@ -377,13 +377,13 @@ def test_cost_ladder_populated_from_holder(env, monkeypatch):
 # ===========================================================================
 
 
-def test_schema_version_is_v4(env):
-    """KR-SNAPSHOT-DAEMON-HEALTH bumps schema_version 3 → 4 for the
-    new ``daemon_health`` section. Stable contract for consumer
-    branches."""
-    assert SCHEMA_VERSION == 4
+def test_schema_version_is_v5(env):
+    """KR-SNAPSHOT-TASKS bumps schema_version 4 → 5 for the
+    tasks-fields-populated change. Stable contract for consumer
+    branches — FE TS type at web/src/lib/api.ts must stay in sync."""
+    assert SCHEMA_VERSION == 5
     snap = compute_snapshot()
-    assert snap["schema_version"] == 4
+    assert snap["schema_version"] == 5
 
 
 def test_credit_pool_env_override_truthy(env, monkeypatch):
@@ -685,3 +685,160 @@ def test_get_snapshot_for_routing_returns_none_when_stale(env):
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     write_snapshot(stale)
     assert get_snapshot_for_routing() is None
+
+
+# ===========================================================================
+# KR-SNAPSHOT-TASKS v5 — Sea_Tickets cache + throttled refresh
+# ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_tasks_cache():
+    """Each test starts with a fresh tasks cache so refresh-throttle
+    behavior is deterministic."""
+    from kora_cli.snapshot.state_snapshot import _reset_tasks_cache_for_tests
+
+    _reset_tasks_cache_for_tests()
+    yield
+    _reset_tasks_cache_for_tests()
+
+
+def test_tasks_section_pre_refresh_is_unknown(env):
+    """Before the first refresh (or pre-daemon CLI paths), tasks
+    fields stay at the v4 placeholder shape — consumers can branch
+    on the "unknown" literal."""
+    snap = compute_snapshot()
+    assert snap["tasks"]["open_count"] == "unknown"
+    assert snap["tasks"]["in_progress_count"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_tasks_refresh_populates_cache_from_provider(env, monkeypatch):
+    """Successful provider read populates the module cache; subsequent
+    compute_snapshot calls surface the cached counts."""
+    from kora_cli.snapshot.state_snapshot import maybe_refresh_tasks_cache
+
+    fake_provider = object()
+    monkeypatch.setattr(
+        "plugins.memory.isokron.active_provider.get_active_provider",
+        lambda: fake_provider,
+    )
+
+    async def _fake_grouped(*, provider, actor_id=None):
+        assert provider is fake_provider
+        return {
+            "in_progress": [{"id": "t1"}, {"id": "t2"}],
+            "queued": [{"id": "t3"}],
+            "recently_resolved": [],
+            "failed_or_blocked": [],
+        }
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.assigned_sea_tickets."
+        "get_assigned_sea_tickets_via_provider",
+        _fake_grouped,
+    )
+    await maybe_refresh_tasks_cache()
+    snap = compute_snapshot()
+    assert snap["tasks"]["in_progress_count"] == 2
+    # open_count = in_progress + queued.
+    assert snap["tasks"]["open_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_tasks_refresh_throttled_to_30min(env, monkeypatch):
+    """Second refresh within the 30-min window is a no-op; the
+    provider is not called twice in a row."""
+    from kora_cli.snapshot.state_snapshot import maybe_refresh_tasks_cache
+
+    fake_provider = object()
+    monkeypatch.setattr(
+        "plugins.memory.isokron.active_provider.get_active_provider",
+        lambda: fake_provider,
+    )
+
+    call_count = {"n": 0}
+
+    async def _fake_grouped(*, provider, actor_id=None):
+        call_count["n"] += 1
+        return {
+            "in_progress": [{"id": "t1"}],
+            "queued": [],
+            "recently_resolved": [],
+            "failed_or_blocked": [],
+        }
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.assigned_sea_tickets."
+        "get_assigned_sea_tickets_via_provider",
+        _fake_grouped,
+    )
+    await maybe_refresh_tasks_cache()
+    await maybe_refresh_tasks_cache()
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tasks_refresh_provider_none_keeps_unknown(env, monkeypatch):
+    """No registered provider → cache stays at the "unknown" shape;
+    no crash."""
+    from kora_cli.snapshot.state_snapshot import maybe_refresh_tasks_cache
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.active_provider.get_active_provider",
+        lambda: None,
+    )
+    await maybe_refresh_tasks_cache()
+    snap = compute_snapshot()
+    assert snap["tasks"]["open_count"] == "unknown"
+    assert snap["tasks"]["in_progress_count"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_tasks_refresh_provider_error_preserves_prior(env, monkeypatch):
+    """A flapping provider keeps the prior cached values rather than
+    blanking to "unknown" — operator sees the last-good figures
+    instead of a panel-wide null."""
+    from kora_cli.snapshot.state_snapshot import maybe_refresh_tasks_cache
+
+    fake_provider = object()
+    monkeypatch.setattr(
+        "plugins.memory.isokron.active_provider.get_active_provider",
+        lambda: fake_provider,
+    )
+
+    # First refresh succeeds.
+    async def _ok(*, provider, actor_id=None):
+        return {
+            "in_progress": [{"id": "t1"}, {"id": "t2"}],
+            "queued": [{"id": "t3"}],
+            "recently_resolved": [],
+            "failed_or_blocked": [],
+        }
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.assigned_sea_tickets."
+        "get_assigned_sea_tickets_via_provider",
+        _ok,
+    )
+    await maybe_refresh_tasks_cache()
+
+    # Force-eligible by resetting the timestamp + swapping to a
+    # failing fetcher.
+    from kora_cli.snapshot.state_snapshot import _TASKS_CACHE
+
+    _TASKS_CACHE["last_refreshed_at"] = 0.0
+
+    async def _fail(*, provider, actor_id=None):
+        raise RuntimeError("substrate down")
+
+    monkeypatch.setattr(
+        "plugins.memory.isokron.assigned_sea_tickets."
+        "get_assigned_sea_tickets_via_provider",
+        _fail,
+    )
+    await maybe_refresh_tasks_cache()
+    snap = compute_snapshot()
+    # Prior values preserved.
+    assert snap["tasks"]["in_progress_count"] == 2
+    assert snap["tasks"]["open_count"] == 3

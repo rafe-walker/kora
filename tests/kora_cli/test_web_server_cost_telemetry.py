@@ -91,11 +91,16 @@ async def test_endpoint_returns_zero_counters_when_no_calls(_isolate):
 # ===========================================================================
 
 
-def test_snapshot_schema_version_bumped_to_v2(_isolate):
+def test_snapshot_schema_version_includes_cost_telemetry_at_or_above_v2(_isolate):
+    """KR-CHEAP-COST-TELEMETRY introduced the cost_telemetry section at
+    v2; later schema bumps (v3 spent_to_date_usd / v4 daemon_health /
+    v5 tasks populated) must not regress that section. Asserts
+    schema_version is at least v2 + the section is present."""
     from kora_cli.snapshot import compute_snapshot
 
     snap = compute_snapshot()
-    assert snap["schema_version"] == 2
+    assert snap["schema_version"] >= 2
+    assert "cost_telemetry" in snap
 
 
 def test_snapshot_includes_cost_telemetry_section(_isolate):
@@ -150,7 +155,9 @@ async def test_api_snapshot_endpoint_includes_cost_telemetry(_isolate):
     )
     write_snapshot(compute_snapshot())
     result = await web_server.get_daemon_snapshot()
-    assert result["schema_version"] == 2
+    # cost_telemetry shipped at v2; later schema bumps must not
+    # regress its presence (subsequent buckets test their own field).
+    assert result["schema_version"] >= 2
     assert "cost_telemetry" in result
     assert (
         result["cost_telemetry"]["rolling_24h"][ROUTE_SLACK_DM]["calls_count"]

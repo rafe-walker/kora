@@ -512,3 +512,47 @@ async def test_telemetry_iteration_two_uses_tool_loop_route(
     assert telemetry_spy[1]["route"] == "tool_loop_iteration"
     assert telemetry_spy[1]["model"] == DEFAULT_OPUS_MODEL
     assert telemetry_spy[1]["escalated_to_opus"] is True
+
+
+@pytest.mark.parametrize(
+    "source,expected_route",
+    [
+        ("slack_dm", "slack_dm"),
+        ("email", "email_inbound"),
+        ("mcp", "mcp_tool"),
+        # KR-PROMOTE-EXPAND-AND-TELEMETRY-WIRES — the four sources
+        # now extended in the bypass-path mapping. probe_investigation
+        # was previously falling through to ROUTE_UNKNOWN despite the
+        # wake_consumer setting source="probe_investigation".
+        ("probe_investigation", "probe_investigation"),
+        ("alert_investigation", "alert_investigation"),
+        ("email_outbound_compose", "email_outbound_compose"),
+        ("scheduled_task", "scheduled_task"),
+        ("nope_unknown_source", "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_telemetry_route_mapping_covers_all_sources(
+    monkeypatch,
+    system_prompt_path,
+    telemetry_spy,
+    source,
+    expected_route,
+):
+    """Bypass-path source→route map covers every reserved source."""
+    from kora_cli.listeners import mcp_tools
+
+    monkeypatch.setattr(mcp_tools, "_get_active_provider", lambda: None)
+    client = _make_client([_response([_text_block("ok")])])
+    engine = AnthropicReasoningEngine(
+        system_prompt_path=system_prompt_path, client=client
+    )
+    message = IncomingMessage(
+        text="hi",
+        source=source,  # type: ignore[arg-type]
+        received_at=datetime.now(timezone.utc),
+        metadata={},
+    )
+    await engine.respond(message, _ctx())
+    assert len(telemetry_spy) >= 1
+    assert telemetry_spy[0]["route"] == expected_route

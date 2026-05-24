@@ -214,6 +214,14 @@ def test_on_session_start_no_exception():
         ("slack_dm", "slack_dm"),
         ("email", "email_inbound"),
         ("mcp", "mcp_tool"),
+        # KR-PROMOTE-EXPAND-AND-TELEMETRY-WIRES — the four remaining
+        # reserved sources now map directly to their cost-telemetry
+        # routes (probe_investigation was previously missing despite
+        # the wake_consumer setting source="probe_investigation").
+        ("probe_investigation", "probe_investigation"),
+        ("alert_investigation", "alert_investigation"),
+        ("email_outbound_compose", "email_outbound_compose"),
+        ("scheduled_task", "scheduled_task"),
         ("unknown", ""),
         ("", ""),
         (None, ""),

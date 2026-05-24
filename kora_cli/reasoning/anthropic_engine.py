@@ -753,8 +753,12 @@ class AnthropicReasoningEngine:
                 estimate_usage_cost,
             )
             from kora_cli.telemetry import (
+                ROUTE_ALERT_INVESTIGATION,
                 ROUTE_EMAIL_INBOUND,
+                ROUTE_EMAIL_OUTBOUND_COMPOSE,
                 ROUTE_MCP_TOOL,
+                ROUTE_PROBE_INVESTIGATION,
+                ROUTE_SCHEDULED_TASK,
                 ROUTE_SLACK_DM,
                 ROUTE_TOOL_LOOP_ITERATION,
                 ROUTE_UNKNOWN,
@@ -770,10 +774,22 @@ class AnthropicReasoningEngine:
         if iteration >= 2:
             route = ROUTE_TOOL_LOOP_ITERATION
         else:
+            # KR-PROMOTE-EXPAND-AND-TELEMETRY-WIRES — extended with the
+            # four remaining reserved sources. Each maps 1:1 to the
+            # cost-telemetry route literal so callers that build an
+            # IncomingMessage with the new source values bill correctly
+            # without further plumbing. probe_investigation was
+            # previously falling through to ROUTE_UNKNOWN despite the
+            # wake_consumer setting source="probe_investigation" — that
+            # bug is fixed here.
             route = {
                 "slack_dm": ROUTE_SLACK_DM,
                 "email": ROUTE_EMAIL_INBOUND,
                 "mcp": ROUTE_MCP_TOOL,
+                "probe_investigation": ROUTE_PROBE_INVESTIGATION,
+                "alert_investigation": ROUTE_ALERT_INVESTIGATION,
+                "email_outbound_compose": ROUTE_EMAIL_OUTBOUND_COMPOSE,
+                "scheduled_task": ROUTE_SCHEDULED_TASK,
             }.get(source, ROUTE_UNKNOWN)
 
         usage = CanonicalUsage(
@@ -1403,18 +1419,24 @@ def _elapsed_ms(started_at: float) -> int:
 # ---------------------------------------------------------------------------
 
 
-# Map ``IncomingMessage.source`` literals (slack_dm / email / mcp) to
-# the canonical Kora route taxonomy used by cost_telemetry +
-# kora_hermes plugin's KORA_ROUTES gate. Per the bucket spec §2(c).
+# Map ``IncomingMessage.source`` literals to the canonical Kora route
+# taxonomy used by cost_telemetry + kora_hermes plugin's KORA_ROUTES
+# gate. Per the bucket spec §2(c). KR-PROMOTE-EXPAND-AND-TELEMETRY-WIRES
+# extends this with the four remaining reserved sources so the gateway-
+# route-through path bills consistently with the bypass path's
+# _record_call_to_telemetry mapping above.
 _SOURCE_TO_ROUTE: dict = {
     "slack_dm": "slack_dm",
     "email": "email_inbound",
     "mcp": "mcp_tool",
-    # The remaining route literals (alert_investigation,
-    # probe_investigation, tool_loop_iteration, scheduled_task) are
-    # set by their respective callers BEFORE invoking the engine —
-    # see e.g. ``probe_wake_consumer.py``. We pass through any
-    # already-set route literal verbatim.
+    "probe_investigation": "probe_investigation",
+    "alert_investigation": "alert_investigation",
+    "email_outbound_compose": "email_outbound_compose",
+    "scheduled_task": "scheduled_task",
+    # ``tool_loop_iteration`` is NOT mapped here — it's an iteration-
+    # derived route set inside the bypass loop, not a source-to-route
+    # projection. A caller building IncomingMessage never sets that
+    # source; iteration ≥2 is detected on the engine side.
 }
 
 

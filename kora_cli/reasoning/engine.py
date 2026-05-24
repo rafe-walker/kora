@@ -34,7 +34,21 @@ from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Prot
 # ---------------------------------------------------------------------------
 
 
-MessageSource = Literal["slack_dm", "email", "mcp", "probe_investigation"]
+# Extended in KR-PROMOTE-EXPAND-AND-TELEMETRY-WIRES — adds the four
+# remaining reserved sources (alert_investigation / email_outbound_compose /
+# scheduled_task) that the cost-telemetry route taxonomy already
+# enumerates. The mapping from source → cost-telemetry route lives at
+# ``kora_cli.reasoning.anthropic_engine`` (see ``_record_call_to_telemetry``
+# + ``_SOURCE_TO_ROUTE``).
+MessageSource = Literal[
+    "slack_dm",
+    "email",
+    "mcp",
+    "probe_investigation",
+    "alert_investigation",
+    "email_outbound_compose",
+    "scheduled_task",
+]
 
 # Cost-ladder rung as Kora's reasoning sees it. These are the
 # ``.value`` strings of ``agent.cost_state_holder.CostRung`` — the

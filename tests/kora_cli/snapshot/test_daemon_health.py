@@ -60,8 +60,10 @@ def env(tmp_path, monkeypatch):
 # ===========================================================================
 
 
-def test_schema_version_is_v4_for_daemon_health():
-    assert SCHEMA_VERSION == 4
+def test_schema_version_minimum_v4_for_daemon_health():
+    """Daemon health section ships at v4; subsequent bumps (v5
+    KR-SNAPSHOT-TASKS) must not regress this section's presence."""
+    assert SCHEMA_VERSION >= 4
 
 
 # ===========================================================================

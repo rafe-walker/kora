@@ -64,8 +64,21 @@ logger = logging.getLogger(__name__)
 #          status + recent_error_count_5min. Companion to
 #          service_health which covers external SaaS dependencies;
 #          daemon_health covers Kora's own runtime.
-SCHEMA_VERSION = 4
+# v4 → v5: KR-SNAPSHOT-TASKS — tasks.{open_count, in_progress_count}
+#          now populated from the IsoKron Sea_Tickets provider.
+#          Throttled to every 30 min (every 6th snapshot cycle at the
+#          default 5-min cadence) to preserve the $0-LLM premise — the
+#          provider read is a single indexed SELECT but it crosses the
+#          gateway-to-substrate boundary so we cap frequency. Stays
+#          "unknown" when the provider isn't registered (early-boot /
+#          non-daemon paths).
+SCHEMA_VERSION = 5
 SNAPSHOT_FRESH_THRESHOLD_SECONDS = 600  # 10 min — spec §2(a) is_snapshot_fresh
+
+# KR-SNAPSHOT-TASKS — refresh cadence for the Sea_Tickets read. 30 min
+# (= every 6th tick at the 5-min snapshot interval) preserves the
+# $0-LLM premise while still surfacing tasks reasonably fresh.
+TASKS_REFRESH_INTERVAL_SECONDS = 30 * 60
 
 # Probe names the snapshot exposes. Matches the 5 default probes in
 # ``kora_cli/heartbeat_probes/runner.default_probes()`` so the
@@ -427,16 +440,132 @@ def _collect_service_health() -> Dict[str, Any]:
     return out
 
 
+# KR-SNAPSHOT-TASKS — module-level cache for Sea_Tickets counts.
+# Populated by :func:`maybe_refresh_tasks_cache` (called from the async
+# snapshot cycle), read by :func:`_collect_tasks` (sync). Values start
+# as "unknown" until the first successful refresh; on a failed refresh
+# we keep the prior cached values rather than reverting to "unknown"
+# so a transient substrate hiccup doesn't blank the cockpit panel.
+_TASKS_CACHE: Dict[str, Any] = {
+    "open_count": "unknown",
+    "in_progress_count": "unknown",
+    "last_refreshed_at": None,  # monotonic seconds; None = never
+}
+
+
 def _collect_tasks() -> Dict[str, Any]:
     """Sea_Tickets open/in-progress counts.
 
-    Deferred in v1 per spec §4: substrate MCP call from a 5-min cron
-    is potentially expensive + no in-process accessor exists yet.
-    Snapshot keeps the field shape with ``"unknown"`` placeholders so
-    consumers can branch on presence without crashing; a follow-on
-    bucket can wire a cached substrate-read accessor once one exists.
+    v5 (KR-SNAPSHOT-TASKS): reads from the module-level cache populated
+    by :func:`maybe_refresh_tasks_cache` running on a 30-min throttle.
+    Pre-first-refresh / non-daemon callers (CLI subcommand outside the
+    daemon process) see ``"unknown"`` placeholders — the snapshot shape
+    stays stable so consumers can branch on presence without crashing.
+
+    ``last_refreshed_at`` is intentionally NOT surfaced in the snapshot
+    payload — operator-facing freshness is the snapshot-level
+    ``computed_at`` already.
     """
-    return {"open_count": "unknown", "in_progress_count": "unknown"}
+    return {
+        "open_count": _TASKS_CACHE["open_count"],
+        "in_progress_count": _TASKS_CACHE["in_progress_count"],
+    }
+
+
+async def maybe_refresh_tasks_cache() -> None:
+    """Refresh :data:`_TASKS_CACHE` if the throttle window has elapsed.
+
+    Called from :func:`run_snapshot_cycle` before :func:`compute_snapshot`.
+    Throttle is :data:`TASKS_REFRESH_INTERVAL_SECONDS` (default 30 min)
+    so the substrate read fires at most every Nth snapshot tick. On a
+    failed refresh the prior values stay in the cache + last_refreshed_at
+    advances (so we don't hammer a flapping provider) but a warning is
+    logged.
+
+    Fail-soft: any exception path leaves the cache untouched (other
+    than the timestamp). Snapshot consumers see "unknown" until the
+    first SUCCESSFUL refresh.
+    """
+    import time as _time
+
+    now_mono = _time.monotonic()
+    last = _TASKS_CACHE.get("last_refreshed_at")
+    if last is not None and (now_mono - last) < TASKS_REFRESH_INTERVAL_SECONDS:
+        return
+
+    # Advance the timestamp even on failure paths so a flapping
+    # provider doesn't get hammered every snapshot tick.
+    _TASKS_CACHE["last_refreshed_at"] = now_mono
+
+    try:
+        from plugins.memory.isokron.active_provider import get_active_provider
+        from plugins.memory.isokron.assigned_sea_tickets import (
+            get_assigned_sea_tickets_via_provider,
+        )
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot.tasks] provider imports failed: %r — tasks "
+            "fields stay at prior cached values",
+            exc,
+        )
+        return
+
+    try:
+        provider = get_active_provider()
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot.tasks] get_active_provider raised %r — "
+            "tasks fields stay at prior cached values",
+            exc,
+        )
+        return
+    if provider is None:
+        # Provider not registered (daemon booted without gateway, or
+        # gateway boot not yet complete). Leave the cache as-is.
+        return
+
+    try:
+        grouped = await get_assigned_sea_tickets_via_provider(provider=provider)
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot.tasks] get_assigned_sea_tickets_via_provider "
+            "raised %r — tasks fields stay at prior cached values",
+            exc,
+        )
+        return
+
+    if grouped is None:
+        logger.debug(
+            "[kora.snapshot.tasks] provider returned None — tasks fields "
+            "stay at prior cached values"
+        )
+        return
+
+    in_progress = grouped.get("in_progress") or []
+    queued = grouped.get("queued") or []
+    if not isinstance(in_progress, list) or not isinstance(queued, list):
+        logger.warning(
+            "[kora.snapshot.tasks] unexpected grouped shape (in_progress "
+            "type=%s, queued type=%s) — tasks fields stay at prior "
+            "cached values",
+            type(in_progress).__name__,
+            type(queued).__name__,
+        )
+        return
+
+    # ``open_count`` = anything awaiting work + actively being worked on;
+    # ``in_progress_count`` = subset with an active claim. These are
+    # the figures the cockpit panel wants per the FE follow-on bucket.
+    _TASKS_CACHE["in_progress_count"] = len(in_progress)
+    _TASKS_CACHE["open_count"] = len(in_progress) + len(queued)
+
+
+def _reset_tasks_cache_for_tests() -> None:
+    """Test-only: reset the tasks cache. Production code never calls
+    this — the cache is process-lifetime by design."""
+    _TASKS_CACHE["open_count"] = "unknown"
+    _TASKS_CACHE["in_progress_count"] = "unknown"
+    _TASKS_CACHE["last_refreshed_at"] = None
 
 
 def _collect_cost_telemetry() -> Dict[str, Any]:
@@ -841,6 +970,20 @@ async def run_snapshot_cycle() -> None:
     + the alerts notifier
     (:func:`kora_cli.listeners.alert_notifier_listener.run_notification_cycle`).
     """
+    # KR-SNAPSHOT-TASKS v5 — refresh the throttled tasks cache before
+    # composing the snapshot. The throttle inside maybe_refresh_tasks_cache
+    # caps the substrate read frequency so most ticks are a no-op cache
+    # check. Fail-soft: any provider-side failure leaves prior cached
+    # values intact.
+    try:
+        await maybe_refresh_tasks_cache()
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot] maybe_refresh_tasks_cache raised %r — "
+            "snapshot proceeds with prior cached tasks values",
+            exc,
+        )
+
     try:
         snapshot = compute_snapshot()
     except Exception as exc:
