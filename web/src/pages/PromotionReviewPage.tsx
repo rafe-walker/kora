@@ -7,6 +7,15 @@
 //         category_override / review_notes)
 //         POST /api/promotions/phrasebook/{id}/reject (review_notes)
 //
+// KR-FE-PROMOTION-PREVIEW extension: each ProposalCard now renders
+// the reply_template against the LIVE snapshot — operator sees the
+// actual reply text Kora would send if the entry were live, plus
+// inline warnings for any placeholders that won't interpolate
+// (fall-through to reasoning). Re-renders on edit so the operator
+// can iteratively tighten the template before approving. Backed
+// by /api/phrasebook/slack_dm/preview-template (new in this
+// bucket — takes just the template, no test text needed).
+//
 // Layout (per CC#1's pre-spec'd shape in PR #186):
 //
 //   Filter: [Pending] [Approved] [Rejected] [All]
@@ -14,18 +23,20 @@
 //   Per-row card (sorted by confidence desc):
 //     confidence + cluster_size + created_at + haiku_synthesized badge
 //     category / pattern / reply_template (read mode) OR editable inputs
+//     SnapshotPreview band: rendered reply + missing-field warnings
 //     sample_questions (up to 3)
 //     [Edit before approving] [Approve] [Reject (with notes)]
 //
 // Drift-guard: PROMOTION_STATUS_VALUES (api.ts) mirrors BE
 // _PROMOTION_STATUS_VALUES. Pinned by test_promotion_status_drift_guard.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
+  Eye,
   Lightbulb,
   RefreshCw,
   Send,
@@ -43,6 +54,7 @@ import { usePanelView } from "@/hooks/usePanelView";
 import { api } from "@/lib/api";
 import {
   PROMOTION_STATUS_VALUES,
+  type PhrasebookPreviewTemplateResponse,
   type PromotionApproveOverrides,
   type PromotionProposal,
   type PromotionProposalsResponse,
@@ -87,6 +99,141 @@ function formatConfidence(c: number): string {
   // BE writes confidence to 4 decimals; render to 2 — enough
   // signal for "much better than 0.85" without false precision.
   return c.toFixed(2);
+}
+
+// ---------------------------------------------------------------
+// KR-FE-PROMOTION-PREVIEW — snapshot-rendered reply preview
+// ---------------------------------------------------------------
+//
+// Renders the reply_template against the live snapshot via the BE
+// preview-template endpoint. Debounced so an operator typing in
+// the edit textarea doesn't hammer the endpoint on every keystroke.
+
+const PREVIEW_DEBOUNCE_MS = 300;
+
+interface SnapshotPreviewProps {
+  // Template is whatever the operator is CURRENTLY looking at —
+  // the proposed text in view mode, or the live-edit text in edit
+  // mode. The component re-fetches whenever this changes.
+  template: string;
+}
+
+function SnapshotPreview({ template }: SnapshotPreviewProps) {
+  const [preview, setPreview] =
+    useState<PhrasebookPreviewTemplateResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Track the latest in-flight request so a slow earlier call
+  // can't overwrite a faster later one (operator editing quickly).
+  const requestSeq = useRef(0);
+
+  useEffect(() => {
+    const seq = ++requestSeq.current;
+    if (!template.trim()) {
+      setPreview(null);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    const handle = window.setTimeout(() => {
+      void api
+        .previewSlackDmPhrasebookTemplate(template)
+        .then((resp) => {
+          if (seq !== requestSeq.current) return;
+          setPreview(resp);
+          setError(null);
+        })
+        .catch((e) => {
+          if (seq !== requestSeq.current) return;
+          setError(e instanceof Error ? e.message : String(e));
+        })
+        .finally(() => {
+          if (seq !== requestSeq.current) return;
+          setLoading(false);
+        });
+    }, PREVIEW_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [template]);
+
+  if (!template.trim()) return null;
+
+  return (
+    <div className="rounded border border-border bg-muted/20 p-2 space-y-1.5 text-xs">
+      <div className="flex items-center gap-2">
+        <Eye className="h-3 w-3 text-muted-foreground" />
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          Live preview against current snapshot
+        </span>
+        {loading && <Spinner className="h-3 w-3" />}
+        {preview?.snapshot_computed_at && (
+          <span
+            className="ml-auto text-[10px] text-muted-foreground"
+            title={preview.snapshot_computed_at}
+          >
+            snapshot {formatRelative(preview.snapshot_computed_at)}
+          </span>
+        )}
+      </div>
+      {error && (
+        <div className="text-xs text-destructive font-mono break-words">
+          preview failed: {error}
+        </div>
+      )}
+      {preview && !preview.snapshot_present && (
+        <div className="flex items-start gap-1.5 text-yellow-500">
+          <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+          <div>
+            No fresh snapshot available — preview can&apos;t render. Live
+            handler would fall through to the reasoning engine for ALL
+            placeholders right now.
+          </div>
+        </div>
+      )}
+      {preview && preview.snapshot_present && (
+        <>
+          <div
+            className={`font-mono text-xs whitespace-pre-wrap rounded p-2 ${
+              preview.would_fall_through_to_reasoning_engine
+                ? "bg-yellow-500/10 border border-yellow-500/30 text-yellow-100"
+                : "bg-green-500/10 border border-green-500/30 text-green-100"
+            }`}
+          >
+            {preview.rendered_with_missing_markers}
+          </div>
+          {preview.would_fall_through_to_reasoning_engine ? (
+            <div className="flex items-start gap-1.5 text-yellow-500">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0 mt-0.5" />
+              <div>
+                Would fall through to reasoning engine —{" "}
+                {preview.missing_or_degraded_fields.length} placeholder
+                {preview.missing_or_degraded_fields.length === 1 ? "" : "s"}{" "}
+                missing or &quot;unknown&quot;:{" "}
+                <span className="font-mono">
+                  {preview.missing_or_degraded_fields.join(", ")}
+                </span>
+              </div>
+            </div>
+          ) : preview.referenced_fields.length > 0 ? (
+            <div className="flex items-start gap-1.5 text-green-500">
+              <CheckCircle2 className="h-3 w-3 flex-shrink-0 mt-0.5" />
+              <div>
+                All {preview.referenced_fields.length} placeholder
+                {preview.referenced_fields.length === 1 ? "" : "s"}{" "}
+                interpolate cleanly.
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-start gap-1.5 text-muted-foreground">
+              <CheckCircle2 className="h-3 w-3 flex-shrink-0 mt-0.5" />
+              <div>
+                Static reply — no snapshot fields referenced.
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------
@@ -241,6 +388,7 @@ function ProposalCard({
                 {proposal.proposed_reply_template}
               </div>
             </div>
+            <SnapshotPreview template={proposal.proposed_reply_template} />
           </div>
         )}
 
@@ -264,6 +412,7 @@ function ProposalCard({
               mono
               textarea
             />
+            <SnapshotPreview template={replyTemplate} />
             <FieldEditor
               label="Review notes (optional — recorded on the audit row)"
               value={reviewNotes}

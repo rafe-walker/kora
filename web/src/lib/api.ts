@@ -154,6 +154,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     }),
+  // KR-FE-PROMOTION-PREVIEW — server-rendered preview of an
+  // arbitrary reply_template against the live snapshot. Used by
+  // PromotionReviewPage to show the actual reply text Kora would
+  // send if the proposed entry were live, including missing-field
+  // warnings + snapshot freshness.
+  previewSlackDmPhrasebookTemplate: (replyTemplate: string) =>
+    fetchJSON<PhrasebookPreviewTemplateResponse>(
+      "/api/phrasebook/slack_dm/preview-template",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reply_template: replyTemplate }),
+      },
+    ),
   // KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — write path (PUT + revert
   // + backups list). Server returns 422 with per-entry errors
   // when validation fails; fetchJSON throws on 422, callers
@@ -232,6 +246,17 @@ export const api = {
       `/api/probe-investigations${q ? "?" + q : ""}`,
     );
   },
+  // KR-FE-INVESTIGATION-DRILL-DOWN — per-caller_session_id unified
+  // audit timeline. Joins every audit row + slack_dm_log.jsonl
+  // entry sharing the given session id into one chronological list.
+  // session_id may contain ":" separators; URL-encode the whole
+  // thing once. The endpoint uses FastAPI's {name:path} converter,
+  // which leaves "/" as-is; today's session_id shapes don't include
+  // "/", so encodeURIComponent is the safe default.
+  getInvestigationDrillDown: (callerSessionId: string) =>
+    fetchJSON<InvestigationDrillDownResponse>(
+      `/api/investigations/${encodeURIComponent(callerSessionId)}`,
+    ),
   // KR-FE-PROMOTION-REVIEW-PANEL — list pending phrasebook promotion
   // proposals (sorted highest-confidence first by the BE).
   getPhrasebookPromotionProposals: () =>
@@ -2058,6 +2083,25 @@ export type PhrasebookTestResponse =
       snapshot_present: boolean;
     };
 
+// KR-FE-PROMOTION-PREVIEW — preview-template response. Mirror of
+// the BE preview_phrasebook_template endpoint. Surfaces the EXACT
+// missing fields tripping a fall-through, so the operator sees
+// inline which placeholders won't interpolate against the current
+// snapshot.
+export interface PhrasebookPreviewTemplateResponse {
+  // null when at least one referenced field is MISSING / None /
+  // "unknown" — same fall-through semantics as the live handler.
+  // rendered_with_missing_markers always carries the substituted-
+  // with-{missing:path} text for inline display.
+  rendered_reply: string | null;
+  rendered_with_missing_markers: string;
+  referenced_fields: string[];
+  missing_or_degraded_fields: string[];
+  would_fall_through_to_reasoning_engine: boolean;
+  snapshot_present: boolean;
+  snapshot_computed_at: string | null;
+}
+
 // KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — write-path types.
 // The PUT request body's per-entry shape (operator's draft —
 // `referenced_snapshot_fields` is derived server-side and not
@@ -2523,4 +2567,37 @@ export interface PromotionRejectResponse {
   proposal_id: string;
   status: "rejected";
   review_notes: string;
+}
+
+// KR-FE-INVESTIGATION-DRILL-DOWN — unified per-caller_session_id
+// timeline. ``kind`` discriminates the per-seam ``details``
+// payload shape on the FE; ``details`` is intentionally
+// ``Record<string, unknown>`` because each seam has its own
+// projection (drill-down endpoint reuses the existing per-seam
+// projection helpers for parity with the per-seam panels).
+export type InvestigationDrillKind =
+  | "probe"
+  | "email"
+  | "promotion"
+  | "other";
+
+export interface InvestigationDrillTimelineItem {
+  id: string;
+  emitted_at: string;
+  kind: "audit" | "slack_dm_log";
+  seam: string;
+  source: string | null;
+  caller_session_id: string;
+  details: Record<string, unknown>;
+}
+
+export interface InvestigationDrillDownResponse {
+  session: {
+    caller_session_id: string;
+    kind: InvestigationDrillKind;
+  };
+  timeline: InvestigationDrillTimelineItem[];
+  seams_seen: string[];
+  total_count: number;
+  supported_seams: string[];
 }

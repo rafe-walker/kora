@@ -179,6 +179,21 @@ function ActionCard({ item }: { item: KoraActionItem }) {
                 detail
               </Link>
             )}
+            {/* KR-FE-INVESTIGATION-DRILL-DOWN — drill into the unified
+                per-caller_session_id timeline. Only renders when the
+                row carries a non-empty caller_session_id (some legacy
+                seams don't). The page renders the FULL audit trace
+                for this one investigation. */}
+            {item.caller_session_id && (
+              <Link
+                to={`/investigations/${encodeURIComponent(item.caller_session_id)}`}
+                className="inline-flex items-center gap-1 text-primary hover:underline text-xs"
+                title={`Drill into the full audit timeline for ${item.caller_session_id}`}
+              >
+                <Search className="h-3 w-3" />
+                drill
+              </Link>
+            )}
           </div>
         </div>
       </CardContent>

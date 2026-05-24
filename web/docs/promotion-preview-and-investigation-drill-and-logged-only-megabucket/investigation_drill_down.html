@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Investigation Drill-Down</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Investigation Drill-Down — probe:fly:service_unhealthy (Deliverable C)</h1>
+  <p class="preamble">
+    Apex operator-comprehension view: every audit row +
+    slack_dm_log entry sharing one caller_session_id, in one
+    chronological list. Deep-linked from KoraActionsPage and
+    ProbeInvestigationsPage rows. Each row has a <strong>panel</strong>
+    link to its per-seam detail panel + a <strong>View raw JSON</strong>
+    toggle for the full audit payload. New endpoint
+    <code>GET /api/investigations/{caller_session_id:path}</code>.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">✨ Probe investigation</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Session header -->
+  <div class="card">
+    <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">caller_session_id</div>
+    <div style="font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all;">probe:fly:service_unhealthy</div>
+    <div class="row" style="margin-top: 8px; font-size: 11px; color: var(--muted);">
+      <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">5 timeline events</span>
+      <span>joined from <code>probe.wake_requested · reasoning.tool_called · tool.probe_autofix_attempted · probe.investigation_completed · slack_dm_log.jsonl</code></span>
+    </div>
+  </div>
+
+  <!-- Timeline event 1: wake -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--warning); margin-top: 2px;">✨</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-family: ui-monospace, monospace; font-size: 11px;">2026-05-24 14:32:01</span>
+          <span class="italic-muted" style="font-size: 10px;">(3m ago)</span>
+          <span class="badge warning">Probe wake</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">probe.wake_requested</span>
+          <span style="margin-left: auto;"></span>
+          <a class="italic-muted" style="font-size: 11px; color: var(--primary);">panel ›</a>
+        </div>
+        <div style="font-size: 13px; margin-top: 4px;">
+          <span style="font-family: ui-monospace, monospace;">fly</span> · severity <span style="font-family: ui-monospace, monospace;">critical</span> · category <span style="font-family: ui-monospace, monospace;">service_unhealthy</span>
+          <span class="italic-muted"> · envelope restart_unhealthy_machine</span>
+          <div class="italic-muted" style="font-size: 11px; margin-top: 4px;">Fly machine 1781e9f6c12d83 stopped for 3 polling cycles</div>
+        </div>
+        <button class="btn" style="margin-top: 4px; font-size: 10px; color: var(--muted);">View raw JSON</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Timeline event 2: reasoning.tool_called -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--muted); margin-top: 2px;">🔧</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-family: ui-monospace, monospace; font-size: 11px;">2026-05-24 14:32:02</span>
+          <span class="italic-muted" style="font-size: 10px;">(3m ago)</span>
+          <span class="badge">Tool call</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">reasoning.tool_called</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">source: reasoning</span>
+          <span style="margin-left: auto;"></span>
+          <a class="italic-muted" style="font-size: 11px; color: var(--primary);">panel ›</a>
+        </div>
+        <div style="font-size: 13px; margin-top: 4px;">
+          <span style="font-family: ui-monospace, monospace;">fly_machine_diff</span> · status <span style="font-family: ui-monospace, monospace;">ok</span>
+          <span class="italic-muted"> · 215ms</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Timeline event 3: autofix -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--warning); margin-top: 2px;">🔧</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-family: ui-monospace, monospace; font-size: 11px;">2026-05-24 14:32:02</span>
+          <span class="italic-muted" style="font-size: 10px;">(3m ago)</span>
+          <span class="badge warning">Autofix attempted</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">tool.probe_autofix_attempted</span>
+          <span style="margin-left: auto;"></span>
+          <a class="italic-muted" style="font-size: 11px; color: var(--primary);">panel ›</a>
+        </div>
+        <div style="font-size: 13px; margin-top: 4px;">
+          <span style="font-family: ui-monospace, monospace;">restart_machine</span> on <span style="font-family: ui-monospace, monospace;">fly/1781e9f6c12d83</span>
+          <span class="italic-muted"> · stopped → started</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Timeline event 4: investigation_completed -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--primary); margin-top: 2px;">🔍</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-family: ui-monospace, monospace; font-size: 11px;">2026-05-24 14:32:04</span>
+          <span class="italic-muted" style="font-size: 10px;">(3m ago)</span>
+          <span class="badge secondary">Investigation completed</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">probe.investigation_completed</span>
+          <span style="margin-left: auto;"></span>
+          <a class="italic-muted" style="font-size: 11px; color: var(--primary);">panel ›</a>
+        </div>
+        <div class="row" style="margin-top: 4px; font-size: 11px;">
+          <span class="badge" style="font-family: ui-monospace, monospace;">dm: sent</span>
+          <span class="badge warning">🔧 fix attempted</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$0.0042</span>
+        </div>
+        <div class="italic-muted" style="font-size: 11px; margin-top: 4px; white-space: pre-wrap;">Fly machine 1781e9f6c12d83 was stopped for 3 cycles. Restarted the machine; the next cycle should show it healthy. If it stops again within an hour, the underlying cause is likely the new init process — check fly logs --since 5m.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Timeline event 5: slack_dm_log -->
+  <div class="card">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--primary); margin-top: 2px;">💬</span>
+      <div style="flex: 1; min-width: 0;">
+        <div class="row">
+          <span class="italic-muted" style="font-family: ui-monospace, monospace; font-size: 11px;">2026-05-24 14:32:04</span>
+          <span class="italic-muted" style="font-size: 10px;">(3m ago)</span>
+          <span class="badge secondary">Slack DM sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">slack_dm_log.jsonl</span>
+          <span style="margin-left: auto;"></span>
+          <a class="italic-muted" style="font-size: 11px; color: var(--primary);">panel ›</a>
+        </div>
+        <div style="font-size: 11px; margin-top: 4px; color: var(--muted);">
+          channel <span style="font-family: ui-monospace, monospace;">D01JOSHUA</span>
+          · send_status <span style="font-family: ui-monospace, monospace;">ok</span>
+          · ts <span style="font-family: ui-monospace, monospace;">1742345059.123456</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body></html>

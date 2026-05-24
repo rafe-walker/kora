@@ -6225,6 +6225,96 @@ async def get_slack_dm_phrasebook() -> Dict[str, Any]:
     }
 
 
+@app.post("/api/phrasebook/slack_dm/preview-template")
+async def preview_phrasebook_template(
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Render an arbitrary reply_template against the current
+    snapshot — without needing operator test text or a live entry.
+
+    Used by KR-FE-PROMOTION-PREVIEW (the snapshot-preview extension
+    to PromotionReviewPage's ProposalCard): operator sees the
+    actual reply text Kora would send if the proposed entry were
+    live, including missing-field warnings that mean the entry
+    would fall through to the reasoning engine.
+
+    Payload shape: ``{"reply_template": str}``.
+
+    Returns:
+      ``rendered_reply``: The rendered string, or ``None`` if any
+        referenced field is missing/degraded/null (mirrors
+        render_reply's fall-through semantics).
+      ``referenced_fields``: Snapshot paths the template walks.
+      ``missing_or_degraded_fields``: Subset of referenced_fields
+        that resolved to MISSING / None / "unknown" — the exact
+        reason(s) the entry would fall through.
+      ``would_fall_through_to_reasoning_engine``: True when the
+        live handler would fall through given the current snapshot.
+      ``snapshot_present``: False when there's no fresh snapshot —
+        every referenced field is by definition unrendered.
+      ``snapshot_computed_at``: ISO timestamp from the snapshot for
+        the FE's freshness badge ("preview using snapshot N min ago").
+    """
+    from kora_cli.reasoning.kora_hermes_plugin.short_circuit.matcher import (
+        _MISSING,
+        _walk_snapshot,
+    )
+    from kora_cli.snapshot import read_snapshot
+
+    template = (
+        str(payload.get("reply_template", ""))
+        if isinstance(payload, dict)
+        else ""
+    )[:4096]
+    referenced = _extract_phrasebook_snapshot_refs(template)
+
+    snap = read_snapshot()
+    snapshot_present = snap is not None
+    if not snapshot_present:
+        return {
+            "rendered_reply": None,
+            "referenced_fields": referenced,
+            "missing_or_degraded_fields": list(referenced),
+            "would_fall_through_to_reasoning_engine": True,
+            "snapshot_present": False,
+            "snapshot_computed_at": None,
+        }
+
+    # Walk each placeholder against the snapshot WITHOUT relying on
+    # render_reply (which returns None and doesn't disclose WHICH
+    # fields tripped it). Operator needs the precise field list.
+    missing_or_degraded: List[str] = []
+    rendered_parts: List[str] = []
+    last_end = 0
+    for match in _PHRASEBOOK_PLACEHOLDER_RE.finditer(template):
+        dotted = match.group(1)
+        value = _walk_snapshot(snap, dotted)
+        rendered_parts.append(template[last_end : match.start()])
+        if value is _MISSING or value is None or value == "unknown":
+            missing_or_degraded.append(dotted)
+            rendered_parts.append(f"{{missing:{dotted}}}")
+        else:
+            rendered_parts.append(str(value))
+        last_end = match.end()
+    rendered_parts.append(template[last_end:])
+    rendered_with_markers = "".join(rendered_parts)
+
+    would_fall_through = bool(missing_or_degraded)
+    rendered_reply = None if would_fall_through else rendered_with_markers
+    return {
+        "rendered_reply": rendered_reply,
+        # Marker-substituted text — useful for the FE preview even
+        # when it WOULD fall through, so the operator can see the
+        # missing fields inline rather than just a None.
+        "rendered_with_missing_markers": rendered_with_markers,
+        "referenced_fields": referenced,
+        "missing_or_degraded_fields": sorted(set(missing_or_degraded)),
+        "would_fall_through_to_reasoning_engine": would_fall_through,
+        "snapshot_present": True,
+        "snapshot_computed_at": str(snap.get("computed_at", "")) or None,
+    }
+
+
 @app.post("/api/phrasebook/slack_dm/test")
 async def test_phrasebook_match(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Operator-supplied test text → matched entry + rendered reply.
@@ -8216,6 +8306,309 @@ async def get_probe_investigations(
         # constant + drift-guard test.
         "dm_status_values": list(_DM_STATUS_VALUES),
         "by_dm_status_24h": by_dm_status_24h,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Investigation drill-down — KR-FE-INVESTIGATION-DRILL-DOWN
+# ---------------------------------------------------------------------------
+#
+# Unified per-caller_session_id timeline: joins EVERY audit row +
+# slack_dm_log entry sharing the same caller_session_id into a
+# single chronological list. Operator gets the apex postmortem
+# view for one investigation — wake → reasoning → autofix →
+# investigation_completed → DM.
+#
+# Accepts any caller_session_id pattern (probe:{probe}:{category} +
+# email:{message-id} + future shapes). The endpoint doesn't enforce
+# a pattern — it just filters the audit log by literal match. This
+# keeps the drill-down forward-compatible as new caller-session
+# shapes appear without endpoint changes.
+#
+# SECURITY: per-seam projection mirrors the per-seam panel endpoints
+# (no raw details echoed for the few seams that hold sensitive
+# payload; whitelist projection per seam family).
+
+
+# Allowlist of seams the drill-down can surface. New audit seams
+# auto-appear when added to SeamName Literal AND included here —
+# we want explicit opt-in per seam so a new privacy-sensitive
+# seam doesn't leak through accidentally.
+_DRILL_DOWN_SUPPORTED_SEAMS: Tuple[str, ...] = (
+    "probe.wake_requested",
+    "reasoning.tool_called",
+    "tool.probe_autofix_attempted",
+    "probe.investigation_completed",
+    "intent.email_to_sea_ticket",
+    "tool.email_to_operator_sent",
+    "phrasebook.updated",
+    "promotion.proposed",
+    "promotion.approved",
+    "promotion.rejected",
+)
+
+
+def _drilldown_project_audit_row(
+    entry: "AuditEntry", lineno: int
+) -> Dict[str, Any]:
+    """Per-seam projection for the drill-down timeline. Each branch
+    reuses the existing per-seam projection helper where possible
+    so the drill-down can never surface MORE than the per-seam
+    panel does (operator-facing privacy contract).
+    """
+    seam = entry.seam
+    base: Dict[str, Any] = {
+        "id": f"drill-{lineno}",
+        "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "kind": "audit",
+        "seam": seam,
+        "source": entry.source,
+        "caller_session_id": entry.caller_session_id or "",
+    }
+
+    # Reuse existing per-seam projections where they exist (audit
+    # privacy contracts are pinned there). Other seams get a
+    # generic safe-projection that includes only stable keys.
+    d = entry.details
+    if seam == "intent.email_to_sea_ticket":
+        base["details"] = _project_email_intent_audit(entry, lineno)
+    elif seam == "tool.email_to_operator_sent":
+        base["details"] = _project_outbound_email_audit(entry, lineno)
+    elif seam == "tool.probe_autofix_attempted":
+        base["details"] = _project_probe_autofix_audit(entry, lineno)
+    elif seam == "probe.investigation_completed":
+        base["details"] = _project_investigation_completed(entry)
+    elif seam == "probe.wake_requested":
+        base["details"] = {
+            "probe": str(d.get("probe") or "unknown"),
+            "category": str(d.get("category") or "unknown"),
+            "severity": str(d.get("severity") or "warning"),
+            "title": str(d.get("title") or "")[:200],
+            "detail": str(d.get("detail") or "")[:400],
+            "envelope_enabled": bool(d.get("envelope_enabled", False)),
+            "envelope_fix_name": str(
+                d.get("envelope_fix_name") or "(none)"
+            )[:80],
+        }
+    elif seam == "reasoning.tool_called":
+        base["details"] = _project_reasoning_call(entry)
+    elif seam == "phrasebook.updated":
+        base["details"] = {
+            "actor": str(d.get("actor") or "operator")[:48],
+            "action": str(d.get("action") or "")[:32],
+            "entry_count_before": d.get("entry_count_before"),
+            "entry_count_after": d.get("entry_count_after"),
+            "backup_filename": (
+                str(d.get("backup_filename"))[:80]
+                if d.get("backup_filename")
+                else None
+            ),
+            "proposal_id": (
+                str(d.get("proposal_id"))[:80]
+                if d.get("proposal_id")
+                else None
+            ),
+        }
+    elif seam in ("promotion.proposed", "promotion.approved", "promotion.rejected"):
+        # Promotion seams emit the proposal_to_dict shape — surface
+        # the operator-relevant fields without leaking the
+        # cluster_caller_session_ids array (which can carry many
+        # per-DM session ids).
+        base["details"] = {
+            "proposal_id": str(d.get("proposal_id") or "")[:80],
+            "cluster_size": d.get("cluster_size"),
+            "confidence": d.get("confidence"),
+            "proposed_pattern": str(d.get("proposed_pattern") or "")[:200],
+            "proposed_category": str(d.get("proposed_category") or "")[:80],
+            "proposed_reply_template": str(
+                d.get("proposed_reply_template") or ""
+            )[:400],
+            "haiku_synthesized": bool(d.get("haiku_synthesized", False)),
+            "review_notes": str(d.get("review_notes") or "")[:200] or None,
+            "status": str(d.get("status") or "")[:32] or None,
+        }
+    else:
+        # Defensive fallback — should be unreachable since
+        # _DRILL_DOWN_SUPPORTED_SEAMS gates the iteration.
+        base["details"] = {}
+    return base
+
+
+def _drilldown_project_dm_log_entry(
+    entry: Dict[str, Any], lineno: int
+) -> Dict[str, Any]:
+    """Project a slack_dm_log.jsonl outbound row into the drill-down
+    timeline. Same privacy contract as
+    _project_probe_dm_entry — channel + send_status + ts only, no
+    message text echoed."""
+    ts_raw = entry.get("slack_message_ts")
+    slack_ts = str(ts_raw) if isinstance(ts_raw, str) else None
+    failure_reason_raw = entry.get("failure_reason")
+    failure_reason = (
+        str(failure_reason_raw)[:120]
+        if isinstance(failure_reason_raw, str)
+        else None
+    )
+    return {
+        "id": f"drill-dm-{lineno}",
+        "emitted_at": str(entry.get("sent_at", "")),
+        "kind": "slack_dm_log",
+        "seam": "slack_dm_log.jsonl",
+        "source": "slack_dm",
+        "caller_session_id": str(entry.get("caller_session_id", "")),
+        "details": {
+            "channel_id": str(entry.get("channel_id", ""))[:64],
+            "send_status": str(entry.get("send_status", ""))[:32],
+            "slack_message_ts": slack_ts,
+            "failure_reason": failure_reason,
+            "thread_ts": (
+                str(entry.get("thread_ts"))[:32]
+                if isinstance(entry.get("thread_ts"), str)
+                else None
+            ),
+        },
+    }
+
+
+def _read_slack_dm_entries_for_session(session_id: str) -> List[Dict[str, Any]]:
+    """Read every slack_dm_log.jsonl outbound entry carrying the
+    given caller_session_id. Defensive against missing file +
+    malformed lines (mirror of _read_probe_dm_log_entries; this
+    one matches an arbitrary session id rather than the probe:
+    prefix regex)."""
+    import json as _json
+
+    log_path = get_kora_home() / _SLACK_DM_LOG_FILENAME
+    out: List[Dict[str, Any]] = []
+    if not log_path.is_file():
+        return out
+    try:
+        with log_path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    entry = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("caller_session_id") != session_id:
+                    continue
+                out.append(entry)
+    except OSError as exc:
+        logger.warning(
+            "[kora.investigation_drill] slack_dm_log read failed: %r",
+            exc,
+        )
+    return out
+
+
+@app.get("/api/investigations/{caller_session_id:path}")
+async def get_investigation_drill_down(
+    caller_session_id: str,
+) -> Dict[str, Any]:
+    """Per-caller_session_id unified audit timeline.
+
+    Joins every audit row + slack_dm_log.jsonl entry that shares
+    the given caller_session_id into one chronological list.
+    Operator-facing apex view: full picture of "what happened for
+    this one investigation."
+
+    URL-path captures the full session id (which may contain
+    ``:`` separators) via FastAPI's ``{name:path}`` converter.
+
+    Args:
+      caller_session_id: Literal session id to join on. Accepts
+        any pattern — probe:{probe}:{category}, email:<message-id>,
+        promotion:phrasebook:<proposal_id>, future shapes.
+
+    Returns:
+      session: Echo of the requested session id + a derived "kind"
+        (probe / email / promotion / unknown) for FE-side framing.
+      timeline: Newest-first list of {kind, seam, emitted_at,
+        source, caller_session_id, details}. Includes audit rows
+        across all supported seams + slack_dm_log outbound rows.
+      seams_seen: De-duped list of seams that contributed to the
+        timeline — useful for FE chip filtering.
+      total_count: len(timeline) — bounded by audit-file size +
+        per-seam supported allowlist.
+
+    NOTE: empty timeline (no matching rows) is NOT an error —
+    returns ``timeline=[]`` so the FE can render an empty state.
+    A truly invalid session_id is indistinguishable from a valid
+    one with no audit rows yet; the FE doesn't need a 404 to do
+    the right thing.
+    """
+    from kora_cli.audit.jsonl_reader import read_audit_entries
+
+    # Defensive cap on session_id length so we can't be DOS'd via
+    # a giant path argument. Per ``_derive_caller_session_id``
+    # call sites today the longest realistic id is ~120 chars
+    # (promotion:phrasebook:<uuid>).
+    session_id_capped = caller_session_id[:512]
+
+    # Derive a coarse "kind" for the FE framing — purely cosmetic
+    # (decides icon/title); functional behavior is identical
+    # regardless. Forward-compat: unknown prefixes fall through to
+    # "other".
+    if session_id_capped.startswith("probe:"):
+        kind = "probe"
+    elif session_id_capped.startswith("email:"):
+        kind = "email"
+    elif session_id_capped.startswith("promotion:"):
+        kind = "promotion"
+    else:
+        kind = "other"
+
+    # Collect across the supported-seam allowlist. Per-seam reads
+    # are bounded by the audit file size; total work is O(file).
+    timeline: List[Dict[str, Any]] = []
+    seams_seen: List[str] = []
+    lineno = 0
+    for seam in _DRILL_DOWN_SUPPORTED_SEAMS:
+        try:
+            rows = read_audit_entries(seam=seam)
+        except Exception as exc:
+            logger.warning(
+                "[kora.investigation_drill] seam %r read failed: %r",
+                seam,
+                exc,
+            )
+            continue
+        seam_matched_any = False
+        for entry in rows:
+            if (entry.caller_session_id or "") != session_id_capped:
+                continue
+            lineno += 1
+            timeline.append(_drilldown_project_audit_row(entry, lineno))
+            seam_matched_any = True
+        if seam_matched_any:
+            seams_seen.append(seam)
+
+    dm_entries = _read_slack_dm_entries_for_session(session_id_capped)
+    if dm_entries:
+        seams_seen.append("slack_dm_log.jsonl")
+    for raw_dm in dm_entries:
+        lineno += 1
+        timeline.append(_drilldown_project_dm_log_entry(raw_dm, lineno))
+
+    # Chronological — oldest-first reads more naturally for a
+    # per-investigation narrative ("first the wake fired, then
+    # the reasoning ran..."). Different from the panel pages
+    # which sort newest-first for triage scanning.
+    timeline.sort(key=lambda it: str(it.get("emitted_at", "")))
+
+    return {
+        "session": {
+            "caller_session_id": session_id_capped,
+            "kind": kind,
+        },
+        "timeline": timeline,
+        "seams_seen": seams_seen,
+        "total_count": len(timeline),
+        "supported_seams": list(_DRILL_DOWN_SUPPORTED_SEAMS),
     }
 
 

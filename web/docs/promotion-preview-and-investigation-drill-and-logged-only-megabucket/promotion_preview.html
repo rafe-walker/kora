@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Promotion Review · Snapshot Preview</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Promotion Review · Snapshot Preview (Deliverable A)</h1>
+  <p class="preamble">
+    Operator viewing/editing a pending proposal now sees the reply
+    text rendered against the LIVE snapshot — the actual reply Kora
+    would send. Missing-field warnings explain exactly which
+    placeholders won't interpolate (== fall-through to reasoning).
+    Re-renders on edit (debounced 300ms). Backed by new
+    <code>/api/phrasebook/slack_dm/preview-template</code> endpoint.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">💡 Promotion Review · Phrasebook</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- Proposal 1 — clean interpolation -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.94 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 6</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 2h ago</span>
+      <span class="badge secondary">✨ Kora wrote this</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">cost_query</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">(?i)(burn|cost|spend)</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">reply template</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-top: 2px;">Burn is ${'{snapshot.cost_ladder.spent_to_date_usd}'} ($42 budget).</div>
+    </div>
+
+    <!-- SnapshotPreview band (NEW) -->
+    <div style="margin-top: 10px; background: rgba(30,30,30,0.3); border: 1px solid var(--border); border-radius: 4px; padding: 8px;">
+      <div class="row" style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">
+        👁 Live preview against current snapshot
+        <span style="margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 10px;">snapshot 38s ago</span>
+      </div>
+      <div style="margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; padding: 8px; background: rgba(74,222,128,0.1); border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; color: #d1fadf; white-space: pre-wrap;">Burn is $42.13 ($42 budget).</div>
+      <div style="margin-top: 6px; font-size: 11px; color: var(--success);">✓ All 1 placeholders interpolate cleanly.</div>
+    </div>
+
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined">✏️ Edit before approving</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- Proposal 2 — missing field warning -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.88 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 5</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 4h ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 10px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">category</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">tasks_query</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">pattern</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; margin-top: 2px;">(?i)(tasks|open|inbox)</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">reply template</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px; background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 6px; margin-top: 2px;">You have ${'{snapshot.tasks.open_count}'} open tasks, ${'{snapshot.tasks.in_progress_count}'} in progress.</div>
+    </div>
+
+    <div style="margin-top: 10px; background: rgba(30,30,30,0.3); border: 1px solid var(--border); border-radius: 4px; padding: 8px;">
+      <div class="row" style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">
+        👁 Live preview against current snapshot
+        <span style="margin-left: auto; text-transform: none; letter-spacing: 0; font-size: 10px;">snapshot 41s ago</span>
+      </div>
+      <div style="margin-top: 6px; font-family: ui-monospace, monospace; font-size: 12px; padding: 8px; background: rgba(250,204,21,0.1); border: 1px solid rgba(250,204,21,0.3); border-radius: 4px; color: #fef3c7; white-space: pre-wrap;">You have ${'{missing:tasks.open_count}'} open tasks, ${'{missing:tasks.in_progress_count}'} in progress.</div>
+      <div style="margin-top: 6px; font-size: 11px; color: var(--warning); display: flex; gap: 4px; align-items: flex-start;">
+        <span>⚠</span>
+        <span>Would fall through to reasoning engine — 2 placeholders missing or "unknown": <code>tasks.open_count, tasks.in_progress_count</code></span>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined">✏️ Edit before approving</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+</body></html>
