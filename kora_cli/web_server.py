@@ -8881,11 +8881,17 @@ def _alert_caller_session_id(category: str, severity: str) -> str:
 def _project_alert_completed(entry: "AuditEntry") -> Dict[str, Any]:
     """Project an ``alert.investigation_completed`` audit row.
 
-    Mirror of ``_project_investigation_completed`` for probes; v1
-    swaps ``autofix_attempted`` (a probe-specific concept) for
-    ``autoaction_attempted`` (a generic alert-driven action flag —
-    populated false in v1, forward-compat for future alert-driven
-    fix envelopes)."""
+    Real BE shape per ``kora_cli/alerts/wake_consumer.py``
+    (post-#197): payload carries ``alert_id`` / ``category`` /
+    ``severity`` / ``model_used`` / token counts /
+    ``total_cost_usd`` / ``investigation_duration_ms`` /
+    ``investigation_summary_text`` / ``dm_status`` /
+    ``autoaction_attempted`` (False v1; forward-compat for
+    alert-driven fix envelopes). No ``title`` / ``detail`` fields
+    (those were CC#2's forward-compat speculation pre-#197 — the
+    real emission derives the operator-facing context from
+    ``category`` + ``investigation_summary_text``).
+    """
     d = entry.details
     dm_status_raw = str(d.get("dm_status", "")) or "unknown"
     dm_status = (
@@ -8905,8 +8911,13 @@ def _project_alert_completed(entry: "AuditEntry") -> Dict[str, Any]:
     summary = summary_raw[:600]
     err_raw = d.get("reasoning_error")
     err_val = str(err_raw)[:200] if isinstance(err_raw, str) else None
+    alert_id_raw = d.get("alert_id")
+    alert_id_val = (
+        str(alert_id_raw)[:120] if isinstance(alert_id_raw, str) else None
+    )
     return {
         "emitted_at": entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "alert_id": alert_id_val,
         "summary_text": summary,
         "model_used": model_val,
         "total_cost_usd": cost_val,
@@ -8959,19 +8970,26 @@ async def get_alert_investigations(
     window: str = "24h",
     limit: int = 50,
 ) -> Dict[str, Any]:
-    """Alert wake → investigation xref panel feed.
+    """Alert investigation panel feed.
 
-    Joins (KR-FE-ALERT-INVESTIGATIONS-VIEWER, forward-compat #420):
-      * ``alert.wake_requested`` audit rows (the wake itself)
-      * ``alert.investigation_completed`` audit rows (cost / model /
-        dm_status / autoaction_attempted)
+    Joins (KR-FE-ALERT-VIEWER-VERIFICATION — aligned to real #197
+    emission shape):
+      * ``alert.investigation_completed`` audit rows (the primary
+        record — alert wakes do NOT emit a separate
+        ``alert.wake_requested`` seam; the completion row IS the
+        per-investigation atom). Payload includes alert_id,
+        category, severity, model_used, cost, dm_status,
+        autoaction_attempted, and investigation_summary_text.
       * slack_dm_log.jsonl outbound entries with caller_session_id
         matching ``alert:{category}:{severity}``
 
-    Forward-compat: today none of these rows exist (CC#1 #420 ships
-    the emitter). Endpoint returns ``items=[]`` cleanly so the FE
-    renders an empty state rather than 404. Once #420 starts
-    emitting, the join lights up automatically.
+    Endpoint diverges from /api/probe-investigations on this point:
+    probe wakes emit a separate ``probe.wake_requested`` row at
+    wake-time (from the cron post-hook); the alert path runs
+    end-to-end inside the wake consumer with no pre-wake audit
+    row. Mirroring the probe iteration over wake_rows here would
+    return [] forever — see CC#2's KR-FE-ALERT-VIEWER-VERIFICATION
+    follow-on for the alignment rationale.
 
     Args:
       window: ``24h`` | ``7d`` | ``all``. Same semantics as
@@ -8989,26 +9007,11 @@ async def get_alert_investigations(
     since = now - delta if delta is not None else None
 
     try:
-        wake_rows = read_audit_entries(
-            seam="alert.wake_requested", since=since
-        )
-    except Exception:
-        wake_rows = []
-    try:
         completed_rows = read_audit_entries(
             seam="alert.investigation_completed", since=since
         )
     except Exception:
         completed_rows = []
-
-    completed_by_session: Dict[str, "AuditEntry"] = {}
-    for entry in completed_rows:
-        sid = entry.caller_session_id or ""
-        if not _ALERT_CALLER_SESSION_RE.match(sid):
-            continue
-        prior = completed_by_session.get(sid)
-        if prior is None or entry.emitted_at > prior.emitted_at:
-            completed_by_session[sid] = entry
 
     dm_entries_by_session: Dict[str, Dict[str, Any]] = {}
     for raw_dm in _read_alert_dm_log_entries():
@@ -9022,37 +9025,35 @@ async def get_alert_investigations(
             dm_entries_by_session[sid] = raw_dm
 
     items: list = []
-    for entry in wake_rows[:capped_limit]:
+    for entry in completed_rows[:capped_limit]:
         d = entry.details
         category = str(d.get("category") or "unknown")
         severity = str(d.get("severity") or "warning")
-        session_id = _alert_caller_session_id(category, severity)
+        session_id = (
+            entry.caller_session_id
+            or _alert_caller_session_id(category, severity)
+        )
         wake_iso = entry.emitted_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        completed_entry = completed_by_session.get(session_id)
-        investigation_completed = (
-            _project_alert_completed(completed_entry)
-            if completed_entry is not None
-            and completed_entry.emitted_at >= entry.emitted_at
-            else None
-        )
+        investigation_completed = _project_alert_completed(entry)
 
         dm_raw = dm_entries_by_session.get(session_id)
         dm_entry = (
             _project_probe_dm_entry(dm_raw)
             if dm_raw is not None
-            and str(dm_raw.get("sent_at", "")) >= wake_iso
             else None
         )
 
         items.append(
             {
+                # ``wake_event_id`` retained for FE key stability
+                # despite the rename (no separate wake row now).
+                # Composed from completion timestamp + identifying
+                # tuple — unique per investigation.
                 "wake_event_id": f"{wake_iso}:{category}:{severity}",
                 "wake_timestamp": wake_iso,
                 "alert_category": category,
                 "severity": severity,
-                "title": str(d.get("title") or "")[:200],
-                "detail": str(d.get("detail") or "")[:600],
                 "caller_session_id": session_id,
                 "investigation_completed": investigation_completed,
                 "dm_entry": dm_entry,

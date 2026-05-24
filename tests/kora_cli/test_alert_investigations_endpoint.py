@@ -86,14 +86,23 @@ def _alert_completed(
     dm_status: str = "sent",
     autoaction_attempted: bool = False,
     summary: str = "",
+    alert_id: str = "alert-abc-123",
 ) -> dict:
+    """Mirror of the real #197 wake_consumer emission shape — drives
+    the alert-investigations endpoint as the primary signal (alerts
+    don't emit a separate alert.wake_requested row)."""
     return {
         "emitted_at": emitted_at.isoformat(),
         "seam": "alert.investigation_completed",
         "details": {
+            "alert_id": alert_id,
             "category": category,
             "severity": severity,
             "model_used": "claude-haiku-4-5",
+            "input_tokens": 1200,
+            "output_tokens": 250,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 800,
             "total_cost_usd": 0.0021,
             "investigation_duration_ms": 2100,
             "dm_status": dm_status,
@@ -133,24 +142,21 @@ async def test_empty_when_no_alert_seams(env):
 
 
 @pytest.mark.asyncio
-async def test_join_wake_and_completed_by_session(env):
+async def test_completed_row_drives_item_listing(env):
+    """KR-FE-ALERT-VIEWER-VERIFICATION: endpoint now drives off
+    alert.investigation_completed (the primary signal — alerts
+    don't emit a separate wake row). One completion → one item."""
     now = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
     _write_audit_jsonl(
         env,
         [
-            _alert_wake(
-                category="cost_anomaly",
-                severity="critical",
-                emitted_at=now,
-                title="Daily burn 3x baseline",
-                detail="Today: $42; baseline: $14",
-            ),
             _alert_completed(
                 category="cost_anomaly",
                 severity="critical",
                 emitted_at=now,
                 summary="Burn spike from a stuck cron retry loop.",
                 autoaction_attempted=False,
+                alert_id="alert-abc-123",
             ),
         ],
     )
@@ -162,9 +168,13 @@ async def test_join_wake_and_completed_by_session(env):
     assert item["caller_session_id"] == "alert:cost_anomaly:critical"
     assert item["investigation_completed"] is not None
     ic = item["investigation_completed"]
+    assert ic["alert_id"] == "alert-abc-123"
     assert ic["dm_status"] == "sent"
     assert ic["autoaction_attempted"] is False
     assert "Burn spike" in ic["summary_text"]
+    assert ic["model_used"] == "claude-haiku-4-5"
+    assert ic["total_cost_usd"] == 0.0021
+    assert ic["investigation_duration_ms"] == 2100
     # 24h aggregations.
     assert body["by_severity_24h"]["critical"] == 1
     assert body["by_dm_status_24h"]["sent"] == 1
@@ -176,10 +186,11 @@ async def test_dm_entry_joined_by_session_id(env):
     _write_audit_jsonl(
         env,
         [
-            _alert_wake(
+            _alert_completed(
                 category="cost_anomaly",
                 severity="warning",
                 emitted_at=now,
+                summary="Investigated.",
             ),
         ],
     )
@@ -214,7 +225,7 @@ async def test_non_alert_session_ignored(env):
     now = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
     _write_audit_jsonl(
         env,
-        [_alert_wake(category="x", severity="critical", emitted_at=now)],
+        [_alert_completed(category="x", severity="critical", emitted_at=now)],
     )
     _write_slack_dm_log(
         env,
@@ -234,6 +245,62 @@ async def test_non_alert_session_ignored(env):
     assert body["items"][0]["dm_entry"] is None
 
 
+@pytest.mark.asyncio
+async def test_real_197_payload_shape_renders_completely(env):
+    """KR-FE-ALERT-VIEWER-VERIFICATION pin: a synthetic payload
+    that matches the EXACT shape kora_cli/alerts/wake_consumer.py
+    emits (post-#197) must round-trip through the endpoint with
+    every operator-visible field populated. Pre-#197 the endpoint
+    was driven off a forward-compat assumption (alert.wake_requested
+    + title/detail fields); this test pins the new alignment so a
+    regression to the speculative shape gets caught."""
+    now = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
+    # Mirror the exact payload kora_cli/alerts/wake_consumer.py
+    # _emit_investigation_completed builds.
+    real_shape = {
+        "emitted_at": now.isoformat(),
+        "seam": "alert.investigation_completed",
+        "details": {
+            "alert_id": "abc-def-uuid",
+            "category": "cost_ladder",
+            "severity": "warning",
+            "model_used": "claude-haiku-4-5-20251001",
+            "input_tokens": 1234,
+            "output_tokens": 567,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 4096,
+            "total_cost_usd": 0.0042,
+            "investigation_duration_ms": 3800,
+            "investigation_summary_text": (
+                "Cost ladder reached tier=premium today — burn $42; "
+                "if pace continues we hit credit-pool exhaustion in ~3 days."
+            ),
+            "dm_status": "sent",
+            "autoaction_attempted": False,
+        },
+        "source": "reasoning",
+        "caller_session_id": "alert:cost_ladder:warning",
+    }
+    _write_audit_jsonl(env, [real_shape])
+    body = await _call()
+    item = body["items"][0]
+    ic = item["investigation_completed"]
+    # Every field the FE renders.
+    assert ic["alert_id"] == "abc-def-uuid"
+    assert ic["model_used"] == "claude-haiku-4-5-20251001"
+    assert ic["total_cost_usd"] == 0.0042
+    assert ic["investigation_duration_ms"] == 3800
+    assert ic["dm_status"] == "sent"
+    assert ic["autoaction_attempted"] is False
+    assert "Cost ladder" in ic["summary_text"]
+    assert ic["reasoning_error"] is None
+    # alert_category + severity come from the top-level item shape
+    # (mirrors probe-investigations envelope structure).
+    assert item["alert_category"] == "cost_ladder"
+    assert item["severity"] == "warning"
+    assert item["caller_session_id"] == "alert:cost_ladder:warning"
+
+
 # ---------------------------------------------------------------------------
 # Drift guard: alert dm_status reuses probe values
 # ---------------------------------------------------------------------------
@@ -249,13 +316,104 @@ def test_alert_dm_status_drift_guard():
 
 
 def test_alert_seams_in_seamname_literal():
-    """Both alert seams must be in the SeamName Literal so
-    read_audit_entries doesn't ValidationError on them once #420
-    starts emitting. Forward-compat addition lives in this
-    bucket; the emitter lands with #420."""
+    """Both alert seams must remain in the SeamName Literal.
+    ``alert.investigation_completed`` is the live emitter (#197);
+    ``alert.wake_requested`` is kept as forward-compat for a future
+    wake-emitter bucket (a parallel to the probe pattern where the
+    cron post-hook writes wake rows separately from the consumer)."""
     sink_src = _JSONL_SINK.read_text()
     assert '"alert.wake_requested"' in sink_src
     assert '"alert.investigation_completed"' in sink_src
+
+
+def test_endpoint_drives_off_completed_rows_not_wake():
+    """KR-FE-ALERT-VIEWER-VERIFICATION: regression guard. The
+    endpoint MUST iterate alert.investigation_completed rows as
+    the primary signal. If the BE ever re-introduces a wake_rows
+    iteration without first wiring an alert.wake_requested
+    emitter, the panel returns [] for every install — a silent
+    regression. Pin the iteration shape in source."""
+    ws_src = _WEB_SERVER.read_text()
+    # The endpoint's primary read must target the completed seam.
+    assert (
+        'seam="alert.investigation_completed"' in ws_src
+    ), "endpoint must read alert.investigation_completed as primary signal"
+    # And iterate over completed_rows for item construction.
+    assert "for entry in completed_rows[:capped_limit]:" in ws_src, (
+        "endpoint must iterate completed_rows for item construction "
+        "(not wake_rows which alert path doesn't emit)"
+    )
+
+
+def test_drill_down_supports_alert_session_id_prefix():
+    """KR-FE-INVESTIGATION-DRILL-DOWN must support alert: session
+    ids. _DRILL_DOWN_SUPPORTED_SEAMS includes alert.investigation_
+    completed (added in #198) so a drill-in from an alert row
+    surfaces the audit trail + DM. Pin the inclusion + the
+    /api/investigations/{sid} endpoint's session-id regex (or
+    absence — endpoint accepts any literal match)."""
+    ws_src = _WEB_SERVER.read_text()
+    import re as _re
+
+    m = _re.search(
+        r"_DRILL_DOWN_SUPPORTED_SEAMS[^=]*=\s*\(([^)]+)\)",
+        ws_src,
+        _re.DOTALL,
+    )
+    assert m is not None, "_DRILL_DOWN_SUPPORTED_SEAMS tuple not found"
+    seams = set(_re.findall(r'"([^"]+)"', m.group(1)))
+    assert "alert.investigation_completed" in seams
+    # Endpoint accepts any caller_session_id (the drill-down doesn't
+    # enforce a prefix regex; it filters by literal match across
+    # supported seams). Verify by checking the endpoint signature
+    # accepts {caller_session_id:path}.
+    assert "/api/investigations/{caller_session_id:path}" in ws_src
+
+
+def test_alert_wake_consumer_emits_expected_payload_shape():
+    """KR-FE-ALERT-VIEWER-VERIFICATION drift-guard: the FE
+    AlertInvestigationCompleted type must mirror what
+    kora_cli/alerts/wake_consumer.py actually emits. Walk the
+    _emit_investigation_completed source for the details dict
+    keys + assert every FE-rendered field has a corresponding
+    BE-emitter source line."""
+    wc_src = (
+        _REPO_ROOT
+        / "kora_cli"
+        / "alerts"
+        / "wake_consumer.py"
+    ).read_text()
+    api_src = _API_TS.read_text()
+    # Each of these keys must (a) be in the BE emitter payload AND
+    # (b) be a field in the FE type. Drift in either direction
+    # surfaces here.
+    for key in (
+        "alert_id",
+        "category",
+        "severity",
+        "model_used",
+        "total_cost_usd",
+        "investigation_duration_ms",
+        "investigation_summary_text",
+        "dm_status",
+        "autoaction_attempted",
+    ):
+        assert f'"{key}"' in wc_src, (
+            f"BE emitter source missing key {key!r} — verify "
+            f"_emit_investigation_completed payload"
+        )
+    # FE type assertions (subset — the FE renames some keys for TS
+    # ergonomics, e.g. ``investigation_summary_text`` → summary_text).
+    for fe_field in (
+        "alert_id",
+        "summary_text",
+        "model_used",
+        "total_cost_usd",
+        "investigation_duration_ms",
+        "dm_status",
+        "autoaction_attempted",
+    ):
+        assert fe_field in api_src, f"FE type missing field: {fe_field}"
 
 
 # ---------------------------------------------------------------------------
@@ -277,8 +435,25 @@ def test_fe_response_type_declared():
         "AlertInvestigationCompleted",
         "alert_category",
         "autoaction_attempted",
+        # KR-FE-ALERT-VIEWER-VERIFICATION — alert_id added after
+        # checking the real #197 emission shape.
+        "alert_id",
     ):
         assert f in src, f"missing FE field: {f}"
+
+
+def test_fe_dropped_speculative_title_detail_fields():
+    """KR-FE-ALERT-VIEWER-VERIFICATION: pre-#197 forward-compat
+    speculated that the alert wake would carry ``title`` / ``detail``
+    fields (mirror of probe.wake_requested). Real #197 emission
+    has no such fields — the operator-facing context is the
+    ``investigation_summary_text``. Pin removal so the speculative
+    fields don't get re-introduced by a refactor."""
+    src = _PAGE.read_text()
+    # Substring search would match comments too — narrow to JSX
+    # binding patterns (item.title / item.detail accessors).
+    assert "item.title" not in src
+    assert "item.detail" not in src
 
 
 def test_alert_investigations_page_exists():
