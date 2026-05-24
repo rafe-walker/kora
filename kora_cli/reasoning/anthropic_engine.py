@@ -284,7 +284,7 @@ class AnthropicReasoningEngine:
     ) -> ResponseResult:
         """Main entry. See :class:`ReasoningEngine.respond`.
 
-        KR-FEAT-AGENTIC-REASONING ST1: now drives a tool-use loop
+        KR-FEAT-AGENTIC-REASONING ST1: drives a tool-use loop
         instead of a single chat completion. The Anthropic API
         returns either a pure-text response (stop_reason="end_turn")
         OR a response containing ``tool_use`` content blocks
@@ -302,7 +302,28 @@ class AnthropicReasoningEngine:
         Tokens are accumulated across iterations; the returned
         ``ResponseResult.input_tokens`` / ``output_tokens`` are
         totals over all roundtrips, NOT just the final one.
+
+        # KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST1 — toggle
+
+        When the env ``KORA_REASONING_USE_GATEWAY`` is set to
+        ``"true"``, ``respond()`` routes through
+        ``_respond_via_gateway()`` (which uses Hermes's
+        ``AIAgent.run_conversation`` chokepoint + the new
+        ``kora_hermes`` bundled plugin's hook callbacks). Default
+        ``false`` preserves the existing bypass path; ST2 wires
+        the gateway path's tool plumbing + behavior parity tests
+        and flips the default.
         """
+        import os
+
+        if (
+            os.environ.get("KORA_REASONING_USE_GATEWAY", "")
+            .strip()
+            .lower()
+            == "true"
+        ):
+            return await self._respond_via_gateway(message, context)
+
         started_at = time.monotonic()
 
         # Refuse-paths first — these don't call the SDK.
@@ -1041,6 +1062,59 @@ class AnthropicReasoningEngine:
             cache_read_input_tokens=total_cache_read_tokens,
         )
 
+    # ------------------------------------------------------------------
+    # KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST1 — toggle path
+    # ------------------------------------------------------------------
+
+    async def _respond_via_gateway(
+        self,
+        message: IncomingMessage,
+        context: ConversationContext,
+    ) -> ResponseResult:
+        """Route Kora's reply through Hermes's ``AIAgent.run_
+        conversation`` chokepoint instead of the direct
+        ``messages.create`` bypass.
+
+        # ST1 disclaimer
+
+        This is the SCAFFOLDING entry. It maps the message source
+        to a Kora route literal, sets ``agent.route`` so the
+        ``kora_hermes`` plugin's hook callbacks see the right
+        route, and would construct an AIAgent to drive
+        ``run_conversation`` — BUT the full route-through (tool
+        plumbing, ResponseResult projection from
+        ``run_conversation``'s return shape, AIAgent config
+        derived from ``ConversationContext``, max-iter divergence
+        handling) is ST2.
+
+        ST1 raises ``NotImplementedError`` when the toggle is on
+        — by design, so the toggle is opt-in for tests that
+        validate the scaffolding wiring (plugin discovery,
+        hook-fire ordering, route propagation) without
+        accidentally landing partial route-through behavior in
+        production traffic. ST2 replaces this body with the
+        actual ``AIAgent`` construction + invocation.
+
+        For production today: leave ``KORA_REASONING_USE_GATEWAY``
+        unset (or ``false``) — the existing bypass path drives
+        every Slack DM / email / probe / cron reply unchanged.
+        """
+        route = _source_to_kora_route(getattr(message, "source", ""))
+        logger.info(
+            "[kora.reasoning.gateway] ST1 entry — message.source=%s "
+            "→ route=%s (NotImplementedError pending ST2 plumbing)",
+            getattr(message, "source", ""),
+            route,
+        )
+        raise NotImplementedError(
+            "KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST2 owns the "
+            "AIAgent construction + tool plumbing + ResponseResult "
+            "projection. ST1 only ships the plugin scaffold + "
+            f"toggle + route resolution (route={route!r} for "
+            f"source={getattr(message, 'source', '')!r}). Unset "
+            "KORA_REASONING_USE_GATEWAY to use the bypass path."
+        )
+
     async def close(self) -> None:
         """Close any open HTTP client. Idempotent."""
         if self._client is None:
@@ -1239,6 +1313,40 @@ def _resolve_system_prompt_path() -> Path:
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.monotonic() - started_at) * 1000)
+
+
+# ---------------------------------------------------------------------------
+# KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST1 — source → route mapping
+# ---------------------------------------------------------------------------
+
+
+# Map ``IncomingMessage.source`` literals (slack_dm / email / mcp) to
+# the canonical Kora route taxonomy used by cost_telemetry +
+# kora_hermes plugin's KORA_ROUTES gate. Per the bucket spec §2(c).
+_SOURCE_TO_ROUTE: dict = {
+    "slack_dm": "slack_dm",
+    "email": "email_inbound",
+    "mcp": "mcp_tool",
+    # The remaining route literals (alert_investigation,
+    # probe_investigation, tool_loop_iteration, scheduled_task) are
+    # set by their respective callers BEFORE invoking the engine —
+    # see e.g. ``probe_wake_consumer.py``. We pass through any
+    # already-set route literal verbatim.
+}
+
+
+def _source_to_kora_route(source: str) -> str:
+    """Resolve a Kora route literal from an inbound source.
+
+    Returns ``""`` (empty) when the source isn't mapped — that's
+    the kora_hermes plugin's "no-op" sentinel. A future caller
+    that wants to tag a route explicitly (probe-wake / cron /
+    alert-investigation) can either set ``agent.route`` directly
+    after construction OR extend this map.
+    """
+    if not isinstance(source, str):
+        return ""
+    return _SOURCE_TO_ROUTE.get(source, "")
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,11 @@
+name: kora_hermes
+version: 0.1.0
+description: "Kora reasoning behaviors registered as Hermes hooks (KR-REASONING-ROUTE-THROUGH-GATEWAY-CORE ST1). Plugin only ACTIVATES on Kora-route calls (when ``agent.route`` is in KORA_ROUTES); non-Kora callers see no-op hook returns."
+author: "CC#3 Kora Runtime"
+hooks:
+  - on_session_start
+  - pre_api_request_mutable
+  - pre_tool_list_finalized
+  - pre_tool_call
+  - post_tool_call
+  - post_llm_call
