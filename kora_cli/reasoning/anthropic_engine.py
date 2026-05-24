@@ -149,49 +149,19 @@ RUNG_MODEL_MAP: Dict[str, str] = {
 # shape change for operator visibility.
 
 
-def _wrap_system_as_cacheable(system_prompt: str) -> list[dict]:
-    """Convert a bare-string system prompt to a content-block list
-    with ``cache_control: ephemeral`` on the last block (here:
-    the only block).
+# KR-PLUGIN-EXTRACTIONS-BATCH-2 (Deliverable B) — caching markers
+# moved to ``kora_hermes_plugin.caching.markers``. Re-imported here
+# so the engine's own ``_make_request_kwargs`` (~line 481) keeps
+# resolving the names; canonical location is the plugin module.
+from kora_cli.reasoning.kora_hermes_plugin.caching.markers import (  # noqa: E402
+    _wrap_system_as_cacheable,
+    _wrap_tools_as_cacheable,
+)
 
-    The SDK accepts ``system: str`` OR
-    ``system: list[{type: "text", text: str, cache_control?: ...}]``.
-    The list form is required to attach the cache marker.
-    """
-    return [
-        {
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }
-    ]
-
-
-def _wrap_tools_as_cacheable(tools: list[dict]) -> list[dict]:
-    """Return a NEW list of tool descriptors with
-    ``cache_control: ephemeral`` on the FINAL tool.
-
-    The marker on the last tool covers the entire tool block
-    (system prompt's tool-system additions + every preceding
-    tool's schema). We never mutate the input list — caller
-    holds a reference to the registry's structures and we don't
-    want to surprise them with a side-effect.
-
-    Empty input → empty output (caller skips ``tools=`` kwarg).
-    """
-    if not tools:
-        return []
-    wrapped: list[dict] = []
-    for i, tool in enumerate(tools):
-        if i == len(tools) - 1:
-            # Last tool — attach the cache marker. Copy the dict so
-            # we don't mutate the registry's source structure.
-            new_tool = dict(tool)
-            new_tool["cache_control"] = {"type": "ephemeral"}
-            wrapped.append(new_tool)
-        else:
-            wrapped.append(tool)
-    return wrapped
+__all_caching_shim__ = (
+    "_wrap_system_as_cacheable",
+    "_wrap_tools_as_cacheable",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1587,63 +1557,13 @@ def _derive_caller_session_id(message: IncomingMessage) -> str:
     return "unknown"
 
 
-def _emit_tool_called_audit(
-    *,
-    tool_name: str,
-    triggered_by: str,
-    caller_session_id: str,
-    tool_duration_ms: int,
-    tool_status: str,
-    exc_type: Optional[str] = None,
-) -> None:
-    """Stable audit per reasoning-tool call — KR-AUDIT-JSONL-SINK.
+# KR-PLUGIN-EXTRACTIONS-BATCH-2 (Deliverable A) — the
+# reasoning-tool audit helper moved to
+# ``kora_hermes_plugin.audit.writer``. Re-imported here so the
+# three in-file callers (``_execute_single_tool_block``) keep
+# resolving the symbol; canonical location is the plugin module.
+from kora_cli.reasoning.kora_hermes_plugin.audit.writer import (  # noqa: E402
+    _emit_tool_called_audit,
+)
 
-    **Dual-write**: existing ``[kora.reasoning.tool_called]``
-    structured-log line preserved VERBATIM (operator grep workflows
-    keep working) + :func:`emit_audit` writes a JSONL row to
-    ``kora_audit_log.jsonl`` (panel consumption).
-
-    NEVER logs tool input/output bodies (those may contain
-    privileged operator data). Names + status codes only.
-    """
-    if exc_type is not None:
-        logger.info(
-            "[kora.reasoning.tool_called] tool=%s triggered_by=%s "
-            "caller_session_id=%s tool_duration_ms=%d tool_status=%s "
-            "exc_type=%s",
-            tool_name,
-            triggered_by,
-            caller_session_id,
-            tool_duration_ms,
-            tool_status,
-            exc_type,
-        )
-    else:
-        logger.info(
-            "[kora.reasoning.tool_called] tool=%s triggered_by=%s "
-            "caller_session_id=%s tool_duration_ms=%d tool_status=%s",
-            tool_name,
-            triggered_by,
-            caller_session_id,
-            tool_duration_ms,
-            tool_status,
-        )
-
-    # KR-AUDIT-JSONL-SINK — JSONL bridge to panels.
-    from kora_cli.audit import emit_audit
-
-    details: Dict[str, Any] = {
-        "tool_name": tool_name,
-        "triggered_by": triggered_by,
-        "tool_duration_ms": tool_duration_ms,
-        "tool_status": tool_status,
-    }
-    if exc_type is not None:
-        details["exc_type"] = exc_type
-
-    emit_audit(
-        seam="reasoning.tool_called",
-        details=details,
-        caller_session_id=caller_session_id,
-        source="reasoning",
-    )
+__all_audit_shim__ = ("_emit_tool_called_audit",)

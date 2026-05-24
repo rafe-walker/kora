@@ -1,30 +1,60 @@
 """Top-level KoraHermesPlugin — orchestrates sub-plugin registration.
 
-Per KR-PLUGIN-COST-LADDER: this is the canonical Kora-side home
-for the orchestration logic. Each sub-plugin (cost_ladder/,
-future audit/, future caching/, etc.) owns its own hook
-handlers + ``register()`` function; the orchestrator just
-calls each sub-register so the top-level Hermes plugin entry
+Per KR-PLUGIN-COST-LADDER (#185) the canonical Kora-side home
+for plugin orchestration is this file. Each sub-plugin
+(``cost_ladder/``, ``audit/``, ``caching/``, ``short_circuit/``,
+``state_holders/``) owns its own hook handlers + ``register()``
+function; the orchestrator just calls each sub-register so the
+top-level Hermes plugin entry
 (``plugins/kora_hermes/__init__.py``) is a thin shim.
 
-Sub-plugin extraction order (follow-on buckets):
-  1. cost_ladder — **THIS BUCKET** (KR-PLUGIN-COST-LADDER, #182)
-  2. audit — KR-PLUGIN-AUDIT (recommended next per CC#3 ST1)
-  3. caching — KR-PLUGIN-CACHING (split caching from cost_ladder)
-  4. short_circuit — KR-PLUGIN-SHORT-CIRCUIT
-  5. state_holders — KR-PLUGIN-STATE-HOLDERS
+# Sub-plugin landscape (post KR-PLUGIN-EXTRACTIONS-BATCH-2)
 
-Until each sub-plugin extraction lands, the corresponding hook
-handler lives in this orchestrator file (the
-``_on_session_start`` / ``_pre_tool_list_finalized`` /
-``_pre_tool_call`` / ``_post_tool_call`` / ``_post_llm_call`` +
-the ST2B tool-bridge ``_tool_bridge_provide_result``).
+  1. cost_ladder — KR-PLUGIN-COST-LADDER (#185)
+     Owns: ``pre_api_request_mutable`` (model selection + caching
+     wrap — bundled handler).
+  2. audit — KR-PLUGIN-AUDIT (this PR, Deliverable A)
+     Owns: ``post_tool_call`` + ``post_llm_call`` (debug-log;
+     reasoning-tool audit emit helper ``_emit_tool_called_audit``).
+  3. caching — KR-PLUGIN-CACHING (this PR, Deliverable B)
+     Owns: ``cache_control: ephemeral`` markers (used by cost-
+     ladder's hook). Standalone ``caching_hook`` exists for a
+     future split; intentionally not registered today.
+  4. short_circuit — KR-PLUGIN-SHORT-CIRCUIT (this PR, Deliverable C)
+     Owns: regex + snapshot interpolation phrasebook matcher.
+     ``transform_input`` hook stub exists; intentionally not
+     registered today (handler-side call path still owns it).
+  5. state_holders — KR-PLUGIN-STATE-HOLDERS (this PR, Deliverable D)
+     Owns: ``on_session_start`` (debug-log; holder liveness
+     registry).
+
+# Remaining orchestrator-resident handlers
+
+These hooks await their own extraction buckets:
+
+  - ``pre_tool_list_finalized`` — KR-PLUGIN-TOOL-DESC-TRIM
+  - ``pre_tool_call`` — KR-PLUGIN-CONSTITUTION
+  - ``pre_tool_call_can_provide_result`` — KR-REASONING-ROUTE-
+    THROUGH-GATEWAY-ST2B tool bridge (stays in orchestrator;
+    deep integration with reasoning tool registry)
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Optional
+
+# Re-exports for backward-compat with downstream consumers (the
+# discovery shim at ``plugins/kora_hermes/__init__.py`` + tests
+# at ``tests/plugins/test_kora_hermes_plugin*.py`` import these
+# names from this module).
+from kora_cli.reasoning.kora_hermes_plugin.audit.plugin import (
+    _post_llm_call,
+    _post_tool_call,
+)
+from kora_cli.reasoning.kora_hermes_plugin.state_holders.plugin import (
+    _on_session_start,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,22 +91,8 @@ def _is_kora_call(route_value: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Hook handlers that haven't been extracted to their own sub-plugin yet
+# Orchestrator-resident hook handlers (not yet extracted)
 # ---------------------------------------------------------------------------
-
-
-def _on_session_start(*, route: str = "", **kw) -> None:
-    """Fires once when Hermes starts a conversation_loop session.
-    For Kora calls, ensures state holders are initialized. Today:
-    no-op (state holders init at daemon boot via DaemonCoordinator;
-    this hook may become relevant once KR-PLUGIN-STATE-HOLDERS
-    wires per-session Kora init)."""
-    if not _is_kora_call(route):
-        return
-    logger.debug(
-        "[kora_hermes] on_session_start fired for route=%s (no-op)",
-        route,
-    )
 
 
 def _pre_tool_list_finalized(
@@ -120,54 +136,9 @@ def _pre_tool_call(
     return None
 
 
-def _post_tool_call(
-    *,
-    tool_name: str = "",
-    result: Any = None,
-    **kw,
-) -> None:
-    """Audit emit per tool call. Today: no-op (Kora's existing
-    audit runs inside `_execute_single_tool_block` in the bypass
-    loop; KR-PLUGIN-AUDIT will wire this to call ``_emit_audit``
-    directly)."""
-    route = kw.get("route", "") or ""
-    if not _is_kora_call(route):
-        return
-    logger.debug(
-        "[kora_hermes] post_tool_call fired for tool=%s route=%s "
-        "(no-op)",
-        tool_name,
-        route,
-    )
-
-
-def _post_llm_call(
-    *,
-    route: str = "",
-    model: str = "",
-    **kw,
-) -> None:
-    """Structured-log marker for the per-call cost-telemetry
-    timeline. Per-call ``CanonicalUsage`` accumulation lives at
-    the handler layer (slack_dm_handler's
-    ``_record_inference_to_cost_ladder``); KR-PLUGIN-AUDIT will
-    wire this hook to emit the audit JSONL row from the plugin
-    instead.
-
-    Note: ``post_llm_call`` fires per CONVERSATION END (not per
-    API roundtrip).
-    """
-    if not _is_kora_call(route):
-        return
-    logger.info(
-        "[kora.gateway.post_llm_call] route=%s model=%s",
-        route,
-        model or "<unknown>",
-    )
-
-
 # ---------------------------------------------------------------------------
-# KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — tool bridge
+# KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — tool bridge (stays in
+# orchestrator — deep integration with reasoning tool registry)
 # ---------------------------------------------------------------------------
 
 
@@ -198,8 +169,7 @@ def _tool_bridge_provide_result(
 
     See ``plugins/kora_hermes/__init__.py`` history (pre-
     KR-PLUGIN-COST-LADDER) for the full design + failure-mode
-    handling rationale. Behavior preserved verbatim by this
-    refactor.
+    handling rationale. Behavior preserved verbatim.
     """
     import asyncio
     import json
@@ -286,39 +256,71 @@ def get_kora_tools_for_agent() -> list:
 class KoraHermesPlugin:
     """Orchestrator that delegates to sub-plugins.
 
-    Per KR-PLUGIN-COST-LADDER: each sub-plugin owns its hook
-    callbacks + sub-register. The orchestrator calls each sub-
-    register, then registers any remaining (not-yet-extracted)
-    handlers itself. Future extractions move handlers OUT of
-    this orchestrator INTO their own sub-plugin files.
+    Per KR-PLUGIN-EXTRACTIONS-BATCH-2: every Kora hook handler
+    lives in a sub-plugin file. The orchestrator's ``register``
+    walks each sub-register, then attaches the two remaining
+    orchestrator-resident handlers (constitution pre-screen +
+    tool-list-finalized stub) and the ST2B tool bridge.
     """
 
     def register(self, ctx) -> None:
         # --- Sub-plugin registration (each owns its hooks) ---
-        # KR-PLUGIN-COST-LADDER (first extraction).
+        # KR-PLUGIN-COST-LADDER (#185).
         from kora_cli.reasoning.kora_hermes_plugin.cost_ladder import (
             register as register_cost_ladder,
         )
 
         register_cost_ladder(ctx)
 
+        # KR-PLUGIN-AUDIT (BATCH-2 Deliverable A) — owns
+        # post_tool_call + post_llm_call.
+        from kora_cli.reasoning.kora_hermes_plugin.audit import (
+            register as register_audit,
+        )
+
+        register_audit(ctx)
+
+        # KR-PLUGIN-CACHING (BATCH-2 Deliverable B) — owns the
+        # cache_control markers used by cost-ladder. register()
+        # is intentionally a no-op (cost-ladder bundled handler
+        # still owns the single pre_api_request_mutable fire).
+        from kora_cli.reasoning.kora_hermes_plugin.caching import (
+            register as register_caching,
+        )
+
+        register_caching(ctx)
+
+        # KR-PLUGIN-SHORT-CIRCUIT (BATCH-2 Deliverable C) — owns
+        # the matcher. register() is intentionally a no-op
+        # (slack DM handler owns short-circuit call path in v1).
+        from kora_cli.reasoning.kora_hermes_plugin.short_circuit import (
+            register as register_short_circuit,
+        )
+
+        register_short_circuit(ctx)
+
+        # KR-PLUGIN-STATE-HOLDERS (BATCH-2 Deliverable D) — owns
+        # on_session_start.
+        from kora_cli.reasoning.kora_hermes_plugin.state_holders import (
+            register as register_state_holders,
+        )
+
+        register_state_holders(ctx)
+
         # --- Handlers still living in the orchestrator (await
         # their own KR-PLUGIN-* extraction buckets) ---
-        ctx.register_hook("on_session_start", _on_session_start)
         ctx.register_hook(
             "pre_tool_list_finalized", _pre_tool_list_finalized
         )
         ctx.register_hook("pre_tool_call", _pre_tool_call)
-        ctx.register_hook("post_tool_call", _post_tool_call)
-        ctx.register_hook("post_llm_call", _post_llm_call)
         ctx.register_hook(
             "pre_tool_call_can_provide_result",
             _tool_bridge_provide_result,
         )
 
         logger.info(
-            "[kora_hermes] plugin registered: cost_ladder sub-plugin + "
-            "6 orchestrator-resident hooks against KORA_ROUTES=%s",
+            "[kora_hermes] plugin registered: 5 sub-plugins + 3 "
+            "orchestrator-resident hooks against KORA_ROUTES=%s",
             sorted(KORA_ROUTES),
         )
 
