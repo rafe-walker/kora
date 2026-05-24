@@ -179,10 +179,21 @@ function EpochHistoryTable({ history }: EpochHistoryTableProps) {
               <tr key={e.epoch} className="border-b last:border-0 align-top">
                 <td className="py-2 pr-3 text-2xl font-mono">{e.epoch}</td>
                 <td className="py-2 pr-3 text-xs">
-                  <div>{formatRelative(e.observed_at)}</div>
-                  <div className="text-muted-foreground">
-                    {formatTimestamp(e.observed_at)}
-                  </div>
+                  {e.observed_at ? (
+                    <>
+                      <div>{formatRelative(e.observed_at)}</div>
+                      <div className="text-muted-foreground">
+                        {formatTimestamp(e.observed_at)}
+                      </div>
+                    </>
+                  ) : (
+                    // Synthesized rows have no observed_at; real rows
+                    // should always carry one, so a null here on a
+                    // non-synthesized row is more surprising — render
+                    // muted "—" either way (operator gets the source
+                    // badge to tell them why).
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </td>
                 <td className="py-2 pr-3 text-xs">
                   {e.kora_known_at ? (
@@ -192,12 +203,27 @@ function EpochHistoryTable({ history }: EpochHistoryTableProps) {
                         {formatTimestamp(e.kora_known_at)}
                       </div>
                     </>
+                  ) : e.synthesized ? (
+                    // Synthesized: no audit timestamp exists, that's
+                    // expected — show neutral "—".
+                    <span className="text-muted-foreground">—</span>
                   ) : (
+                    // Real history row missing kora_known_at means
+                    // substrate observed an epoch Kora hasn't yet
+                    // caught up to — warn the operator.
                     <span className="text-warning">not yet</span>
                   )}
                 </td>
                 <td className="py-2">
-                  <Badge tone="outline">{e.source}</Badge>
+                  <span
+                    title={
+                      e.synthesized
+                        ? "Synthesized from live kora_known_epoch — no persistent history table yet (will become real audit-trail rows when substrate ships one)"
+                        : undefined
+                    }
+                  >
+                    <Badge tone="outline">{e.source}</Badge>
+                  </span>
                 </td>
               </tr>
             ))}

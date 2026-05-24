@@ -258,12 +258,21 @@ from typing import List
 class DRStateSummary:
     """Aggregated DR/epoch state for the operator-facing /api/dr-state.
 
-    All fields are projection-ready for the FE shape. epoch_history is
-    intentionally empty in v1 — no ``kora_known_epoch_history`` table
-    exists yet, so there's no audit-trail source to project from. When
-    a future bucket adds the history table (or a derived view from
-    ``kora.dr.observed`` events + boot-success markers), this list
-    populates without an FE change.
+    All fields are projection-ready for the FE shape.
+
+    epoch_history is synthesized as a single entry from the live
+    ``kora_known_epoch`` when no persistent ``kora_known_epoch_history``
+    table exists yet — better UX than an always-empty section. The
+    synthesized entry carries ``source="synthesized"`` + a
+    ``synthesized: True`` flag so the FE can render a subdued "synth"
+    badge that distinguishes it from a real audit-trail row. When a
+    future substrate bucket ships a real history table (or a derived
+    view from ``kora.dr.observed`` events + boot-success markers), the
+    helper switches to reading rows and the synthesized branch becomes
+    unreachable — FE badge auto-disappears (no FE change).
+
+    Synthesis is skipped when ``kora_known_epoch is None`` (fresh
+    pre-first-boot state — nothing meaningful to project).
     """
 
     substrate_epoch: int
@@ -362,6 +371,41 @@ def _project_dr_event(row: Any) -> dict:
     }
 
 
+def _synthesize_epoch_history(
+    kora_known_epoch: Optional[int],
+) -> List[dict]:
+    """Build a single-entry epoch_history projection from the live value.
+
+    Stop-gap until substrate ships a real ``kora_known_epoch_history``
+    table. When ``kora_known_epoch is None`` (fresh pre-first-boot
+    state), returns ``[]`` — nothing meaningful to project. Otherwise
+    returns one entry tagged ``source="synthesized"`` + ``synthesized=
+    True`` so the FE renders a subdued "synth" badge that distinguishes
+    it from a real audit-trail row.
+
+    ``kora_known_at`` is ``None`` because the substrate STABLE
+    accessors only expose the epoch value, not the row's
+    ``updated_at``. When substrate adds an ``updated_at``-exposing
+    accessor (or the real history table ships), the synthesis branch
+    becomes unreachable and the value populates naturally.
+
+    ``observed_at`` is ``None`` for the same reason — we don't know
+    when the substrate first published this epoch; we only know what
+    Kora's last-written value is right now.
+    """
+    if kora_known_epoch is None:
+        return []
+    return [
+        {
+            "epoch": kora_known_epoch,
+            "observed_at": None,
+            "kora_known_at": None,
+            "source": "synthesized",
+            "synthesized": True,
+        }
+    ]
+
+
 async def get_dr_state_summary(
     memory_provider: Any,
     workspace_id: str,
@@ -414,6 +458,7 @@ async def get_dr_state_summary(
         datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     )
     recent_dr_events = [_project_dr_event(row) for row in dr_event_rows]
+    epoch_history = _synthesize_epoch_history(kora_known_epoch)
 
     return DRStateSummary(
         substrate_epoch=substrate_epoch,
@@ -422,5 +467,5 @@ async def get_dr_state_summary(
         kora_paused_substrate=kora_paused_substrate,
         last_check_at=last_check_at,
         recent_dr_events=recent_dr_events,
-        epoch_history=[],
+        epoch_history=epoch_history,
     )

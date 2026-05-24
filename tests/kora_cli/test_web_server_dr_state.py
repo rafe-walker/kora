@@ -275,6 +275,96 @@ async def test_live_path_passes_dr_events_through(_isolate_config, monkeypatch):
     assert result["recent_dr_events"] == [sample_event]
 
 
+# ---- 3b. epoch_history synthesis (KR-P2-DR-EPOCH-SYNTH) ---------------
+
+
+def test_synthesize_epoch_history_returns_empty_for_none_value():
+    """Pre-first-boot state — nothing meaningful to project, so the
+    helper returns an empty list rather than synthesizing a row with
+    a null epoch."""
+    from plugins.memory.isokron.dr_epoch import _synthesize_epoch_history
+
+    assert _synthesize_epoch_history(None) == []
+
+
+def test_synthesize_epoch_history_returns_single_tagged_entry():
+    """When kora_known_epoch is set + no real history table exists,
+    project a single entry with source="synthesized" + synthesized=True
+    so the FE can distinguish it from a real audit-trail row. Both
+    timestamps are null because the substrate STABLE accessors only
+    expose the epoch value, not when it was first published or last
+    written."""
+    from plugins.memory.isokron.dr_epoch import _synthesize_epoch_history
+
+    result = _synthesize_epoch_history(42)
+    assert result == [
+        {
+            "epoch": 42,
+            "observed_at": None,
+            "kora_known_at": None,
+            "source": "synthesized",
+            "synthesized": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_live_path_passes_synthesized_history_through(_isolate_config, monkeypatch):
+    """When the summary carries a synthesized entry, the endpoint passes
+    it through unchanged — source, synthesized flag, null timestamps
+    all preserved for the FE."""
+    from plugins.memory.isokron.dr_epoch import DRStateSummary
+
+    synthesized_entry = {
+        "epoch": 12,
+        "observed_at": None,
+        "kora_known_at": None,
+        "source": "synthesized",
+        "synthesized": True,
+    }
+    _install_fake_provider(monkeypatch, _FakeProvider())
+    _install_fake_summary(
+        monkeypatch,
+        DRStateSummary(
+            substrate_epoch=12,
+            kora_known_epoch=12,
+            match_status="clean",
+            kora_paused_substrate=False,
+            last_check_at="2026-05-22T01:00:00Z",
+            recent_dr_events=[],
+            epoch_history=[synthesized_entry],
+        ),
+    )
+
+    from kora_cli import web_server
+
+    result = await web_server.get_dr_state()
+    assert result["epoch_history"] == [synthesized_entry]
+
+
+@pytest.mark.asyncio
+async def test_synthesized_flag_pairs_with_synthesized_source(_isolate_config, monkeypatch):
+    """Contract guard for FE rendering: synthesized=True must always pair
+    with source="synthesized", and source="synthesized" must always pair
+    with synthesized=True. A future helper drift that uses the source
+    string without the flag (or vice versa) would silently mis-render
+    the FE badge tooltip."""
+    from plugins.memory.isokron.dr_epoch import _synthesize_epoch_history
+
+    for kora_known in (1, 42, 9999):
+        for entry in _synthesize_epoch_history(kora_known):
+            if entry.get("source") == "synthesized":
+                assert entry.get("synthesized") is True, (
+                    f"source=synthesized but synthesized flag is "
+                    f"{entry.get('synthesized')!r} — FE tooltip would not render"
+                )
+            if entry.get("synthesized") is True:
+                assert entry["source"] == "synthesized", (
+                    f"synthesized=True but source={entry['source']!r} — "
+                    f"FE source badge would say the wrong thing"
+                )
+
+
 # ---- 4. Error path → stub + error -------------------------------------
 
 
