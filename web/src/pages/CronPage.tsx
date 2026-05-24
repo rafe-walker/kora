@@ -19,6 +19,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -96,6 +97,8 @@ const STATUS_TONE: Record<string, "success" | "warning" | "destructive"> = {
 };
 
 export default function CronPage() {
+  usePanelView("CronPage");
+
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");

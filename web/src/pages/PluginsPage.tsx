@@ -21,10 +21,13 @@ import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
+import { usePanelView } from "@/hooks/usePanelView";
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
 export default function PluginsPage() {
+  usePanelView("PluginsPage");
+
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [installId, setInstallId] = useState("");

@@ -26,6 +26,7 @@ import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   EmailDirection,
   EmailHandledStatus,
@@ -292,6 +293,8 @@ function matchesFilter(message: EmailMessage, filter: Filter): boolean {
 }
 
 export default function EmailPanel() {
+  usePanelView("EmailPanel");
+
   const [data, setData] = useState<EmailResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

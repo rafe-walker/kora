@@ -19,6 +19,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   CostRung,
   CostStateResponse,
@@ -336,6 +337,8 @@ function ReconciliationTable({ entries }: ReconciliationTableProps) {
 }
 
 export default function CostStatePage() {
+  usePanelView("CostStatePage");
+
   const [data, setData] = useState<CostStateResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

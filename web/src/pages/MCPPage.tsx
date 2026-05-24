@@ -20,6 +20,7 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import type { MCPProbeTool, MCPServer } from "@/lib/api";
 
+import { usePanelView } from "@/hooks/usePanelView";
 interface ProbeState {
   loading: boolean;
   tools: MCPProbeTool[] | null;
@@ -56,6 +57,8 @@ function deriveEnabledSet(
 }
 
 export default function MCPPage() {
+  usePanelView("MCPPage");
+
   const [servers, setServers] = useState<MCPServer[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);

@@ -29,6 +29,7 @@ import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   Alert,
   AlertCategory,
@@ -234,6 +235,8 @@ function SeverityGroup({
 }
 
 export default function AlertsPanel() {
+  usePanelView("AlertsPanel");
+
   const [data, setData] = useState<AlertsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

@@ -18,6 +18,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
@@ -53,6 +54,8 @@ const segmentedClass =
   "w-fit max-w-full flex-wrap justify-start self-start";
 
 export default function LogsPage() {
+  usePanelView("LogsPage");
+
   const [file, setFile] = useState<(typeof FILES)[number]>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] =

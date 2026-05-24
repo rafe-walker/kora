@@ -16,6 +16,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   CapabilitiesResponse,
   CapabilityGroup,
@@ -104,6 +105,8 @@ function CapGroupCard({ group }: CapGroupCardProps) {
 }
 
 export default function CapabilitiesPage() {
+  usePanelView("CapabilitiesPage");
+
   const [data, setData] = useState<CapabilitiesResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

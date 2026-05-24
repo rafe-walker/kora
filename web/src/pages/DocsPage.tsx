@@ -5,6 +5,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
 
 const DS_BUTTON_OUTLINED_LINK_CN = cn(
@@ -16,6 +17,8 @@ const DS_BUTTON_OUTLINED_LINK_CN = cn(
 );
 
 export default function DocsPage() {
+  usePanelView("DocsPage");
+
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
 

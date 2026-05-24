@@ -5992,6 +5992,109 @@ async def get_daemon_snapshot():
         return {"error": "no_snapshot", "stale": True}
     return snap
 
+# Panel-view instrumentation sink (KR-PANEL-USE-INSTRUMENTATION)
+# ---------------------------------------------------------------------------
+#
+# Per Council R3 lock + sub-cut (c): records which top-level pages /
+# panels the operator opens. Over time the JSONL accretes usage data
+# that informs any future panel-design decisions — no shape changes
+# happen blind.
+#
+# Path B chosen (PM confirmed): separate ``${KORA_HOME}/panel_views.jsonl``
+# file rather than extending the audit log's SeamName Literal. The
+# audit log is a forensic/compliance surface (Pydantic ``extra="forbid"``
+# + tight SeamName Literal kept intentionally narrow); panel_views are
+# operator-UX telemetry with a different lifecycle, different
+# consumers, and likely different retention semantics. Mixing them
+# would muddle both contracts (e.g., a future
+# ``read_audit_entries(seam=None)`` query would surface panel-views
+# unexpectedly — a latent contract violation).
+#
+# Write discipline mirrors ``kora_cli/audit/jsonl_sink.py``:
+#   * Best-effort: OSError → WARN-log + return (never crash the
+#     frontend; instrumentation must never break operator UX)
+#   * mkdir(parents=True, exist_ok=True) before append (KORA_HOME
+#     may not exist on fresh installs)
+#   * Atomic single-line append per request
+#
+# Reader is out-of-scope for this bucket — we just write; consumers
+# come later when we have data to act on.
+
+PANEL_VIEWS_LOG_FILENAME = "panel_views.jsonl"
+_PANEL_NAME_MAX = 128
+_SESSION_ID_MAX = 64
+
+
+def _resolve_panel_views_log_path() -> Path:
+    """Resolve to ``<KORA_HOME>/panel_views.jsonl``. Re-resolves on
+    every call so monkeypatch in tests works without ContextVar
+    plumbing (per the #137 fixture-isolation lesson)."""
+    return get_kora_home() / PANEL_VIEWS_LOG_FILENAME
+
+
+@app.post("/api/panel_view")
+async def emit_panel_view(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Operator-UX telemetry sink: record a single panel view.
+
+    Fire-and-forget from the FE ``usePanelView`` hook (zero
+    operator-visible latency target). Validation:
+
+      * ``panel_name`` — required non-empty string, truncated to
+        ``_PANEL_NAME_MAX`` chars. Empty → 400 since an unattributed
+        view event has no analytical value.
+      * ``session_id`` — optional, truncated to ``_SESSION_ID_MAX``
+        chars. Missing → recorded as ``"unknown"`` so cold-tab
+        emits still produce countable rows.
+
+    Returns ``{"ok": True}`` on accepted writes. Returns ``{"ok": True,
+    "warning": "write_failed"}`` on JSONL append failure so the FE's
+    fire-and-forget POST doesn't surface an error and confuse the
+    operator (instrumentation MUST NOT break UX).
+    """
+    panel_name_raw = payload.get("panel_name", "")
+    panel_name = (
+        str(panel_name_raw).strip()[:_PANEL_NAME_MAX]
+        if panel_name_raw is not None
+        else ""
+    )
+    if not panel_name:
+        # 400 here is intentional — empty panel_name is a FE bug, not
+        # a transient runtime condition. Surfaces in dev quickly.
+        raise HTTPException(status_code=400, detail="panel_name required")
+
+    session_id_raw = payload.get("session_id")
+    if not session_id_raw:
+        session_id = "unknown"
+    else:
+        session_id = str(session_id_raw).strip()[:_SESSION_ID_MAX] or "unknown"
+
+    from datetime import datetime, timezone
+
+    entry = {
+        "kind": "panel_view",
+        "panel_name": panel_name,
+        "session_id": session_id,
+        "emitted_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    }
+
+    log_path = _resolve_panel_views_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as exc:
+        _log.warning(
+            "[kora.panel_view] write failed (%s): %r — FE caller "
+            "swallows; instrumentation must never break UX",
+            log_path,
+            exc,
+        )
+        return {"ok": True, "warning": "write_failed"}
+
+    return {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)

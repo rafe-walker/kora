@@ -24,6 +24,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   MCPClient,
   MCPClientStatus,
@@ -284,6 +285,8 @@ function MCPClientRow({ client, expanded, onToggle }: MCPClientRowProps) {
 }
 
 export default function MCPClientsPanel() {
+  usePanelView("MCPClientsPanel");
+
   const [data, setData] = useState<MCPClientsListResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

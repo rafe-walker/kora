@@ -20,6 +20,7 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import type { RunbookEntry, RunbooksManifest } from "@/lib/api";
 
+import { usePanelView } from "@/hooks/usePanelView";
 function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -192,6 +193,8 @@ function ContentPane({ runbook, content, loading, error, onPrint }: ContentPaneP
 }
 
 export default function RunbooksPage() {
+  usePanelView("RunbooksPage");
+
   const [manifest, setManifest] = useState<RunbooksManifest | null>(null);
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   KoraControlCommand,
   KoraControlLifecycleState,
@@ -293,6 +294,8 @@ function activeSorted(commands: KoraControlCommand[]): KoraControlCommand[] {
 }
 
 export default function KoraControlPage() {
+  usePanelView("KoraControlPage");
+
   const [data, setData] = useState<KoraControlObservedStateResponse | null>(
     null,
   );

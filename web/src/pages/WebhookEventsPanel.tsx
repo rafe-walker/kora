@@ -21,6 +21,7 @@ import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { formatRelative, formatTimestamp } from "@/lib/panelHelpers";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   WebhookEvent,
   WebhookEventStatus,
@@ -151,6 +152,8 @@ const FILTER_OPTIONS: Array<{ value: StatusFilter; label: string }> = [
 ];
 
 export default function WebhookEventsPanel() {
+  usePanelView("WebhookEventsPanel");
+
   const [data, setData] = useState<WebhookEventsResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

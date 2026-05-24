@@ -23,6 +23,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import {
   formatLatency,
   formatRelative,
@@ -323,6 +324,8 @@ function matchesFilter(call: ReasoningCall, filter: Filter): boolean {
 }
 
 export default function ReasoningPanel() {
+  usePanelView("ReasoningPanel");
+
   const [data, setData] = useState<ReasoningResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
