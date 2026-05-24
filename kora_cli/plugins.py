@@ -199,6 +199,20 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # KR-PLUGIN-IDENTITY (Option C) — agent identity resolution.
+    # Fires inside ``AnthropicReasoningEngine.__init__`` after
+    # credential resolution + before file-read fallback. Plugins
+    # return ``{"identity": IdentitySpec}`` to claim the agent's
+    # identity (system prompt + SOUL.md content + metadata) for
+    # this engine instance. First non-None ``identity`` wins; the
+    # engine uses ``identity.system_prompt_content`` for inference
+    # calls. Returning ``None`` (or non-dict / dict-without-
+    # ``identity``) falls through to file-read default.
+    # See ``agent/identity_spec.py`` for the IdentitySpec dataclass +
+    # provider type. Enables multi-tenant Hermes deployments + pip-
+    # installable agent bundles to declare identity via plugin code
+    # rather than a Kora-specific filesystem layout.
+    "pre_agent_identity_set",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -788,6 +802,82 @@ class PluginContext:
             "Plugin %s registered background daemon: %s",
             self.manifest.name,
             name,
+        )
+
+    # -- identity-provider registration (KR-PLUGIN-IDENTITY Option C) ------
+
+    def register_identity_provider(self, provider: Callable) -> None:
+        """Register an agent-identity provider.
+
+        Convenience method that wires ``provider`` to the
+        ``pre_agent_identity_set`` hook. The provider receives
+        ``engine=<AnthropicReasoningEngine>`` (plus any future-
+        added context kwargs) and returns either an
+        :class:`agent.identity_spec.IdentitySpec` to claim the
+        agent's identity, or ``None`` to fall through to other
+        providers / the engine's file-read default.
+
+        First-non-None-wins per the hook semantic. When two
+        plugins both register identity providers, the first to
+        return a non-None ``IdentitySpec`` wins; subsequent
+        returns are ignored. Plugins that need deterministic
+        ordering should coordinate explicitly (e.g. via a
+        single composite provider rather than two independent
+        registrations).
+
+        Example::
+
+            def my_identity_provider(*, engine, **kw):
+                from agent.identity_spec import IdentitySpec
+                return IdentitySpec(
+                    soul_md_content="<my SOUL.md text>",
+                    system_prompt_content="<my system prompt text>",
+                    identity_metadata={"agent_name": "Marvin"},
+                )
+
+            ctx.register_identity_provider(my_identity_provider)
+
+        Equivalent to ``ctx.register_hook(
+        "pre_agent_identity_set", lambda **kw:
+        {"identity": my_identity_provider(**kw)} if
+        my_identity_provider(**kw) else None)`` — but the
+        registration helper wraps the shape conversion so
+        plugin authors return raw IdentitySpec objects rather
+        than override-dict envelopes.
+        """
+        def _wrapped(**kw):
+            try:
+                spec = provider(**kw)
+            except Exception as exc:
+                logger.debug(
+                    "Plugin %s identity provider raised %r — falling "
+                    "through to other providers",
+                    self.manifest.name,
+                    exc,
+                )
+                return None
+            if spec is None:
+                return None
+            # Late-import to keep the hook surface importable without
+            # pulling identity_spec into modules that don't need it.
+            from agent.identity_spec import IdentitySpec
+            if not isinstance(spec, IdentitySpec):
+                logger.warning(
+                    "Plugin %s identity provider returned %r; expected "
+                    "IdentitySpec instance — ignored",
+                    self.manifest.name,
+                    type(spec).__name__,
+                )
+                return None
+            return {"identity": spec}
+
+        # Preserve provider __name__ for log readability.
+        _wrapped.__name__ = getattr(provider, "__name__", "identity_provider")
+        self.register_hook("pre_agent_identity_set", _wrapped)
+        logger.debug(
+            "Plugin %s registered identity provider: %s",
+            self.manifest.name,
+            getattr(provider, "__name__", "<callable>"),
         )
 
     # -- hook registration --------------------------------------------------

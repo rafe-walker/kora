@@ -225,18 +225,77 @@ class AnthropicReasoningEngine:
         self._api_key = api_key
         self._oauth_token = oauth_token
 
-        # System prompt — fail-CLOSED on missing/unreadable.
-        prompt_path = system_prompt_path or _resolve_system_prompt_path()
+        # KR-PLUGIN-IDENTITY (Option C) — pre_agent_identity_set hook.
+        # Fires BEFORE the file-read fallback so a plugin can claim
+        # the agent's identity (system prompt + SOUL.md + metadata)
+        # for THIS engine instance. First-non-None-wins:
+        #   - Plugin returns ``{"identity": IdentitySpec}`` → use
+        #     ``identity.system_prompt_content``.
+        #   - No plugin returns identity → fall back to file-read at
+        #     the canonical kora_system_prompt.md path (existing
+        #     pre-Option-C behavior; preserves bare-Hermes-no-Kora-
+        #     plugin compatibility).
+        # The hook is fail-safe: any plugin exception is caught at
+        # the invoke_hook level + falls through to the next provider
+        # / the file-read default.
+        self._identity_metadata: Dict[str, Any] = {}
+        _resolved_identity_spec = None
         try:
-            self._system_prompt = prompt_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise ReasoningSystemPromptError(
-                f"system prompt unreadable at {prompt_path}: {exc!r}"
-            ) from exc
-        if not self._system_prompt.strip():
-            raise ReasoningSystemPromptError(
-                f"system prompt at {prompt_path} is empty"
+            from kora_cli.plugins import invoke_hook as _invoke_identity_hook
+            _identity_results = _invoke_identity_hook(
+                "pre_agent_identity_set",
+                engine=self,
             )
+            for _identity_result in _identity_results:
+                if not isinstance(_identity_result, dict):
+                    continue
+                _spec = _identity_result.get("identity")
+                if _spec is None:
+                    continue
+                # Late-import to avoid circulars in modules that
+                # don't need IdentitySpec.
+                from agent.identity_spec import IdentitySpec
+                if not isinstance(_spec, IdentitySpec):
+                    logger.debug(
+                        "[kora.engine] pre_agent_identity_set returned "
+                        "non-IdentitySpec %r — falling through",
+                        type(_spec).__name__,
+                    )
+                    continue
+                _resolved_identity_spec = _spec
+                break  # first non-None wins
+        except Exception as _identity_hook_exc:
+            logger.debug(
+                "[kora.engine] pre_agent_identity_set hook failed: %s — "
+                "falling back to file-read default",
+                _identity_hook_exc,
+            )
+
+        if _resolved_identity_spec is not None:
+            self._system_prompt = _resolved_identity_spec.system_prompt_content
+            self._identity_metadata = dict(
+                _resolved_identity_spec.identity_metadata or {}
+            )
+            if not self._system_prompt.strip():
+                raise ReasoningSystemPromptError(
+                    "plugin-provided IdentitySpec.system_prompt_content "
+                    "is empty"
+                )
+        else:
+            # System prompt — fail-CLOSED on missing/unreadable. Same
+            # behavior as pre-Option-C; only fires when no plugin
+            # claimed identity.
+            prompt_path = system_prompt_path or _resolve_system_prompt_path()
+            try:
+                self._system_prompt = prompt_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ReasoningSystemPromptError(
+                    f"system prompt unreadable at {prompt_path}: {exc!r}"
+                ) from exc
+            if not self._system_prompt.strip():
+                raise ReasoningSystemPromptError(
+                    f"system prompt at {prompt_path} is empty"
+                )
 
         self._timeout = timeout_seconds
         self._max_output_tokens = max_output_tokens

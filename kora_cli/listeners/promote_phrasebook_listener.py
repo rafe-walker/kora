@@ -42,6 +42,12 @@ from __future__ import annotations
 
 import logging
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
+from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT
 from kora_cli.listeners.heartbeat import register_periodic_task
 from kora_cli.promote.phrasebook.cycle import (
     get_interval_seconds,
@@ -49,6 +55,25 @@ from kora_cli.promote.phrasebook.cycle import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2 — no-op lifecycle wrappers
+# for the BackgroundDaemonRegistry entry. This listener is pure
+# periodic-task (no daemon-state to hold); the Hermes-side
+# registration carries the periodic task only — no Kora-side
+# ``register_daemon_listener`` call has ever existed for this
+# listener so there is no LISTENER_REGISTRY entry to bridge.
+
+
+async def _startup_noop(coordinator=None) -> None:
+    logger.debug(
+        "[kora.promote.phrasebook.listener] startup (no-op; periodic "
+        "task drives the work)"
+    )
+
+
+async def _shutdown_noop() -> None:
+    logger.debug("[kora.promote.phrasebook.listener] shutdown (no-op)")
 
 
 async def _periodic_task() -> None:
@@ -86,3 +111,30 @@ register_periodic_task(
     interval_seconds=float(get_interval_seconds()),
     callable=_periodic_task,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; same Path B thin-shim semantics)
+# ---------------------------------------------------------------------------
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="promote_phrasebook",
+    startup=_startup_noop,
+    shutdown=_shutdown_noop,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=float(get_interval_seconds()),
+        callback=_periodic_task,
+        name="promote_phrasebook_cycle",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.promote.phrasebook.listener] hermes registry already had "
+        "'promote_phrasebook' entry: %s — skipping duplicate registration",
+        _exc,
+    )

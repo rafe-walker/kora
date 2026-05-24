@@ -48,6 +48,11 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.listeners.heartbeat import register_periodic_task
 from kora_cli.probes.wake_consumer import ProbeWakeConsumer
@@ -246,7 +251,7 @@ class ProbeWakeListener:
     tick and hands them to the consumer.
     """
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         """Construct the consumer bound to lazy reasoning + Slack
         factories. Fail-soft per the AlertNotifier listener pattern
         (PR #149) — construction errors leave the singleton None +
@@ -289,9 +294,16 @@ class ProbeWakeListener:
 # ---------------------------------------------------------------------------
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2.
+_listener_singleton = ProbeWakeListener()
+
+
 def _factory():
-    listener = ProbeWakeListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("probe_wake", _factory)
@@ -302,6 +314,33 @@ register_periodic_task(
     interval_seconds=_read_poll_sec(),
     callable=run_tail_cycle,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="probe_wake",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_poll_sec(),
+        callback=run_tail_cycle,
+        name="probe_wake.tail",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.probe_wake_listener] hermes registry already had "
+        "'probe_wake' entry: %s — skipping duplicate registration",
+        _exc,
+    )
 
 
 def _reset_tail_position_for_tests() -> None:

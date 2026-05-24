@@ -26,6 +26,11 @@ from __future__ import annotations
 import logging
 import os
 
+from agent.background_daemon_registry import (
+    BackgroundDaemonEntry,
+    PeriodicTaskSpec,
+    background_daemon_registry,
+)
 from kora_cli.daemon import DEFAULT_SHUTDOWN_TIMEOUT, register_daemon_listener
 from kora_cli.heartbeat_probes.runner import (
     _clear_snapshot_cache,
@@ -90,7 +95,7 @@ class HeartbeatProbesListener:
     restart.
     """
 
-    async def startup(self) -> None:
+    async def startup(self, coordinator=None) -> None:
         interval = _read_probe_interval()
         logger.info(
             "[kora.heartbeat_probes] listener active; probe cycle every %ss "
@@ -103,14 +108,23 @@ class HeartbeatProbesListener:
         logger.info("[kora.heartbeat_probes] snapshot cache cleared")
 
 
+# Process-wide singleton — KR-DAEMON-LISTENERS-VIA-GATEWAY Phase 2
+# (matches the snapshot listener Phase 1 pattern from #196). Both
+# registries point at the same instance.
+_listener_singleton = HeartbeatProbesListener()
+
+
 # ---------------------------------------------------------------------------
-# Factory + registration
+# Factory + Kora-side registration (back-compat — dissolves in Phase 6)
 # ---------------------------------------------------------------------------
 
 
 def _factory():
-    listener = HeartbeatProbesListener()
-    return (listener.startup, listener.shutdown, DEFAULT_SHUTDOWN_TIMEOUT)
+    return (
+        _listener_singleton.startup,
+        _listener_singleton.shutdown,
+        DEFAULT_SHUTDOWN_TIMEOUT,
+    )
 
 
 register_daemon_listener("heartbeat_probes", _factory)
@@ -125,3 +139,30 @@ register_periodic_task(
     interval_seconds=_read_probe_interval(),
     callable=run_all_probes_scheduled,
 )
+
+
+# ---------------------------------------------------------------------------
+# Hermes-side registration (Phase 2; Path B thin-shim same as snapshot #196)
+# ---------------------------------------------------------------------------
+
+_hermes_entry = BackgroundDaemonEntry(
+    name="heartbeat_probes",
+    startup=_listener_singleton.startup,
+    shutdown=_listener_singleton.shutdown,
+    periodic_task=PeriodicTaskSpec(
+        interval_seconds=_read_probe_interval(),
+        callback=run_all_probes_scheduled,
+        name="heartbeat.service_probes",
+    ),
+    shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT,
+    plugin_name="kora",
+)
+
+try:
+    background_daemon_registry().register(_hermes_entry)
+except ValueError as _exc:
+    logger.debug(
+        "[kora.heartbeat_probes] hermes registry already had "
+        "'heartbeat_probes' entry: %s — skipping duplicate registration",
+        _exc,
+    )
