@@ -1056,6 +1056,48 @@ def run_conversation(
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                # ``pre_api_request_mutable`` hook — mutable counterpart
+                # to the observer-only ``pre_api_request`` below. Fires
+                # at the api_kwargs construction site so plugins can
+                # override specific keys before the SDK call (e.g.
+                # ``model`` for routing, ``system``/``tools`` for cache
+                # wrapping, ``max_tokens`` for per-route caps). Plugins
+                # return ``{"override": {<kwarg>: <value>, ...}}``;
+                # multiple plugins merge left-to-right (last write wins
+                # for conflicting keys). The observer ``pre_api_request``
+                # below sees the FINAL (post-mutation) kwargs.
+                #
+                # Fail-safe: plugin exceptions caught + logged; the
+                # unmodified api_kwargs continues.
+                try:
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook_mutable
+                    _mutable_results = _invoke_hook_mutable(
+                        "pre_api_request_mutable",
+                        task_id=effective_task_id,
+                        session_id=agent.session_id or "",
+                        user_message=original_user_message,
+                        platform=agent.platform or "",
+                        model=api_kwargs.get("model", agent.model),
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        api_kwargs=dict(api_kwargs),  # defensive copy
+                        route=getattr(agent, "route", "") or "",
+                    )
+                    for _mutable_result in _mutable_results:
+                        if not isinstance(_mutable_result, dict):
+                            continue
+                        _override = _mutable_result.get("override")
+                        if isinstance(_override, dict):
+                            api_kwargs.update(_override)
+                except Exception as _hook_exc:
+                    logger.warning(
+                        "pre_api_request_mutable hook failed: %s — "
+                        "continuing with un-modified api_kwargs",
+                        _hook_exc,
+                    )
+
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     request_messages = api_kwargs.get("messages")

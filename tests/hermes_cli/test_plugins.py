@@ -335,6 +335,43 @@ class TestPluginHooks:
     def test_valid_hooks_include_pre_gateway_dispatch(self):
         assert "pre_gateway_dispatch" in VALID_HOOKS
 
+    def test_valid_hooks_include_pre_api_request_mutable(self):
+        assert "pre_api_request_mutable" in VALID_HOOKS
+
+    def test_pre_api_request_mutable_collects_overrides(self, tmp_path, monkeypatch):
+        """pre_api_request_mutable callbacks return ``{"override":
+        {<kwarg>: <value>, ...}}``; the consumer (conversation_loop)
+        merges overrides into api_kwargs left-to-right."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "mutable_plugin",
+            register_body=(
+                'ctx.register_hook("pre_api_request_mutable", '
+                'lambda **kw: {"override": {"model": "swap-model"}})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_api_request_mutable",
+            task_id="t1",
+            session_id="s1",
+            user_message="hi",
+            platform="cli",
+            model="default-model",
+            provider="anthropic",
+            base_url=None,
+            api_mode="anthropic_messages",
+            api_call_count=1,
+            api_kwargs={"model": "default-model", "max_tokens": 100},
+            route="",
+        )
+        assert len(results) == 1
+        assert results[0] == {"override": {"model": "swap-model"}}
+
     def test_pre_gateway_dispatch_collects_action_dicts(self, tmp_path, monkeypatch):
         """pre_gateway_dispatch callbacks return action dicts (skip/rewrite/allow)."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

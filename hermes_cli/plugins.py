@@ -165,6 +165,20 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Mutable counterpart to the observer-only ``pre_api_request``.
+    # Fires at the api_kwargs construction site (after the agent
+    # builds the kwargs, before the SDK call). Plugins return
+    # ``{"override": {<kwarg_name>: <value>, ...}}`` to replace
+    # specific keys; multiple plugins' overrides merge left-to-right
+    # (last write wins for conflicting keys). Backward-compat: the
+    # observer ``pre_api_request`` hook still fires AFTER mutations
+    # apply, so observers see the final kwargs. Fail-safe: plugin
+    # exceptions caught + logged; un-modified kwargs continue.
+    # Use cases: per-route model routing, prompt-cache markers, per-
+    # call max_tokens caps. Without this hook the only mutation site
+    # is to override the agent's _build_api_kwargs itself — a much
+    # wider surface that breaks any caller subclassing the agent.
+    "pre_api_request_mutable",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
