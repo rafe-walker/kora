@@ -702,15 +702,29 @@ def format_operator_dm(
 def format_fallback_text(
     event_details: Dict[str, Any], *, reason: str
 ) -> str:
-    """When reasoning fails, send the alert details verbatim + the
-    failure reason. Operator still gets actionable signal."""
+    """When reasoning fails, send the alert details verbatim + a
+    clear "review and act manually" footer. Operator still gets
+    actionable signal — the alert itself (category + severity +
+    alert_id) is visible even when reasoning can't run.
+
+    KR-CC1-POLISH (#198): mirrors the probe wake consumer's
+    fallback shape (#184) — header line with alert identity, then
+    a footer line that surfaces (a) the engine's failure reason
+    and (b) explicit "act manually" guidance so the operator
+    isn't left wondering whether Kora is going to retry.
+    """
     category = event_details.get("category") or "unknown"
     severity = event_details.get("severity") or "warning"
     alert_id = event_details.get("alert_id") or "unknown"
+    channel = event_details.get("channel") or "unknown"
     return (
-        f"{category} ({severity}): alert id {alert_id}\n"
+        f"{category} ({severity}): alert id {alert_id} "
+        f"(via {channel})\n"
         f"\n"
-        f"I was unable to investigate — engine returned: {reason}"
+        f"Kora is unavailable to investigate this alert "
+        f"(engine returned: {reason}). Review the alerts panel "
+        f"and act manually — Kora will not retry this "
+        f"investigation."
     )
 
 

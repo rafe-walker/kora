@@ -10550,6 +10550,76 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
+    # promote command — KR-CC1-POLISH (#198)
+    # =========================================================================
+    # Operator-facing surface for the 6 promotion loops (phrasebook /
+    # snapshot_expand / router_tuning / tool_trimming /
+    # probe_fix_envelopes / email_intent). Read-only subcommands
+    # (status / history / pending) + one ad-hoc trigger (run-once).
+    # Implementation lives in kora_cli/promote_cli.py so this main.py
+    # only carries argparse glue.
+    from kora_cli.promote_cli import LOOP_NAMES as _PROMOTE_LOOPS
+    from kora_cli.promote_cli import cmd_promote
+
+    promote_parser = subparsers.add_parser(
+        "promote",
+        help="Inspect + run-once Kora's promotion loops",
+        description=(
+            "Operator visibility into the 6 promotion loops: per-loop "
+            "pending/approved/rejected counts (status), full proposal "
+            "JSON (pending), recent audit-row history (history), and "
+            "ad-hoc cycle invocation (run-once). All subcommands "
+            "emit JSON to stdout — pipe through ``jq`` for queries."
+        ),
+    )
+    promote_subparsers = promote_parser.add_subparsers(
+        dest="promote_command"
+    )
+
+    promote_subparsers.add_parser(
+        "status",
+        help="Per-loop counts + last activity timestamp",
+    )
+
+    promote_run_once = promote_subparsers.add_parser(
+        "run-once",
+        help="Invoke one cycle of a specific loop ad-hoc",
+    )
+    promote_run_once.add_argument(
+        "loop",
+        choices=list(_PROMOTE_LOOPS),
+        help="Loop name to invoke",
+    )
+
+    promote_history = promote_subparsers.add_parser(
+        "history",
+        help="Recent audit rows for a loop (default last 30 days)",
+    )
+    promote_history.add_argument(
+        "loop",
+        choices=list(_PROMOTE_LOOPS),
+        help="Loop name",
+    )
+    promote_history.add_argument(
+        "--days",
+        type=int,
+        default=30,
+        help="Lookback window in days (default 30)",
+    )
+
+    promote_pending = promote_subparsers.add_parser(
+        "pending",
+        help="JSON dump of currently-pending proposals for a loop",
+    )
+    promote_pending.add_argument(
+        "loop",
+        choices=list(_PROMOTE_LOOPS),
+        help="Loop name (snapshot_expand has no pending — use history)",
+    )
+
+    promote_parser.set_defaults(func=cmd_promote)
+
+    # =========================================================================
     # gateway command
     # =========================================================================
     gateway_parser = subparsers.add_parser(
