@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Revert dialog</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Phrasebook editor — backups + revert dialog</h1>
+  <p class="preamble">
+    Operator clicked "Backups". Modal shows newest-first list; per-row Revert with confirm. Corrupt
+    backups (entry_count null) are greyed out and Revert is disabled. Bottom note explains revert
+    semantics.
+  </p>
+
+  <div class="page-header">
+    <div>
+      <div class="title">Phrasebook (Slack DM short-circuit)</div>
+      <div class="desc">Read-only view of the regex patterns the live Slack DM handler consults.</div>
+    </div>
+    <div class="row">
+      <button class="btn outlined">✏ Edit phrasebook</button>
+      <button class="btn">⏱ Backups</button>
+      <button class="btn">↻ Reload</button>
+    </div>
+  </div>
+
+  <div class="modal-mock">
+    <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+      <div class="row" style="gap: 6px;">
+        <span style="font-weight: 500; font-size: 13px;">⏱ Phrasebook backups</span>
+        <span style="color: var(--muted); font-size: 11px;">(keeping 10 most recent)</span>
+      </div>
+      <button class="btn">✕</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T20-15-22Z.yml</code>
+      <span style="color: var(--muted);">7 entries</span>
+      <span style="color: var(--muted);">512b</span>
+      <span style="color: var(--warning); font-style: italic;">Replace current?</span>
+      <button class="btn destructive">Yes, revert</button>
+      <button class="btn">No</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T19-42-08Z.yml</code>
+      <span style="color: var(--muted);">5 entries</span>
+      <span style="color: var(--muted);">412b</span>
+      <button class="btn outlined">Revert</button>
+    </div>
+    <div class="backup-row">
+      <code style="flex: 1;">slack_dm.2026-05-23T18-30-15Z.yml</code>
+      <span style="color: var(--muted);">5 entries</span>
+      <span style="color: var(--muted);">408b</span>
+      <button class="btn outlined">Revert</button>
+    </div>
+    <div class="backup-row corrupt">
+      <code style="flex: 1;">slack_dm.2026-05-23T17-12-44Z.yml</code>
+      <span style="color: var(--muted);">corrupt</span>
+      <span style="color: var(--muted);">240b</span>
+      <button class="btn outlined" disabled style="opacity: 0.4;">Revert</button>
+    </div>
+    <div style="font-size: 9px; color: var(--muted); font-style: italic; margin-top: 10px;">
+      Revert clones the chosen backup over the current override YAML; the backup file itself is preserved
+      (you can re-revert to it later). To remove the override entirely (fall back to bundled default),
+      revert with no backups present.
+    </div>
+  </div>
+
+</body></html>

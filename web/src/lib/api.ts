@@ -154,6 +154,27 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     }),
+  // KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — write path (PUT + revert
+  // + backups list). Server returns 422 with per-entry errors
+  // when validation fails; fetchJSON throws on 422, callers
+  // catch + parse the JSON body for the structured errors.
+  putSlackDmPhrasebook: (entries: PhrasebookEntryWrite[]) =>
+    fetchJSON<PhrasebookPutResponse>("/api/phrasebook/slack_dm", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries }),
+    }),
+  revertSlackDmPhrasebook: (filename?: string | null) =>
+    fetchJSON<PhrasebookRevertResponse>(
+      "/api/phrasebook/slack_dm/revert",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(filename ? { filename } : {}),
+      },
+    ),
+  getSlackDmPhrasebookBackups: () =>
+    fetchJSON<PhrasebookBackupsResponse>("/api/phrasebook/slack_dm/backups"),
   // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
   // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
   getProbeInvestigations: (opts?: {
@@ -1955,6 +1976,64 @@ export type PhrasebookTestResponse =
       would_fall_through_to_reasoning_engine: boolean;
       snapshot_present: boolean;
     };
+
+// KR-FE-PHRASEBOOK-EDITOR-AND-CRUD — write-path types.
+// The PUT request body's per-entry shape (operator's draft —
+// `referenced_snapshot_fields` is derived server-side and not
+// part of the write).
+export interface PhrasebookEntryWrite {
+  pattern: string;
+  category: string;
+  description: string;
+  reply_template: string;
+}
+
+// PUT response: echoes the saved entries + reports backup +
+// rotation outcome so the cockpit can refresh local state from
+// the response without a follow-up GET.
+export interface PhrasebookPutResponse {
+  source_path: string;
+  entry_count: number;
+  backup_filename: string | null;
+  rotated_backup_count: number;
+  entries: PhrasebookEntryDto[];
+}
+
+// PUT 422 body — when validation fails, server returns this
+// structured shape per offending field. The cockpit unmarshals
+// it from the thrown fetchJSON error to render per-row errors.
+export interface PhrasebookValidationErrorEntry {
+  entry_index: number; // -1 for root-level errors
+  field: string; // field name or "_root"
+  error: string;
+}
+
+export interface PhrasebookValidationErrorBody {
+  error: "validation_failed";
+  errors: PhrasebookValidationErrorEntry[];
+}
+
+// POST /revert response. reverted_to is the backup filename
+// restored, OR the literal "bundled_default" when no backup
+// existed (override was removed so the live handler falls back
+// to the bundled phrasebook).
+export interface PhrasebookRevertResponse {
+  reverted_to: string;
+  source_path: string | null;
+}
+
+// GET /backups list item.
+export interface PhrasebookBackupItem {
+  filename: string; // "slack_dm.YYYY-MM-DDTHH-MM-SSZ.yml"
+  timestamp: string; // ISO-like, dashes-only (filename-safe)
+  size_bytes: number;
+  entry_count: number | null; // null when backup can't be parsed
+}
+
+export interface PhrasebookBackupsResponse {
+  backups: PhrasebookBackupItem[];
+  rotation_keep: number;
+}
 
 // KR-FE-PROBE-INVESTIGATION-VIEWER — joined wake event + downstream
 // reasoning + current health. Source-of-truth shape pinned by the

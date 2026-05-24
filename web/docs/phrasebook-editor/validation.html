@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Validation error</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Phrasebook editor — validation error (422)</h1>
+  <p class="preamble">
+    Operator clicked Save with a bad regex + an unknown snapshot path + a duplicate (pattern, category)
+    pair. Server returned 422 with structured per-entry errors; FE renders each next to the offending field.
+    Top-level errors (e.g. duplicates) render at the top.
+  </p>
+
+  <div class="card destructive">
+    <div style="font-size: 11px; font-weight: 500; color: var(--destructive); margin-bottom: 4px;">
+      ⚠ 1 top-level error:
+    </div>
+    <div style="font-size: 11px; color: var(--destructive); margin-left: 12px;">
+      • duplicate (pattern, category) — already declared at index 0
+    </div>
+  </div>
+
+  <div class="row" style="margin-bottom: 8px;">
+    <button class="btn primary">💾 Save changes</button>
+    <button class="btn">✕ Cancel</button>
+    <button class="btn outlined">+ Add entry</button>
+  </div>
+
+  <div class="card destructive">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern (Python regex)</span>
+          <input class="input error" value="(unclosed" />
+          <div class="field-error">invalid regex: missing ), unterminated subpattern at position 0</div>
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="ack" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="Operator ack" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea">👍</textarea>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern</span>
+          <input class="input" value="^how many tickets" />
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="ticket_query" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="Ask about ticket count" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea error">{snapshot.totally.not.a.real.field} open tickets right now.</textarea>
+          <div class="field-error">snapshot path 'totally.not.a.real.field' not in known scalar schema (see SNAPSHOT_SCALAR_PATHS in kora_cli/short_circuit/phrasebook_editor.py)</div>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="align-items: flex-start;">
+      <div style="flex: 1;" class="grid-2">
+        <div>
+          <span class="label-tiny">Pattern</span>
+          <input class="input error" value="(a+)+" />
+          <div class="field-error">nested unbounded quantifier (possible catastrophic backtracking) — rewrite to use bounded counts or anchored alternations</div>
+        </div>
+        <div>
+          <span class="label-tiny">Category</span>
+          <input class="input" value="catchall" style="font-family: ui-sans-serif, system-ui;" />
+        </div>
+        <div>
+          <span class="label-tiny">Description</span>
+          <input class="input" value="" style="font-family: ui-sans-serif, system-ui;" />
+          <div class="field-error">required field 'description' missing or empty</div>
+        </div>
+        <div>
+          <span class="label-tiny">Reply template</span>
+          <textarea class="textarea">hi</textarea>
+        </div>
+      </div>
+      <button class="btn destructive">🗑</button>
+    </div>
+  </div>
+
+</body></html>

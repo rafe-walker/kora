@@ -6278,6 +6278,236 @@ async def test_phrasebook_match(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# DM phrasebook write path — KR-FE-PHRASEBOOK-EDITOR-AND-CRUD
+# ---------------------------------------------------------------------------
+#
+# Read endpoints are above (PR #167). This block adds:
+#
+#   * PUT  /api/phrasebook/slack_dm           — replace entries
+#   * POST /api/phrasebook/slack_dm/revert    — revert to backup
+#   * GET  /api/phrasebook/slack_dm/backups   — list backups
+#
+# Validation, atomic write, backup rotation, and the static
+# snapshot-schema allow-list live in
+# kora_cli/short_circuit/phrasebook_editor.py — this block is
+# request-handling + audit emission only.
+#
+# Audit: each successful PUT (or revert) emits seam=phrasebook.updated
+# with entry_count_before / entry_count_after / backup_filename /
+# actor="operator". Audit-panel consumers (KR-AUDIT-PANEL-ENDPOINTS
+# / future KR-PROMOTION-REVIEW-PANEL) join on this seam to
+# reconstruct edit history.
+
+
+def _phrasebook_count_current_entries() -> int:
+    """Best-effort count of currently-live entries (for the
+    entry_count_before audit field). Returns 0 if load fails so a
+    failure here doesn't block the write."""
+    try:
+        from kora_cli.short_circuit import dm_phrasebook
+
+        return len(dm_phrasebook.load_phrasebook())
+    except Exception:
+        return 0
+
+
+@app.put("/api/phrasebook/slack_dm")
+async def put_phrasebook(payload: Dict[str, Any]) -> Any:
+    """Replace the entire operator-override phrasebook.
+
+    Atomic-semantic: if ANY entry fails validation, the whole
+    payload is refused (422 with per-entry errors); the existing
+    override is preserved. Successful writes go through
+    backup-then-write-atomic so an in-flight crash can't leave
+    the override half-written or back-up-less.
+
+    Payload shape:
+      {"entries": [
+          {"pattern": "...", "category": "...",
+           "description": "...", "reply_template": "..."}, ...
+      ]}
+
+    On success returns the new entries (echoed verbatim so the
+    cockpit can refresh from the response) + the backup
+    filename written (if any) + the source path.
+    """
+    from kora_cli.audit import emit_audit
+    from kora_cli.short_circuit import phrasebook_editor
+
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    errors = phrasebook_editor.validate_entries(entries)
+    if errors:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "validation_failed",
+                "errors": [e.as_dict() for e in errors],
+            },
+        )
+
+    typed_entries: List[Dict[str, Any]] = entries  # type: ignore[assignment]
+    count_before = _phrasebook_count_current_entries()
+
+    override_path = phrasebook_editor._override_path()
+    backup_path = phrasebook_editor.write_backup_for(override_path)
+
+    try:
+        phrasebook_editor.write_phrasebook(typed_entries)
+    except Exception as exc:
+        logger.warning(
+            "[kora.phrasebook] write_phrasebook raised %r — backup "
+            "preserved at %s, override unchanged",
+            exc,
+            backup_path,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "write_failed",
+                "detail": repr(exc),
+                "backup_filename": (
+                    backup_path.name if backup_path is not None else None
+                ),
+            },
+        )
+
+    keep = phrasebook_editor._backup_keep_count()
+    try:
+        rotated = phrasebook_editor.rotate_backups(keep)
+    except Exception as exc:
+        logger.warning(
+            "[kora.phrasebook] backup rotation raised %r — write "
+            "succeeded; rotation will catch up next write",
+            exc,
+        )
+        rotated = []
+
+    try:
+        emit_audit(
+            seam="phrasebook.updated",
+            details={
+                "actor": "operator",
+                "action": "put",
+                "entry_count_before": count_before,
+                "entry_count_after": len(typed_entries),
+                "backup_filename": (
+                    backup_path.name if backup_path is not None else None
+                ),
+                "rotated_backup_count": len(rotated),
+            },
+            source=None,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.phrasebook] audit emit_audit raised %r — write "
+            "still succeeded",
+            exc,
+        )
+
+    return {
+        "source_path": str(override_path),
+        "entry_count": len(typed_entries),
+        "backup_filename": (
+            backup_path.name if backup_path is not None else None
+        ),
+        "rotated_backup_count": len(rotated),
+        "entries": [
+            {
+                "pattern": e["pattern"],
+                "category": e["category"],
+                "description": e["description"],
+                "reply_template": e["reply_template"],
+                "referenced_snapshot_fields": (
+                    _extract_phrasebook_snapshot_refs(e["reply_template"])
+                ),
+            }
+            for e in typed_entries
+        ],
+    }
+
+
+@app.post("/api/phrasebook/slack_dm/revert")
+async def revert_phrasebook_endpoint(
+    payload: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Revert the override to a specific backup OR (when no
+    filename supplied) the most-recent backup OR (when no backups
+    exist) remove the override entirely.
+
+    Payload (all optional): ``{"filename": "slack_dm.YYYY-...Z.yml"}``
+
+    Defense against path traversal lives in
+    phrasebook_editor.revert_phrasebook — filename must match the
+    slack_dm.*.yml shape with no path separators.
+    """
+    from kora_cli.audit import emit_audit
+    from kora_cli.short_circuit import phrasebook_editor
+
+    filename: Optional[str] = None
+    if isinstance(payload, dict):
+        raw = payload.get("filename")
+        if isinstance(raw, str) and raw:
+            filename = raw
+
+    count_before = _phrasebook_count_current_entries()
+
+    try:
+        result = phrasebook_editor.revert_phrasebook(filename=filename)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_filename", "detail": str(exc)},
+        )
+    except FileNotFoundError as exc:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "backup_not_found", "detail": str(exc)},
+        )
+    except Exception as exc:
+        logger.warning("[kora.phrasebook] revert raised %r", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "revert_failed", "detail": repr(exc)},
+        )
+
+    count_after = _phrasebook_count_current_entries()
+
+    try:
+        emit_audit(
+            seam="phrasebook.updated",
+            details={
+                "actor": "operator",
+                "action": "revert",
+                "entry_count_before": count_before,
+                "entry_count_after": count_after,
+                "reverted_to": result.get("reverted_to"),
+            },
+            source=None,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.phrasebook] revert audit emit_audit raised %r", exc
+        )
+
+    return result
+
+
+@app.get("/api/phrasebook/slack_dm/backups")
+async def get_phrasebook_backups() -> Dict[str, Any]:
+    """Newest-first list of available backups, for the cockpit
+    revert dropdown. Each entry: filename / timestamp /
+    size_bytes / entry_count (None when the backup can't be
+    parsed, so the cockpit can grey out corrupt backups instead
+    of pretending they're valid revert targets)."""
+    from kora_cli.short_circuit import phrasebook_editor
+
+    return {
+        "backups": phrasebook_editor.list_backups(),
+        "rotation_keep": phrasebook_editor._backup_keep_count(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Probe investigations xref — KR-FE-PROBE-INVESTIGATION-VIEWER
 # ---------------------------------------------------------------------------
 #
