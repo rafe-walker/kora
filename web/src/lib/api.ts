@@ -273,6 +273,63 @@ export const api = {
       `/api/alert-investigations${q ? "?" + q : ""}`,
     );
   },
+  // KR-FE-OPERATOR-FIRST-RUN-WIZARD — onboarding endpoints. The
+  // ``state`` endpoint drives first-run detection (marker absent +
+  // audit empty → show wizard); the validate-* endpoints power the
+  // inline credential checks at each step; ``trigger-tutorial-probe``
+  // fires the synthetic wake for the step-4 demo; ``complete``
+  // writes the marker file so future cockpit launches skip the
+  // wizard. Validate-* never POSTs the secret anywhere except the
+  // upstream service it's validating against.
+  getWizardState: () =>
+    fetchJSON<WizardStateResponse>("/api/wizard/state"),
+  validateAnthropicApiKey: (apiKey: string) =>
+    fetchJSON<WizardValidationResponse>(
+      "/api/wizard/validate-anthropic",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ api_key: apiKey }),
+      },
+    ),
+  validateSubstrate: (url: string, serviceRoleKey: string) =>
+    fetchJSON<WizardValidationResponse>(
+      "/api/wizard/validate-substrate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          service_role_key: serviceRoleKey,
+        }),
+      },
+    ),
+  validateSlack: (botToken: string, userId: string) =>
+    fetchJSON<WizardValidationResponse>(
+      "/api/wizard/validate-slack",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // user_id sent for completeness (BE uses it to compose the
+        // post-wizard .env download); auth.test only needs the token.
+        body: JSON.stringify({ bot_token: botToken, user_id: userId }),
+      },
+    ),
+  triggerWizardTutorialProbe: (tenantId: string) =>
+    fetchJSON<WizardTutorialProbeResponse>(
+      "/api/wizard/trigger-tutorial-probe",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenant_id: tenantId }),
+      },
+    ),
+  completeWizard: (body: WizardCompleteRequest) =>
+    fetchJSON<WizardCompleteResponse>("/api/wizard/complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   // KR-FE-PROMOTION-REVIEW-PANEL — list pending phrasebook promotion
   // proposals (sorted highest-confidence first by the BE).
   getPhrasebookPromotionProposals: () =>
@@ -2888,4 +2945,89 @@ export interface InvestigationDrillDownResponse {
   seams_seen: string[];
   total_count: number;
   supported_seams: string[];
+}
+
+// KR-FE-OPERATOR-FIRST-RUN-WIZARD — wizard state + validation types.
+// ``WizardStep`` mirrors BE _WIZARD_STEPS; ``WizardValidationResult``
+// mirrors BE _WIZARD_VALIDATION_RESULTS. Both pinned by
+// test_wizard_drift_guards.
+
+export type WizardStep =
+  | "welcome"
+  | "anthropic"
+  | "substrate_slack"
+  | "tutorial_probe"
+  | "promotion_intro";
+
+export const WIZARD_STEPS: readonly WizardStep[] = [
+  "welcome",
+  "anthropic",
+  "substrate_slack",
+  "tutorial_probe",
+  "promotion_intro",
+];
+
+export type WizardValidationResult =
+  | "success"
+  | "auth_failure"
+  | "network_failure"
+  | "timeout";
+
+export const WIZARD_VALIDATION_RESULTS: readonly WizardValidationResult[] = [
+  "success",
+  "auth_failure",
+  "network_failure",
+  "timeout",
+];
+
+export interface WizardStateResponse {
+  marker_present: boolean;
+  completed: boolean;
+  skipped: boolean;
+  tenant_id: string | null;
+  last_step: WizardStep | null;
+  // True when the install has no audit JSONL rows yet — the
+  // "fresh install" half of the first-run detection signal.
+  audit_log_empty: boolean;
+  steps: string[];
+  validation_results: string[];
+}
+
+export interface WizardValidationResponse {
+  result: WizardValidationResult;
+  // Optional context surfaced when validation failed (e.g.
+  // "HTTP 401" or "invalid_auth"). Truncated to 120 chars by the
+  // BE. Never includes the credential itself.
+  detail?: string;
+  // Slack auth.test echoes the team name on success — operator
+  // confirms they pointed at the right workspace.
+  team?: string;
+}
+
+export interface WizardTutorialProbeResponse {
+  ok: boolean;
+  probe?: string;
+  category?: string;
+  caller_session_id?: string;
+  error?: string;
+}
+
+export interface WizardCompleteRequest {
+  // True for explicit completion (Step 5); false + skipped=true
+  // for the "skip — I'll configure manually" affordance.
+  completed?: boolean;
+  skipped?: boolean;
+  tenant_id: string;
+  last_step?: WizardStep;
+}
+
+export interface WizardCompleteResponse {
+  ok: boolean;
+  marker_path?: string;
+  completed?: boolean;
+  skipped?: boolean;
+  tenant_id?: string;
+  last_step?: string;
+  written_at?: string;
+  error?: string;
 }

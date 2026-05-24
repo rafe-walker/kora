@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Wizard step 3 — IsoKron + Slack</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .progress { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px; }
+  .step-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 4px; font-size: 10px; font-family: ui-monospace, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+  .step-chip.active { background: var(--primary); color: #001; }
+  .step-chip.pending { background: rgba(143,143,143,0.15); color: var(--muted); }
+  .step-chip.reached { background: rgba(250,204,21,0.3); color: #fde68a; }
+  .arrow { color: var(--muted); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .field-input { padding: 6px 8px; font-size: 13px; border: 1px solid var(--border); background: var(--card); color: var(--fg); border-radius: 4px; font-family: ui-monospace, monospace; }
+  .inner-box { border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-top: 10px; }
+  .inner-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; margin-bottom: 8px; }
+</style></head><body>
+
+  <h1>Wizard step 3 — IsoKron + Slack (paired; both required)</h1>
+
+  <div class="page-header">
+    <div class="title">✨ First-run setup</div>
+    <button class="btn">Skip — I'll configure manually</button>
+  </div>
+
+  <div class="card progress">
+    <span class="step-chip reached">✨ 1/5 Welcome</span>
+    <span class="arrow">→</span>
+    <span class="step-chip reached">🔑 2/5 Anthropic key</span>
+    <span class="arrow">→</span>
+    <span class="step-chip active">☁ 3/5 IsoKron + Slack</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">✨ 4/5 Tutorial probe</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">💡 5/5 Promotion loops</span>
+  </div>
+
+  <div class="card">
+    <div style="font-size: 13px; font-weight: 500;">☁ Step 3 of 5 — IsoKron + Slack</div>
+    <p style="margin-top: 10px; font-size: 13px;">
+      Kora is a <strong>unified operator interface</strong> — it needs
+      IsoKron (durable state substrate) and Slack (DM escalation) together.
+      Skipping either leaves Kora in degraded mode (audit-only, no live escalation).
+    </p>
+
+    <div class="inner-box">
+      <div class="inner-title">☁ IsoKron substrate</div>
+      <div class="field">
+        <span style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Substrate URL</span>
+        <input class="field-input" value="https://stormhaven.supabase.co" />
+      </div>
+      <div class="field" style="margin-top: 8px;">
+        <span style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Service-role key</span>
+        <input class="field-input" type="password" value="••••••••••••••••••••••••••" />
+      </div>
+      <div style="margin-top: 8px; display: flex; gap: 6px; align-items: center;">
+        <button class="btn primary">Ping substrate</button>
+        <span class="badge success">✓ Validated</span>
+      </div>
+    </div>
+
+    <div class="inner-box">
+      <div class="inner-title">💬 Slack DM channel</div>
+      <div class="field">
+        <span style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Slack bot token</span>
+        <input class="field-input" type="password" value="••••••••••••••••••••" />
+      </div>
+      <div class="field" style="margin-top: 8px;">
+        <span style="font-size: 10px; color: var(--muted); text-transform: uppercase;">Operator user_id (DM target)</span>
+        <input class="field-input" value="U01JOSHUA" />
+      </div>
+      <div style="margin-top: 8px; display: flex; gap: 6px; align-items: center;">
+        <button class="btn primary">Test auth (slack.auth.test)</button>
+        <span class="badge success">✓ Validated</span>
+        <span style="font-size: 11px; color: var(--muted);">team: <code>stormhaven</code></span>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center;">
+      <button class="btn primary">Next: Tutorial probe</button>
+      <button class="btn">Skip with degraded mode</button>
+    </div>
+  </div>
+
+</body></html>

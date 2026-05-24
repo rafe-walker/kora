@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Mobile sidebar — before vs after</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { padding: 0; max-width: none; display: flex; gap: 16px; }
+  .col { flex: 1; padding: 16px; }
+  .annotation { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .annotation strong { color: var(--fg); }
+  .sidebar { width: 280px; background: #0a0a0a; padding: 8px 0; border: 1px solid #2a2a2a; border-radius: 4px; }
+  .group-header { display: flex; align-items: center; gap: 6px; padding: 10px 16px 4px; font-size: 9px; color: var(--muted); opacity: 0.5; letter-spacing: 0.15em; text-transform: uppercase; font-family: ui-monospace, monospace; cursor: pointer; }
+  .group-header .chevron { font-size: 10px; }
+  .group-header .group-badge { margin-left: auto; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; }
+  .nav-link { display: flex; align-items: center; gap: 8px; padding: 5px 16px; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; font-family: ui-monospace, monospace; }
+  .badge-count { margin-left: auto; padding: 2px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; }
+  .collapse-all-btn { display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 9px; color: var(--muted); opacity: 0.5; letter-spacing: 0.15em; text-transform: uppercase; font-family: ui-monospace, monospace; border-radius: 4px; margin: 4px 16px 4px auto; cursor: pointer; }
+  .stat { display: inline-block; padding: 2px 8px; background: rgba(74,222,128,0.15); color: #86efac; border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; font-family: ui-monospace, monospace; font-size: 10px; margin-right: 6px; }
+</style></head><body>
+
+  <div class="col">
+    <div class="annotation">
+      <strong>BEFORE</strong> · Mobile sidebar (375px iPhone viewport) post-#202.
+      Groups + collapse work; but operator has to tap each chevron individually
+      to triage. Badges show raw counts (e.g. "127" overflowing).
+    </div>
+    <div class="sidebar">
+      <div style="padding: 0 16px 8px; font-weight: 600; color: var(--fg); font-size: 14px; line-height: 1.05; border-bottom: 1px solid #2a2a2a;">Hermes Agent</div>
+      <div class="group-header"><span class="chevron">▾</span><span>Overview</span></div>
+      <div class="nav-link">⚠ ALERTS</div>
+      <div class="nav-link">⬢ OVERVIEW</div>
+      <div class="nav-link">📊 KORA ACTIONS</div>
+      <div class="nav-link">💬 SESSIONS</div>
+      <div class="nav-link">📊 OPERATIONAL</div>
+      <div class="group-header"><span class="chevron">▾</span><span>Watch</span></div>
+      <div class="nav-link">💗 HEALTH</div>
+      <div class="nav-link">❤ HEARTBEAT</div>
+      <div class="nav-link">✨ PROBE INVESTIGATIONS</div>
+      <div class="nav-link">🔔 ALERT INVESTIGATIONS</div>
+      <div class="nav-link">$ COST</div>
+      <div class="nav-link">📊 COST TELEMETRY</div>
+      <div class="group-header"><span class="chevron">▾</span><span>Promotion Loops</span><span class="group-badge">127</span></div>
+      <div class="nav-link" style="background: rgba(250,204,21,0.08); border-left: 2px solid var(--warning);">💡 PROMOTION REVIEW <span class="badge-count">127</span></div>
+      <div class="nav-link">📖 PHRASEBOOK</div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="annotation">
+      <strong>AFTER</strong> · "Collapse all" button at top + "99+" badge cap.
+      <br />
+      <span class="stat">collapse-all shortcut</span>
+      <span class="stat">99+ badge overflow</span>
+      <span class="stat">mobile viewport verified</span>
+    </div>
+    <div class="sidebar">
+      <div style="padding: 0 16px 8px; font-weight: 600; color: var(--fg); font-size: 14px; line-height: 1.05; border-bottom: 1px solid #2a2a2a;">Hermes Agent</div>
+      <div style="text-align: right; padding: 4px 16px;">
+        <span class="collapse-all-btn" style="display: inline-flex;">▸ Collapse all</span>
+      </div>
+      <div class="group-header"><span class="chevron">▾</span><span>Overview</span></div>
+      <div class="nav-link">⚠ ALERTS</div>
+      <div class="nav-link">⬢ OVERVIEW</div>
+      <div class="nav-link">📊 KORA ACTIONS</div>
+      <div class="nav-link">💬 SESSIONS</div>
+      <div class="nav-link">📊 OPERATIONAL</div>
+      <div class="group-header"><span class="chevron">▾</span><span>Watch</span></div>
+      <div class="nav-link">💗 HEALTH</div>
+      <div class="nav-link">❤ HEARTBEAT</div>
+      <div class="nav-link">✨ PROBE INVESTIGATIONS</div>
+      <div class="nav-link">🔔 ALERT INVESTIGATIONS</div>
+      <div class="nav-link">$ COST</div>
+      <div class="nav-link">📊 COST TELEMETRY</div>
+      <div class="group-header"><span class="chevron">▾</span><span>Promotion Loops</span><span class="group-badge">99+</span></div>
+      <div class="nav-link" style="background: rgba(250,204,21,0.08); border-left: 2px solid var(--warning);">💡 PROMOTION REVIEW <span class="badge-count">99+</span></div>
+      <div class="nav-link">📖 PHRASEBOOK</div>
+    </div>
+  </div>
+
+</body></html>

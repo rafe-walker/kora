@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Wizard step 2 — Anthropic</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { max-width: 880px; margin: 0 auto; padding: 16px; }
+  .progress { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px; }
+  .step-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 4px; font-size: 10px; font-family: ui-monospace, monospace; letter-spacing: 0.05em; text-transform: uppercase; }
+  .step-chip.active { background: var(--primary); color: #001; }
+  .step-chip.pending { background: rgba(143,143,143,0.15); color: var(--muted); }
+  .step-chip.reached { background: rgba(250,204,21,0.3); color: #fde68a; }
+  .arrow { color: var(--muted); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .field-input { padding: 6px 8px; font-size: 13px; border: 1px solid var(--border); background: var(--card); color: var(--fg); border-radius: 4px; font-family: ui-monospace, monospace; }
+  .help { font-size: 10px; color: var(--muted); font-style: italic; }
+</style></head><body>
+
+  <h1>Wizard step 2 — Anthropic API key (with inline validate)</h1>
+
+  <div class="page-header">
+    <div class="title">✨ First-run setup</div>
+    <button class="btn">Skip — I'll configure manually</button>
+  </div>
+
+  <div class="card progress">
+    <span class="step-chip reached">✨ 1/5 Welcome</span>
+    <span class="arrow">→</span>
+    <span class="step-chip active">🔑 2/5 Anthropic key</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">☁ 3/5 IsoKron + Slack</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">✨ 4/5 Tutorial probe</span>
+    <span class="arrow">→</span>
+    <span class="step-chip pending">💡 5/5 Promotion loops</span>
+  </div>
+
+  <div class="card">
+    <div style="font-size: 13px; font-weight: 500;">🔑 Step 2 of 5 — Anthropic key</div>
+    <p style="margin-top: 10px; font-size: 13px;">
+      Anthropic API key. Kora's reasoning engine uses Anthropic; billing
+      goes through your Anthropic Console (not through Kora).
+    </p>
+    <div class="field" style="margin-top: 12px;">
+      <span class="field-label">Anthropic API key</span>
+      <input class="field-input" type="password" value="••••••••••••••••••••••••••••" />
+      <span class="help">Starts with sk-ant-. NEVER auto-filled — enter your own.</span>
+    </div>
+    <div class="field" style="margin-top: 10px;">
+      <span class="field-label">Monthly credit pool (USD)</span>
+      <input class="field-input" value="200" />
+      <span class="help">Soft budget surfaced in Cost State; default $200/mo.</span>
+    </div>
+    <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+      <button class="btn primary">Validate key (1-token test inference)</button>
+      <span class="badge success">✓ Validated</span>
+    </div>
+    <button class="btn primary" style="margin-top: 12px;">Next: IsoKron + Slack</button>
+  </div>
+
+</body></html>
