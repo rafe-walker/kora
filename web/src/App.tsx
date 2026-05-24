@@ -18,6 +18,7 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
+  BellRing,
   BookOpen,
   BookOpenCheck,
   Brain,
@@ -110,6 +111,7 @@ import PromotionReviewPage from "@/pages/PromotionReviewPage";
 import EmailLoggedOnlyAnalyzerPage from "@/pages/EmailLoggedOnlyAnalyzerPage";
 import InvestigationDrillDownPage from "@/pages/InvestigationDrillDownPage";
 import ProbeInvestigationsPage from "@/pages/ProbeInvestigationsPage";
+import AlertInvestigationsPage from "@/pages/AlertInvestigationsPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
@@ -180,6 +182,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/phrasebook": PhrasebookPage,
   "/promotions/phrasebook": PromotionReviewPage,
   "/probe-investigations": ProbeInvestigationsPage,
+  "/alert-investigations": AlertInvestigationsPage,
   "/email-intent-log/logged-only": EmailLoggedOnlyAnalyzerPage,
   // KR-FE-INVESTIGATION-DRILL-DOWN — drill into the unified
   // per-caller_session_id timeline. ``:callerSessionId`` is a path
@@ -268,6 +271,18 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "probeInvestigations",
     label: "Probe Investigations",
     icon: Sparkles,
+  },
+  {
+    // KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) —
+    // sits adjacent to probe-investigations since the operator-flow
+    // mirrors it: alerts wake the reasoning engine the same way
+    // probes do. caller_session_id pattern is
+    // ``alert:{category}:{severity}``. Empty until CC#1's #420
+    // ships the alert wake consumer.
+    path: "/alert-investigations",
+    labelKey: "alertInvestigations",
+    label: "Alert Investigations",
+    icon: BellRing,
   },
   {
     path: "/webhook-events",

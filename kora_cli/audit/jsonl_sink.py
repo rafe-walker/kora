@@ -280,6 +280,10 @@ SeamName = Literal[
     # proposer; the loosen proposal flags routes where operator
     # overrode N+ times in the window.
     "opus_override.applied",
+    # KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat from #198) — alert wake seam
+    # mirrors probe.wake_requested for alert investigations. Reads return [] until
+    # the alert wake consumer writes these rows.
+    "alert.wake_requested",
 ]
 
 SourceName = Literal[

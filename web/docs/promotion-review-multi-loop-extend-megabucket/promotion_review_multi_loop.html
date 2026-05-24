@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Promotion Review · Multi-loop</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  .tab-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; }
+  .tab { padding: 6px 12px; border-radius: 4px; font-size: 11px; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .tab.active { background: var(--primary); color: #001; }
+  .tab .count { background: rgba(250,204,21,0.3); color: #fde68a; padding: 0 4px; border-radius: 2px; font-family: ui-monospace, monospace; font-size: 10px; }
+  .tab.active .count { background: rgba(0,0,0,0.2); color: #001; }
+  .tab .marker { font-size: 9px; opacity: 0.6; }
+  .high-risk { border-color: rgba(248,113,113,0.6) !important; }
+  .high-risk-strip { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.3); border-radius: 4px; padding: 6px; font-size: 11px; }
+  .info-strip { background: rgba(96,165,250,0.05); border: 1px solid rgba(96,165,250,0.3); border-radius: 4px; padding: 6px; font-size: 11px; color: var(--muted); }
+  .warn-strip { background: rgba(250,204,21,0.08); border: 1px solid rgba(250,204,21,0.3); border-radius: 4px; padding: 6px; font-size: 11px; }
+</style>
+</head><body>
+
+  <h1>Promotion Review · Multi-loop (Deliverable A)</h1>
+  <p class="preamble">
+    PromotionReviewPage now hosts 6 loop variants via tab navigation
+    instead of phrasebook-only. Per-loop card variants render the
+    distinct payload shape each loop emits (CC#1 #186/#193); the
+    aggregate <code>/api/promotions/counts</code> endpoint feeds the
+    badge counts in one round-trip.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">💡 Promotion Review</div>
+    <button class="btn outlined">↻ Refresh</button>
+  </div>
+
+  <!-- LoopTypeTabs -->
+  <div class="card" style="padding: 0;">
+    <div class="tab-row">
+      <div class="tab"><span>📖</span><span>Phrasebook</span><span class="count">3</span></div>
+      <div class="tab active"><span>📊</span><span>Router</span><span class="count">2</span></div>
+      <div class="tab"><span>🔧</span><span>Tools</span><span class="count">1</span></div>
+      <div class="tab"><span>🛡</span><span>Envelopes</span><span class="count">1</span></div>
+      <div class="tab"><span>👁</span><span>Snapshot</span><span class="count">4</span><span class="marker" title="Read-only">i</span></div>
+      <div class="tab"><span>✉</span><span>Email</span><span class="marker" title="Forward-compat">⏳</span></div>
+    </div>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Per-route escalation-rate analysis — proposes which routes should tighten or loosen their trigger
+    pattern (operator scaffolds the prompt change after approve).
+  </p>
+
+  <!-- Status filter row -->
+  <div class="card">
+    <div class="summary-chip-row">
+      <span style="color: var(--warning);">✨ <strong>2 pending</strong></span>
+      <span class="italic-muted">·</span>
+      <span class="italic-muted">8 approved this cycle</span>
+      <span class="italic-muted">·</span>
+      <span class="italic-muted">1 rejected</span>
+    </div>
+    <div class="sparkline-row" style="margin-top: 10px;">
+      <button class="btn outlined" style="border-color: var(--warning); color: var(--warning); background: rgba(250,204,21,0.1);">✨ Pending <strong style="margin-left: 4px;">2</strong></button>
+      <button class="btn outlined">✓ Approved <strong style="margin-left: 4px;">8</strong></button>
+      <button class="btn outlined">✗ Rejected <strong style="margin-left: 4px;">1</strong></button>
+      <button class="btn outlined">⚠ Expired <strong style="margin-left: 4px;">0</strong></button>
+      <span class="italic-muted" style="font-size: 10px;">All</span>
+    </div>
+  </div>
+
+  <!-- RouterTuningCard -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.92 confidence</span>
+      <span class="badge" style="font-family: ui-monospace, monospace;">route: status_query</span>
+      <span class="badge warning">↓ tighten review</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 4h ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 8px; font-size: 12px;" class="row">
+      <span>calls: <span style="font-family: ui-monospace, monospace;">847</span></span>
+      <span>escalations: <span style="font-family: ui-monospace, monospace;">312</span></span>
+      <span>rate: <span style="font-family: ui-monospace, monospace;">36.8%</span></span>
+      <span>cost: <span style="font-family: ui-monospace, monospace;">$3.21</span></span>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">rationale</div>
+      <div style="font-size: 12px; margin-top: 2px;">Escalation rate is 4.2x the cohort median — the trigger pattern may be matching too eagerly on cost-shaped questions that have a snapshot answer. Tightening to exclude bare "?" should drop Opus calls without affecting recall.</div>
+    </div>
+    <div class="italic-muted" style="font-size: 10px; margin-top: 6px;">
+      Approve emits a <code>promotion.approved</code> audit row only — operator scaffolds the actual trigger-pattern change in the router prompt.
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- ToolTrimmingCard -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.88 confidence</span>
+      <span class="badge" style="font-family: ui-monospace, monospace;">route: slack_dm</span>
+      <span class="badge secondary">4 unused tools</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 6h ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 8px; font-size: 12px;">
+      Observed <span style="font-family: ui-monospace, monospace;">1,243</span> calls over <span style="font-family: ui-monospace, monospace;">7</span> days. None of the tools below were invoked in that window — dropping them from the manifest would shave prompt tokens + escalation surface for this route.
+    </div>
+    <div style="margin-top: 6px;">
+      <span style="font-size: 12px; color: var(--primary);">▾ 4 unused tools</span>
+      <div style="margin-top: 4px;" class="row">
+        <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">kora__open_pr</span>
+        <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">kora__merge_pr</span>
+        <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">kora__send_email_to_operator</span>
+        <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">kora__create_sea_ticket</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- HIGH-RISK ProbeEnvelopeCard -->
+  <div class="card high-risk">
+    <div class="row">
+      <span class="badge destructive">🛡 HIGH RISK</span>
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.91 confidence</span>
+      <span class="badge" style="font-family: ui-monospace, monospace;">probe: doppler</span>
+      <span class="badge" style="font-family: ui-monospace, monospace;">secrets_drift</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">created 1d ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge warning">pending</span>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">fix_name suggestion</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">resync_doppler_to_baseline</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">recurring recommendation</div>
+      <div style="font-size: 12px;">Across 5 of the last 6 doppler/secrets_drift investigations, Kora's recommendation was to re-sync the staging baseline. Pre-approving this as an envelope action would let Kora attempt it without operator round-trip.</div>
+    </div>
+    <div class="high-risk-strip" style="margin-top: 8px;">
+      <div style="display: flex; align-items: center; gap: 4px; color: var(--destructive); font-weight: 500;">🛡 Blast-radius summary</div>
+      <div style="margin-top: 4px;">Action mutates staging Doppler secrets — affects every fly machine + downstream service consuming staging credentials. Failure surface: token race with manual operator edits, baseline drift if --force is used.</div>
+    </div>
+    <div class="warn-strip" style="margin-top: 8px;">
+      <span style="color: var(--warning);">⚠</span> Approving does NOT mutate <code>probes/fix_envelopes.py</code>. Operator must manually scaffold the envelope using this proposal as the spec; the approved/ proposal file is the audit trail for when the scaffold lands.
+    </div>
+    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border);" class="row">
+      <button class="btn primary">✓ Approve (manual scaffold required)</button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✗ Reject (with notes)</button>
+    </div>
+  </div>
+
+  <!-- SnapshotExpandCard (read-only) -->
+  <div class="card">
+    <div class="row">
+      <span class="badge warning" style="font-family: ui-monospace, monospace;">0.94 confidence</span>
+      <span class="italic-muted" style="font-size: 11px;">cluster of 8</span>
+      <span class="italic-muted" style="font-size: 11px;">·</span>
+      <span class="italic-muted" style="font-size: 11px;">emitted 3h ago</span>
+      <span style="margin-left: auto;"></span>
+      <span class="badge">proposed</span>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">proposed snapshot field</div>
+      <div style="font-family: ui-monospace, monospace; font-size: 12px;">snapshot.tickets.open_count</div>
+    </div>
+    <div style="margin-top: 8px;">
+      <div style="font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;">collector summary</div>
+      <div style="font-size: 12px;">Count of open IsoKron Sea_Tickets (status != closed). Polled via the IsoKron read API; throttled to once per cycle.</div>
+    </div>
+    <div class="italic-muted" style="font-size: 11px; margin-top: 6px;">
+      Inferred from <span style="font-family: ui-monospace, monospace;">kora__open_tickets</span> tool calls — adding this field would short-circuit those calls at $0 LLM cost.
+    </div>
+    <div class="warn-strip" style="margin-top: 8px;">
+      <span style="color: var(--warning);">⚠</span> <code>KORA_PROMOTE_SNAPSHOT_EXPAND_AUTO_APPLY=true</code> — this loop is currently AUTO-APPLY ON. The proposed field may already be in the snapshot schema next cycle.
+    </div>
+  </div>
+
+</body></html>

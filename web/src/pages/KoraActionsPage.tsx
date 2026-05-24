@@ -28,6 +28,7 @@ import {
   Activity,
   AlertCircle,
   AlertTriangle,
+  BellRing,
   BookOpen,
   CheckCircle2,
   ExternalLink,
@@ -95,6 +96,13 @@ const KORA_ACTION_CATEGORIES_DEFS: readonly CategoryDef<KoraActionCategory>[] = 
     Icon: Search,
   },
   {
+    // KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420)
+    key: "alert_investigation_completed",
+    label: "Alert investigation completed",
+    tone: "warning",
+    Icon: BellRing,
+  },
+  {
     key: "phrasebook_proposal_approved",
     label: "Phrasebook proposal",
     tone: "outline",
@@ -134,11 +142,12 @@ const KORA_ACTION_CATEGORIES_MAP: Record<
   sea_ticket_created: KORA_ACTION_CATEGORIES_DEFS[1],
   autofix_attempted: KORA_ACTION_CATEGORIES_DEFS[2],
   investigation_completed: KORA_ACTION_CATEGORIES_DEFS[3],
-  phrasebook_proposal_approved: KORA_ACTION_CATEGORIES_DEFS[4],
-  promotion_proposed: KORA_ACTION_CATEGORIES_DEFS[5],
-  promotion_approved: KORA_ACTION_CATEGORIES_DEFS[6],
-  promotion_rejected: KORA_ACTION_CATEGORIES_DEFS[7],
-  other: KORA_ACTION_CATEGORIES_DEFS[8],
+  alert_investigation_completed: KORA_ACTION_CATEGORIES_DEFS[4],
+  phrasebook_proposal_approved: KORA_ACTION_CATEGORIES_DEFS[5],
+  promotion_proposed: KORA_ACTION_CATEGORIES_DEFS[6],
+  promotion_approved: KORA_ACTION_CATEGORIES_DEFS[7],
+  promotion_rejected: KORA_ACTION_CATEGORIES_DEFS[8],
+  other: KORA_ACTION_CATEGORIES_DEFS[9],
 };
 
 // ----- Per-row card -----
