@@ -31,6 +31,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
 /* ------------------------------------------------------------------ */
@@ -94,6 +95,8 @@ function toolsetIcon(
 /* ------------------------------------------------------------------ */
 
 export default function SkillsPage() {
+  usePanelView("SkillsPage");
+
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);

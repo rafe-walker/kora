@@ -67,6 +67,7 @@ import type {
 } from "@/lib/api";
 import { AlertsBanner } from "@/components/AlertsBanner";
 
+import { usePanelView } from "@/hooks/usePanelView";
 type LoadStatus<T> =
   | { state: "loading" }
   | { state: "ready"; data: T }
@@ -973,6 +974,8 @@ function isStubbed(s: LoadStatus<unknown>): boolean {
 }
 
 export default function DashboardPage() {
+  usePanelView("DashboardPage");
+
   const [data, setData] = useState<DashboardData>(INITIAL_DATA);
   const [refreshing, setRefreshing] = useState(false);
   const { toast, showToast } = useToast();

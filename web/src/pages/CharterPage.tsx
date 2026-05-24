@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   ActiveConstitution,
   CharterCapabilityGroup,
@@ -345,6 +346,8 @@ function CapMatrixSection({ groups, substrateTier }: CapMatrixSectionProps) {
 }
 
 export default function CharterPage() {
+  usePanelView("CharterPage");
+
   const [data, setData] = useState<CharterResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

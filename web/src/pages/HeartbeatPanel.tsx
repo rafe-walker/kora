@@ -20,6 +20,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import {
   formatRelative as formatRelativeShared,
   formatTimestamp,
@@ -165,6 +166,8 @@ function ServiceRow({ service, expanded, onToggle }: ServiceRowProps) {
 }
 
 export default function HeartbeatPanel() {
+  usePanelView("HeartbeatPanel");
+
   const [data, setData] = useState<HeartbeatServicesResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

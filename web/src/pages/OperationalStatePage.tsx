@@ -13,6 +13,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   ClaimPermission,
   DegradationReason,
@@ -57,6 +58,8 @@ function uppercaseLabel(value: string): string {
 }
 
 export default function OperationalStatePage() {
+  usePanelView("OperationalStatePage");
+
   const [state, setState] = useState<OperationalStateResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

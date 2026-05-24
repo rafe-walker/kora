@@ -20,6 +20,7 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import type { GatewayPlatformIdentity } from "@/lib/api";
 
+import { usePanelView } from "@/hooks/usePanelView";
 // The canonical default display_name lives in gateway/config.py
 // (PlatformConfig.display_name). The API returns the resolved effective
 // value, so this page never hardcodes the literal.
@@ -76,6 +77,8 @@ function initialCardState(p: GatewayPlatformIdentity): CardState {
 }
 
 export default function IdentityPage() {
+  usePanelView("IdentityPage");
+
   const [platforms, setPlatforms] = useState<GatewayPlatformIdentity[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, CardState>>({});

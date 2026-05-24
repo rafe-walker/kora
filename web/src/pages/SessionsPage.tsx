@@ -50,6 +50,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
+import { usePanelView } from "@/hooks/usePanelView";
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
     cli: { icon: Terminal, color: "text-primary" },
@@ -409,6 +410,8 @@ function SessionRow({
 }
 
 export default function SessionsPage() {
+  usePanelView("SessionsPage");
+
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);

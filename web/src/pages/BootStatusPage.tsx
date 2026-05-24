@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   BootHistoryEntry,
   BootOutcome,
@@ -265,6 +266,8 @@ function HistoryTable({ history, limit }: HistoryTableProps) {
 }
 
 export default function BootStatusPage() {
+  usePanelView("BootStatusPage");
+
   const [data, setData] = useState<BootStatusResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

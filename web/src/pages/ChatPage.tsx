@@ -37,6 +37,7 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 function buildWsUrl(
   token: string,
   resume: string | null,
@@ -104,7 +105,12 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
+export default function ChatPage({
+  isActive = true,
+}: {
+  isActive?: boolean;
+}) {
+  usePanelView("ChatPage");
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);

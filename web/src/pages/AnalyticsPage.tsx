@@ -26,6 +26,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
@@ -393,6 +394,8 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
 }
 
 export default function AnalyticsPage() {
+  usePanelView("AnalyticsPage");
+
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);

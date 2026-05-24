@@ -53,6 +53,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -103,6 +104,8 @@ function CategoryIcon({
 /* ------------------------------------------------------------------ */
 
 export default function ConfigPage() {
+  usePanelView("ConfigPage");
+
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<
     string,

@@ -33,6 +33,7 @@ import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 
+import { usePanelView } from "@/hooks/usePanelView";
 const PERIODS = [
   { label: "7d", days: 7 },
   { label: "30d", days: 30 },
@@ -765,6 +766,8 @@ function ModelSettingsPanel({
 /* ──────────────────────────────────────────────────────────────────── */
 
 export default function ModelsPage() {
+  usePanelView("ModelsPage");
+
   const [days, setDays] = useState(30);
   const [data, setData] = useState<ModelsAnalyticsResponse | null>(null);
   const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(null);

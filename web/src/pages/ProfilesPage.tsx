@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 
+import { usePanelView } from "@/hooks/usePanelView";
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
@@ -52,6 +53,8 @@ function ProfilesLoadingSpinner() {
 }
 
 export default function ProfilesPage() {
+  usePanelView("ProfilesPage");
+
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();

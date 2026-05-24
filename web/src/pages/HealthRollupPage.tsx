@@ -18,6 +18,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import type {
   HealthRollupResponse,
   HealthStatus,
@@ -207,6 +208,8 @@ function SubsignalCard({ name, signal }: { name: string; signal: Subsignal }) {
 }
 
 export default function HealthRollupPage() {
+  usePanelView("HealthRollupPage");
+
   const [data, setData] = useState<HealthRollupResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

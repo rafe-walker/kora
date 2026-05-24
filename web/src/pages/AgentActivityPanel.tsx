@@ -22,6 +22,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Toast } from "@/components/Toast";
 import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
+import { usePanelView } from "@/hooks/usePanelView";
 import {
   formatLatency,
   formatRelative,
@@ -168,6 +169,8 @@ function CallRow({ call, expanded, onToggle }: CallRowProps) {
 }
 
 export default function AgentActivityPanel() {
+  usePanelView("AgentActivityPanel");
+
   const [data, setData] = useState<AgentActivityResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

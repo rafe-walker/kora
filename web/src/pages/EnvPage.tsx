@@ -38,6 +38,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
+import { usePanelView } from "@/hooks/usePanelView";
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
 /* ------------------------------------------------------------------ */
@@ -487,6 +488,8 @@ function ProviderGroupCard({
 /* ------------------------------------------------------------------ */
 
 export default function EnvPage() {
+  usePanelView("EnvPage");
+
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});

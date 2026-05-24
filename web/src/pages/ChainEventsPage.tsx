@@ -16,6 +16,7 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import type { ChainEvent, ChainEventsResponse } from "@/lib/api";
 
+import { usePanelView } from "@/hooks/usePanelView";
 // Built-in prefix presets sourced from the 33+ kora.* event_type
 // literals shipped on the substrate side (foundation/0159). Picking
 // these by category covers ~90% of operator investigation cases.
@@ -192,6 +193,8 @@ function ChainEventRowDisplay({ event, expanded, onToggle }: ChainEventRowProps)
 }
 
 export default function ChainEventsPage() {
+  usePanelView("ChainEventsPage");
+
   const [prefix, setPrefix] = useState<string>(DEFAULT_PREFIX);
   const [events, setEvents] = useState<ChainEvent[]>([]);
   const [nextBeforeTs, setNextBeforeTs] = useState<string | null>(null);
