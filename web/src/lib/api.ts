@@ -216,6 +216,10 @@ export const api = {
   },
   // KR-FE-PROBE-INVESTIGATION-VIEWER: joined wake → reasoning → DM
   // xref panel. Window: 24h | 7d | all. limit: 1-200 (server caps).
+  // V2 (KR-FE-PROBE-INVESTIGATION-VIEWER-V2): the response now also
+  // carries the probe.investigation_completed projection + slack_dm
+  // outbound projection joined by caller_session_id (BE extension
+  // landed in the same bucket).
   getProbeInvestigations: (opts?: {
     window?: "24h" | "7d" | "all";
     limit?: number;
@@ -228,6 +232,38 @@ export const api = {
       `/api/probe-investigations${q ? "?" + q : ""}`,
     );
   },
+  // KR-FE-PROMOTION-REVIEW-PANEL — list pending phrasebook promotion
+  // proposals (sorted highest-confidence first by the BE).
+  getPhrasebookPromotionProposals: () =>
+    fetchJSON<PromotionProposalsResponse>(
+      "/api/promotions/phrasebook/pending",
+    ),
+  // Approve a pending proposal. Optional override payload fields:
+  // pattern_override / reply_template_override / category_override
+  // / review_notes. Empty body = approve as-proposed.
+  approvePhrasebookPromotion: (
+    proposalId: string,
+    overrides?: PromotionApproveOverrides,
+  ) =>
+    fetchJSON<PromotionApproveResponse>(
+      `/api/promotions/phrasebook/${encodeURIComponent(proposalId)}/approve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(overrides ?? {}),
+      },
+    ),
+  // Reject a pending proposal. ``review_notes`` is recorded verbatim
+  // in the promotion.rejected audit row (operator-decision-relevant).
+  rejectPhrasebookPromotion: (proposalId: string, reviewNotes: string) =>
+    fetchJSON<PromotionRejectResponse>(
+      `/api/promotions/phrasebook/${encodeURIComponent(proposalId)}/reject`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_notes: reviewNotes }),
+      },
+    ),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -2258,12 +2294,21 @@ export interface ProbeAutofixEventsResponse {
 // chronological timeline. Joins all mutating-action audit seams.
 // Drift-guarded action_categories pinned by the kora-actions
 // drift-guard test.
+//
+// KR-FE-KORA-ACTIONS-EXTENDED-SEAMS extension: ``promotion_proposed``
+// + ``promotion_approved`` + ``promotion_rejected`` surface the
+// PR #186 promotion-loop audit rows in the timeline. The
+// ``investigation_completed`` row already existed (PR #184 made it
+// productive — see PROBE-INVESTIGATION-DATA-COMPLETION).
 export type KoraActionCategory =
   | "email_sent"
   | "sea_ticket_created"
   | "autofix_attempted"
   | "investigation_completed"
   | "phrasebook_proposal_approved"
+  | "promotion_proposed"
+  | "promotion_approved"
+  | "promotion_rejected"
   | "other";
 
 export const KORA_ACTION_CATEGORIES: readonly KoraActionCategory[] = [
@@ -2272,6 +2317,9 @@ export const KORA_ACTION_CATEGORIES: readonly KoraActionCategory[] = [
   "autofix_attempted",
   "investigation_completed",
   "phrasebook_proposal_approved",
+  "promotion_proposed",
+  "promotion_approved",
+  "promotion_rejected",
   "other",
 ];
 
@@ -2316,6 +2364,54 @@ export interface ProbeReasoningToolCall {
   exc_type?: string;
 }
 
+// KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — operator-facing dm_status
+// enum. PR #184 introduced the 4-value `dm_status` literal in the
+// wake_consumer's investigation outcome ({sent, failed_send,
+// engine_unavailable_fallback, engine_unavailable_failed_send}).
+// The probe-investigations endpoint echoes the same values for
+// chip filtering. Drift-guarded by test_probe_investigations_dm_status.
+export type ProbeDmStatus =
+  | "sent"
+  | "failed_send"
+  | "engine_unavailable_fallback"
+  | "engine_unavailable_failed_send"
+  | "unknown";
+
+export const PROBE_DM_STATUS_VALUES: readonly ProbeDmStatus[] = [
+  "sent",
+  "failed_send",
+  "engine_unavailable_fallback",
+  "engine_unavailable_failed_send",
+];
+
+// KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — investigation_completed
+// projection from probe.investigation_completed audit (PR #184).
+// Optional — null when no investigation_completed row joins this
+// wake by caller_session_id (e.g. consumer wasn't running yet,
+// emit_audit failed best-effort, or older wake pre-#184).
+export interface ProbeInvestigationCompleted {
+  emitted_at: string;
+  summary_text: string;
+  model_used: string | null;
+  total_cost_usd: number | null;
+  investigation_duration_ms: number | null;
+  dm_status: ProbeDmStatus;
+  autofix_attempted: boolean;
+  reasoning_error: string | null;
+}
+
+// KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — slack DM projection from
+// slack_dm_log.jsonl entry written by the wake consumer (PR #184
+// extracted append_outbound_log_entry to wire this path). Optional
+// — null when no DM row joins by caller_session_id.
+export interface ProbeInvestigationDmEntry {
+  sent_at: string;
+  send_status: string; // "ok" | "failed"
+  channel_id: string;
+  slack_message_ts: string | null;
+  failure_reason: string | null;
+}
+
 export interface ProbeInvestigationItem {
   // Stable for FE react key — composed of wake_timestamp + probe +
   // category. Repeats of the SAME wake (debounce window) get
@@ -2339,6 +2435,9 @@ export interface ProbeInvestigationItem {
     any_errored: boolean;
     call_count: number;
   } | null;
+  // KR-FE-PROBE-INVESTIGATION-VIEWER-V2 additions.
+  investigation_completed: ProbeInvestigationCompleted | null;
+  dm_entry: ProbeInvestigationDmEntry | null;
   current_probe_health: string; // "healthy" | "degraded" | "unhealthy" | "unknown"
   resolution_status: ProbeResolutionStatus;
 }
@@ -2353,8 +2452,75 @@ export interface ProbeInvestigationsResponse {
   unknown_count: number;
   current_probe_health: Record<string, string>;
   items: ProbeInvestigationItem[];
-  v1_notes: {
-    per_call_cost_usd: string;
-    dm_sent_confirmation: string;
+  // KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — echoed allowlist of
+  // dm_status values, drift-guard pinned against the FE constant.
+  dm_status_values: string[];
+  by_dm_status_24h: Record<string, number>;
+}
+
+// KR-FE-PROMOTION-REVIEW-PANEL — phrasebook promotion proposal
+// shape (mirror of kora_cli/promote/phrasebook/proposer.py
+// :PromotionProposal serialized via proposal_to_dict). The four
+// status values are drift-guard pinned against the BE
+// _PROMOTION_STATUS_VALUES tuple in web_server.py.
+export type PromotionStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired";
+
+export const PROMOTION_STATUS_VALUES: readonly PromotionStatus[] = [
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+];
+
+export interface PromotionProposal {
+  proposal_id: string;
+  cluster_size: number;
+  sample_questions: string[];
+  proposed_pattern: string;
+  proposed_reply_template: string;
+  proposed_category: string;
+  confidence: number;
+  created_at: string;
+  status: PromotionStatus;
+  review_notes: string;
+  cluster_caller_session_ids: string[];
+  haiku_synthesized: boolean;
+}
+
+export interface PromotionProposalsResponse {
+  proposals: PromotionProposal[];
+  // Echoed from the BE so the FE doesn't need to hardcode the list
+  // a SECOND time — single source of truth at the wire. The
+  // drift-guard test pins both BE source + FE constant.
+  status_values: string[];
+}
+
+export interface PromotionApproveOverrides {
+  pattern_override?: string;
+  reply_template_override?: string;
+  category_override?: string;
+  review_notes?: string;
+}
+
+export interface PromotionApproveResponse {
+  proposal_id: string;
+  status: "approved";
+  committed_entry: {
+    pattern: string;
+    category: string;
+    description: string;
+    reply_template: string;
   };
+  entry_count_after: number;
+  backup_filename: string | null;
+}
+
+export interface PromotionRejectResponse {
+  proposal_id: string;
+  status: "rejected";
+  review_notes: string;
 }

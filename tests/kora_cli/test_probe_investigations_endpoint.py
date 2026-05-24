@@ -678,7 +678,7 @@ def test_nav_entry_present():
 
 
 # ---------------------------------------------------------------------------
-# 21-22. Empty state + v1_notes banner rendered
+# 21. Empty state rendered (V2: V1NotesBanner removed — see test below)
 # ---------------------------------------------------------------------------
 
 
@@ -696,11 +696,102 @@ def test_empty_state_message_in_page():
     assert "No probe wakes" in src
 
 
-def test_v1_notes_banner_rendered():
-    """Deferred v1 scope (per-call cost, DM-sent confirmation)
-    must be SURFACED to the operator, not hidden — so the roadmap
-    is visible and no one assumes it'll never come. The v1_notes
-    banner is the place."""
+# ---------------------------------------------------------------------------
+# KR-FE-PROBE-INVESTIGATION-VIEWER-V2 — V1 banner removed + V2 surfaces
+# ---------------------------------------------------------------------------
+
+
+def test_v1_notes_banner_removed_in_v2():
+    """PR #184 closed the 3 V1NotesBanner gaps BE-side (cost +
+    model + dm_sent + autofix_attempted). KR-FE-PROBE-INVESTIGATION-
+    VIEWER-V2 deletes the apology banner — the data is now live.
+    Regression guard: a re-rendered V1NotesBanner JSX element would
+    silently indicate someone reverted the V2 wiring. Comments
+    mentioning V1NotesBanner by name (e.g. the V2 page docstring
+    explaining what changed) are fine — only the JSX usage is
+    the regression target."""
     src = _PAGE.read_text()
-    assert "V1NotesBanner" in src
-    assert "v1_notes" in src
+    assert "<V1NotesBanner" not in src, (
+        "V1NotesBanner JSX reintroduced — V2 closed the 3 gaps; "
+        "remove the banner. If you need to apologize for a NEW "
+        "deferred field, write a V2NotesBanner instead."
+    )
+    assert "function V1NotesBanner" not in src, (
+        "V1NotesBanner component reintroduced — see above"
+    )
+
+
+def test_dm_status_chip_filter_present():
+    """V2 adds a dm_status chip-filter so the operator can triage
+    failed_send first. Pin: the FilterChips reference + the
+    DM_STATUS_CATEGORIES literal must exist in the page source."""
+    src = _PAGE.read_text()
+    assert "DM_STATUS_CATEGORIES" in src
+    assert "PROBE_DM_STATUS_VALUES" in src
+    # The 4 enum values must all appear as chip categories.
+    for v in (
+        "failed_send",
+        "sent",
+        "engine_unavailable_fallback",
+        "engine_unavailable_failed_send",
+    ):
+        assert v in src, f"missing dm_status chip category: {v}"
+
+
+def test_autofix_attempted_badge_in_page():
+    """When investigation_completed.autofix_attempted=true the row
+    surfaces a "🔧 fix attempted" badge so the operator can tell
+    that a probe_autofix invocation rode along with the
+    investigation."""
+    src = _PAGE.read_text()
+    assert "fix attempted" in src
+    assert "autofix_attempted" in src
+
+
+def test_dm_status_drift_guard():
+    """dm_status values must match between BE projection allowlist
+    (_DM_STATUS_VALUES in web_server.py) and FE constant
+    (PROBE_DM_STATUS_VALUES in api.ts). Drift here silently
+    breaks the dm_status chip-filter (chip clicks become no-ops
+    against an unknown enum value)."""
+    expected = {
+        "sent",
+        "failed_send",
+        "engine_unavailable_fallback",
+        "engine_unavailable_failed_send",
+    }
+
+    ws_src = _WEB_SERVER.read_text()
+    m = re.search(
+        r"_DM_STATUS_VALUES[^=]*=\s*\(([^)]+)\)",
+        ws_src,
+        re.DOTALL,
+    )
+    assert m is not None, "BE _DM_STATUS_VALUES tuple not found"
+    be_values = set(re.findall(r'"(\w+)"', m.group(1)))
+    assert be_values == expected, f"BE drift: {be_values}"
+
+    fe_src = _API_TS.read_text()
+    m = re.search(
+        r"PROBE_DM_STATUS_VALUES[^=]*=\s*\[([^\]]+)\]",
+        fe_src,
+    )
+    assert m is not None, "FE PROBE_DM_STATUS_VALUES not found"
+    fe_values = set(re.findall(r'"(\w+)"', m.group(1)))
+    assert fe_values == expected, f"FE drift: {fe_values}"
+
+
+def test_v2_response_fields_declared():
+    """The V2 response carries the per-investigation projection +
+    DM entry projection — pin the FE TS types so a rename on either
+    side surfaces at type-check time, not runtime."""
+    src = _API_TS.read_text()
+    for field in (
+        "investigation_completed",
+        "ProbeInvestigationCompleted",
+        "ProbeInvestigationDmEntry",
+        "dm_entry",
+        "dm_status_values",
+        "by_dm_status_24h",
+    ):
+        assert field in src, f"V2 missing FE field: {field}"

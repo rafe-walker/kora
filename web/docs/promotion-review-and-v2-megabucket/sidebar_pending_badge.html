@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Sidebar PendingBadge</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { padding: 0; max-width: none; display: flex; }
+  .sidebar { width: 240px; background: #0a0a0a; min-height: 100vh; padding: 12px 0; border-right: 1px solid #2a2a2a; }
+  .nav-link { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; font-family: ui-monospace, monospace; }
+  .nav-link.active { color: var(--fg); }
+  .nav-link .badge-count { margin-left: auto; padding: 2px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; }
+  .nav-icon { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .group-divider { height: 1px; background: #2a2a2a; margin: 8px 0; opacity: 0.4; }
+  .main-content { flex: 1; padding: 32px; color: var(--muted); font-size: 13px; max-width: 600px; line-height: 1.6; }
+  .main-content h1 { color: var(--fg); margin: 0 0 12px; font-size: 18px; }
+  .main-content code { background: #1a1a1a; padding: 2px 6px; border-radius: 4px; color: var(--success); font-size: 11px; }
+</style>
+</head><body>
+
+  <div class="sidebar">
+    <div style="padding: 0 16px 12px; font-weight: 600; color: var(--fg); font-size: 14px; line-height: 1.05; border-bottom: 1px solid #2a2a2a;">
+      Hermes<br>Agent
+    </div>
+    <div class="nav-link">⚠ ALERTS</div>
+    <div class="nav-link">⬢ OVERVIEW</div>
+    <div class="nav-link">💬 SESSIONS</div>
+    <div class="nav-link">📊 OPERATIONAL</div>
+    <div class="nav-link">💗 HEALTH</div>
+    <div class="nav-link">❤ HEARTBEAT</div>
+    <div class="nav-link active">✨ PROBE INVESTIGATIONS</div>
+    <div class="nav-link">📥 WEBHOOK EVENTS</div>
+    <div class="nav-link">↬ AGENT ACTIVITY</div>
+    <div class="nav-link">🧠 REASONING</div>
+    <div class="nav-link">💬 SLACK DM</div>
+    <div class="nav-link">✉ EMAIL</div>
+    <div class="nav-link">📥 EMAIL INTENT LOG</div>
+    <div class="nav-link">↗ OUTBOUND EMAIL LOG</div>
+    <div class="nav-link">📊 KORA ACTIONS</div>
+    <div class="nav-link">🔧 PROBE AUTOFIX LOG</div>
+    <div class="nav-link">⚡ MCP CLIENTS</div>
+    <div class="nav-link">▣ BOOT STATUS</div>
+    <div class="nav-link">⛒ DR</div>
+    <div class="nav-link">$ COST</div>
+    <div class="nav-link">📊 COST TELEMETRY</div>
+    <div class="nav-link">📖 PHRASEBOOK</div>
+    <div class="nav-link" style="background: rgba(250,204,21,0.08); border-left: 2px solid var(--warning);">
+      💡 PROMOTION REVIEW
+      <span class="badge-count">3</span>
+    </div>
+    <div class="nav-link">✓ CAPABILITIES</div>
+    <div class="nav-link">📜 CHARTER</div>
+    <div class="nav-link">⛔ KORA CONTROL</div>
+    <div class="nav-link">≋ SEA TICKETS</div>
+    <div class="nav-link">📡 CHAIN EVENTS</div>
+  </div>
+
+  <div class="main-content">
+    <h1>Sidebar PendingBadge — wired from <code>/api/promotions/phrasebook/pending</code></h1>
+    <p>
+      Adjacent to <code>/phrasebook</code> in the sidebar (operator-flow:
+      <em>Phrasebook</em> = current state → <em>Promotion Review</em> = what Kora wants to ADD).
+      Lightbulb icon signals "Kora's idea waiting for your read."
+    </p>
+    <p>
+      The PendingBadge (yellow pill, <code>3</code>) is rendered when
+      <code>NavItem.badgeCount &gt; 0</code>. Hook polls the pending endpoint
+      every 60s so new proposals surface without a refresh. Zero-count
+      hides the chip rather than rendering <code>0</code> — operator only
+      sees the chip when there's something to do.
+    </p>
+    <p>
+      Drift-guard: <code>PROMOTION_STATUS_VALUES</code> (api.ts) ↔
+      <code>_PROMOTION_STATUS_VALUES</code> (web_server.py) ↔
+      <code>PROPOSAL_STATUS_VALUES</code> (proposer.py) pinned by
+      <code>test_promotion_status_drift_guard</code>.
+    </p>
+  </div>
+
+</body></html>
