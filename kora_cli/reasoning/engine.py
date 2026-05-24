@@ -179,6 +179,15 @@ class ResponseResult:
     # backwards-compatible — existing ResponseResult construction
     # without this kwarg still works.
     tools_used: List[str] = field(default_factory=list)
+    # KR-CHEAP-PROMPT-CACHING — cache-token totals across all
+    # iterations of the tool-use loop. Both are 0 when no caching
+    # was used (uncached call, engine refused, or model didn't
+    # surface cache usage). Default 0 keeps the dataclass
+    # backwards-compatible. Handler reads these to bill against
+    # the cost-ladder's cache_read / cache_write rates rather than
+    # the full input-token rate.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 # ---------------------------------------------------------------------------

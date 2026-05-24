@@ -121,6 +121,73 @@ RUNG_MODEL_MAP: Dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# KR-CHEAP-PROMPT-CACHING — cacheable input wrappers
+# ---------------------------------------------------------------------------
+
+
+# Per Anthropic API docs:
+# https://platform.claude.com/docs/en/agents-and-tools/prompt-caching
+# Cache breakpoints are marked with ``cache_control: {"type":
+# "ephemeral"}``. The marker on a block caches everything UP TO AND
+# INCLUDING that block. We use TWO breakpoints (API allows up to 4):
+#   1. The system prompt — static across all calls.
+#   2. The tool list — static unless the tool registry mutates.
+#
+# Cache TTL is ~5 minutes on Anthropic's side. Active reasoning
+# sessions hit the warm cache repeatedly (~90% discount on the
+# cached portion). Idle agent pays the cache-write premium (~25%
+# above base rate) on the first call post-idle, then reads cheap
+# until idle again. Net expected effect: ~50% input-cost
+# reduction on warm sessions; spec PR body documents the cost
+# shape change for operator visibility.
+
+
+def _wrap_system_as_cacheable(system_prompt: str) -> list[dict]:
+    """Convert a bare-string system prompt to a content-block list
+    with ``cache_control: ephemeral`` on the last block (here:
+    the only block).
+
+    The SDK accepts ``system: str`` OR
+    ``system: list[{type: "text", text: str, cache_control?: ...}]``.
+    The list form is required to attach the cache marker.
+    """
+    return [
+        {
+            "type": "text",
+            "text": system_prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
+def _wrap_tools_as_cacheable(tools: list[dict]) -> list[dict]:
+    """Return a NEW list of tool descriptors with
+    ``cache_control: ephemeral`` on the FINAL tool.
+
+    The marker on the last tool covers the entire tool block
+    (system prompt's tool-system additions + every preceding
+    tool's schema). We never mutate the input list — caller
+    holds a reference to the registry's structures and we don't
+    want to surprise them with a side-effect.
+
+    Empty input → empty output (caller skips ``tools=`` kwarg).
+    """
+    if not tools:
+        return []
+    wrapped: list[dict] = []
+    for i, tool in enumerate(tools):
+        if i == len(tools) - 1:
+            # Last tool — attach the cache marker. Copy the dict so
+            # we don't mutate the registry's source structure.
+            new_tool = dict(tool)
+            new_tool["cache_control"] = {"type": "ephemeral"}
+            wrapped.append(new_tool)
+        else:
+            wrapped.append(tool)
+    return wrapped
+
+
+# ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
 
@@ -321,11 +388,31 @@ class AnthropicReasoningEngine:
         # Accumulators across iterations.
         total_input_tokens = 0
         total_output_tokens = 0
+        # KR-CHEAP-PROMPT-CACHING — accumulate cache-write +
+        # cache-read tokens separately. The SDK surfaces them as
+        # ``usage.cache_creation_input_tokens`` (full-rate, billed
+        # 1x base + ~25% write premium per Anthropic pricing) and
+        # ``usage.cache_read_input_tokens`` (~90% discount vs base).
+        # Handler reads ResponseResult.cache_* and bills via
+        # CanonicalUsage(cache_write_tokens, cache_read_tokens) so
+        # the cost-ladder PricingEntry's cache_*_cost_per_million
+        # multipliers apply correctly.
+        total_cache_creation_tokens = 0
+        total_cache_read_tokens = 0
         # Track which tools Kora actually used — surfaced to the
         # handler via ResponseResult.tools_used (ST2 wires it into
         # the outbound JSONL; ST1 ships the field on the result
         # class so handler/test consumers don't churn between STs).
         tools_used: list[str] = []
+
+        # KR-CHEAP-PROMPT-CACHING — build cacheable system block +
+        # cacheable tool list ONCE outside the loop. Each iteration
+        # sends the SAME structures so Anthropic recognizes the
+        # cache key + hits the warm cache after the first roundtrip.
+        # The ``cache_control: {type: ephemeral}`` marker covers
+        # everything UP TO AND INCLUDING the block it's attached to.
+        system_blocks = _wrap_system_as_cacheable(self._system_prompt)
+        cacheable_tools = _wrap_tools_as_cacheable(tools)
 
         for iteration in range(1, MAX_TOOL_USE_ITERATIONS + 1):
             try:
@@ -334,13 +421,13 @@ class AnthropicReasoningEngine:
                 # array (some Anthropic SDK versions are strict).
                 kwargs: Dict[str, Any] = {
                     "model": model,
-                    "system": self._system_prompt,
+                    "system": system_blocks,
                     "messages": messages,
                     "max_tokens": self._max_output_tokens,
                     "timeout": self._timeout,
                 }
-                if tools:
-                    kwargs["tools"] = tools
+                if cacheable_tools:
+                    kwargs["tools"] = cacheable_tools
                 response = await client.messages.create(**kwargs)
             except Exception as exc:
                 return self._map_sdk_exception(
@@ -352,6 +439,17 @@ class AnthropicReasoningEngine:
             total_input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
             total_output_tokens += int(
                 getattr(usage, "output_tokens", 0) or 0
+            )
+            # Cache token accumulation. SDK exposes these as
+            # ``cache_creation_input_tokens`` + ``cache_read_input_tokens``
+            # on the usage block. They're populated only when caching
+            # actually engages — uncached calls leave them at 0 (or
+            # the attr absent, which getattr-defaults to 0 here).
+            total_cache_creation_tokens += int(
+                getattr(usage, "cache_creation_input_tokens", 0) or 0
+            )
+            total_cache_read_tokens += int(
+                getattr(usage, "cache_read_input_tokens", 0) or 0
             )
 
             # Detect tool-use vs end-of-turn. Anthropic SDK sets
@@ -366,6 +464,8 @@ class AnthropicReasoningEngine:
                     started_at=started_at,
                     total_input_tokens=total_input_tokens,
                     total_output_tokens=total_output_tokens,
+                    total_cache_creation_tokens=total_cache_creation_tokens,
+                    total_cache_read_tokens=total_cache_read_tokens,
                     tools_used=tools_used,
                 )
 
@@ -386,6 +486,8 @@ class AnthropicReasoningEngine:
                     started_at=started_at,
                     total_input_tokens=total_input_tokens,
                     total_output_tokens=total_output_tokens,
+                    total_cache_creation_tokens=total_cache_creation_tokens,
+                    total_cache_read_tokens=total_cache_read_tokens,
                     tools_used=tools_used,
                 )
 
@@ -424,6 +526,8 @@ class AnthropicReasoningEngine:
             reasoning_duration_ms=_elapsed_ms(started_at),
             error="tool_use_max_iterations_exceeded",
             tools_used=tools_used,
+            cache_creation_input_tokens=total_cache_creation_tokens,
+            cache_read_input_tokens=total_cache_read_tokens,
         )
 
     def _extract_tool_use_blocks(self, response: Any) -> list:
@@ -595,6 +699,8 @@ class AnthropicReasoningEngine:
         started_at: float,
         total_input_tokens: int,
         total_output_tokens: int,
+        total_cache_creation_tokens: int,
+        total_cache_read_tokens: int,
         tools_used: list[str],
     ) -> ResponseResult:
         """Multi-iteration variant of :meth:`_project_response`.
@@ -602,7 +708,9 @@ class AnthropicReasoningEngine:
         Token totals are passed in (accumulated across all
         iterations) rather than read from the final response's
         usage block — important since intermediate roundtrips
-        billed tokens too.
+        billed tokens too. Cache totals are surfaced separately
+        so the handler can bill them at cache_read / cache_write
+        rates rather than the full input-token rate.
         """
         text_parts: list[str] = []
         try:
@@ -623,6 +731,8 @@ class AnthropicReasoningEngine:
                 reasoning_duration_ms=_elapsed_ms(started_at),
                 error="response_projection_failed",
                 tools_used=tools_used,
+                cache_creation_input_tokens=total_cache_creation_tokens,
+                cache_read_input_tokens=total_cache_read_tokens,
             )
 
         text = "".join(text_parts).strip()
@@ -634,6 +744,8 @@ class AnthropicReasoningEngine:
             reasoning_duration_ms=_elapsed_ms(started_at),
             error=None,
             tools_used=tools_used,
+            cache_creation_input_tokens=total_cache_creation_tokens,
+            cache_read_input_tokens=total_cache_read_tokens,
         )
 
     async def close(self) -> None:

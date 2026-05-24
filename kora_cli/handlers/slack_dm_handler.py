@@ -415,6 +415,13 @@ class SlackDMHandler:
             # the REASONING-PANEL can surface "this response used
             # N tools" without parsing structured logs.
             "tools_used": None,
+            # KR-CHEAP-PROMPT-CACHING — cache-token totals. Default
+            # None (engine didn't run / errored) → 0 when present.
+            # Handler bills cache_creation at ~1.25x base and
+            # cache_read at ~0.1x base via CanonicalUsage in
+            # _record_inference_to_cost_ladder.
+            "cache_creation_input_tokens": None,
+            "cache_read_input_tokens": None,
         }
 
         if engine is None:
@@ -586,6 +593,8 @@ class SlackDMHandler:
                     "reasoning_duration_ms": None,
                     "reasoning_error": f"engine_exception:{type(exc).__name__}",
                     "tools_used": None,
+                    "cache_creation_input_tokens": None,
+                    "cache_read_input_tokens": None,
                 },
             )
 
@@ -612,6 +621,11 @@ class SlackDMHandler:
                 if result.error is None
                 else None
             ),
+            # KR-CHEAP-PROMPT-CACHING — cache-token accumulators.
+            # Pass through whatever the engine accumulated; 0 when
+            # no caching engaged (uncached call OR pre-cache state).
+            "cache_creation_input_tokens": result.cache_creation_input_tokens,
+            "cache_read_input_tokens": result.cache_read_input_tokens,
         }
 
         if result.error is not None:
@@ -669,7 +683,26 @@ class SlackDMHandler:
         model_name = reasoning_meta.get("model_used")
         input_tokens = reasoning_meta.get("input_tokens") or 0
         output_tokens = reasoning_meta.get("output_tokens") or 0
-        if not model_name or (input_tokens == 0 and output_tokens == 0):
+        # KR-CHEAP-PROMPT-CACHING — bill cache_creation + cache_read
+        # at their respective rates. CanonicalUsage(.cache_write_tokens
+        # → ~1.25x base) + (.cache_read_tokens → ~0.1x base) per the
+        # PricingEntry table in agent/usage_pricing.py. When the
+        # engine didn't cache (None or 0), CanonicalUsage's defaults
+        # keep this a no-op for those fields.
+        cache_creation_tokens = (
+            reasoning_meta.get("cache_creation_input_tokens") or 0
+        )
+        cache_read_tokens = (
+            reasoning_meta.get("cache_read_input_tokens") or 0
+        )
+        # Bail only when EVERY token bucket is 0 — a pure-cache-read
+        # call (input_tokens=0 but cache_read_tokens>0) still bills.
+        if not model_name or (
+            input_tokens == 0
+            and output_tokens == 0
+            and cache_creation_tokens == 0
+            and cache_read_tokens == 0
+        ):
             return
 
         try:
@@ -677,6 +710,8 @@ class SlackDMHandler:
                 CanonicalUsage(
                     input_tokens=int(input_tokens),
                     output_tokens=int(output_tokens),
+                    cache_write_tokens=int(cache_creation_tokens),
+                    cache_read_tokens=int(cache_read_tokens),
                 ),
                 model_name=str(model_name),
                 provider="anthropic",
@@ -779,6 +814,14 @@ class SlackDMHandler:
         # paths so the field's presence distinguishes "engine ran"
         # from "engine bypassed."
         tools_used: Optional[List[str]] = None,
+        # KR-CHEAP-PROMPT-CACHING — cache-token totals from the
+        # engine. None (omitted from JSONL) on non-reasoning paths;
+        # explicit 0 means the engine ran but no cache engaged
+        # (older SDK / uncached call). Persisted alongside
+        # input_tokens/output_tokens so the reasoning panel can
+        # show cache-hit rate per call without grepping logs.
+        cache_creation_input_tokens: Optional[int] = None,
+        cache_read_input_tokens: Optional[int] = None,
     ) -> None:
         """Outbound-side JSONL entry. Distinct schema from inbound
         entries (``sent_at`` instead of ``received_at``) so operator
@@ -837,6 +880,16 @@ class SlackDMHandler:
         # is a different signal than "engine didn't run."
         if tools_used is not None:
             entry["tools_used"] = list(tools_used)
+        # Cache-token persistence — same None-omit semantic as the
+        # other reasoning fields.
+        if cache_creation_input_tokens is not None:
+            entry["cache_creation_input_tokens"] = int(
+                cache_creation_input_tokens
+            )
+        if cache_read_input_tokens is not None:
+            entry["cache_read_input_tokens"] = int(
+                cache_read_input_tokens
+            )
 
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
