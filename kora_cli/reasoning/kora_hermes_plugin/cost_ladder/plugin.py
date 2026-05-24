@@ -131,8 +131,11 @@ def cost_ladder_and_caching_hook(
         )
 
     # --- Caching: wrap system + tools with cache_control markers ---
+    # KR-PLUGIN-EXTRACTIONS-BATCH-2 (Deliverable B) — markers now
+    # live at the canonical caching sub-plugin location, NOT in
+    # anthropic_engine.py. Cleans the v1 cross-dep.
     try:
-        from kora_cli.reasoning.anthropic_engine import (
+        from kora_cli.reasoning.kora_hermes_plugin.caching.markers import (
             _wrap_system_as_cacheable,
             _wrap_tools_as_cacheable,
         )

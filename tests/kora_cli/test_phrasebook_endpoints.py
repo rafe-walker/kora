@@ -55,6 +55,18 @@ _API_TS = _REPO_ROOT / "web" / "src" / "lib" / "api.ts"
 _APP_TSX = _REPO_ROOT / "web" / "src" / "App.tsx"
 _PAGE = _REPO_ROOT / "web" / "src" / "pages" / "PhrasebookPage.tsx"
 _DM_PHRASEBOOK_PY = _REPO_ROOT / "kora_cli" / "short_circuit" / "dm_phrasebook.py"
+# KR-PLUGIN-EXTRACTIONS-BATCH-2 (Deliverable C) — the
+# ``_PLACEHOLDER_RE`` regex definition moved to the canonical
+# matcher module; ``dm_phrasebook.py`` is now a re-export shim.
+# Source-grep drift guard reads from the canonical location.
+_MATCHER_PY = (
+    _REPO_ROOT
+    / "kora_cli"
+    / "reasoning"
+    / "kora_hermes_plugin"
+    / "short_circuit"
+    / "matcher.py"
+)
 
 
 # ---- Fixtures ----------------------------------------------
@@ -403,23 +415,29 @@ def test_page_marks_degraded_snapshot_fields_per_entry():
 
 def test_placeholder_regex_matches_dm_phrasebook_source():
     """SECURITY-of-correctness: the GET endpoint's
-    _PHRASEBOOK_PLACEHOLDER_RE must match dm_phrasebook.py's
+    _PHRASEBOOK_PLACEHOLDER_RE must match the matcher module's
     _PLACEHOLDER_RE exactly. Otherwise FE's per-entry
     referenced_snapshot_fields list will drift from what
     render_reply actually walks at runtime — operator's "this
-    will fall through" affordance becomes a lie."""
-    backend_src = _DM_PHRASEBOOK_PY.read_text()
+    will fall through" affordance becomes a lie.
+
+    Source-grep reads ``matcher.py`` (the canonical location
+    post KR-PLUGIN-EXTRACTIONS-BATCH-2 Deliverable C);
+    ``dm_phrasebook.py`` is a re-export shim that no longer
+    defines the regex.
+    """
+    backend_src = _MATCHER_PY.read_text()
     backend_re = re.search(
         r'_PLACEHOLDER_RE\s*=\s*re\.compile\(r"([^"]+)"\)',
         backend_src,
     )
-    assert backend_re, "dm_phrasebook._PLACEHOLDER_RE not found"
+    assert backend_re, "matcher._PLACEHOLDER_RE not found"
 
     from kora_cli.web_server import _PHRASEBOOK_PLACEHOLDER_RE
 
     assert _PHRASEBOOK_PLACEHOLDER_RE.pattern == backend_re.group(1), (
         f"Endpoint's _PHRASEBOOK_PLACEHOLDER_RE drifted from "
-        f"dm_phrasebook's _PLACEHOLDER_RE — referenced-fields "
+        f"matcher's _PLACEHOLDER_RE — referenced-fields "
         f"extraction will diverge from runtime walk:\n"
         f"endpoint: {_PHRASEBOOK_PLACEHOLDER_RE.pattern!r}\n"
         f"runtime:  {backend_re.group(1)!r}"
