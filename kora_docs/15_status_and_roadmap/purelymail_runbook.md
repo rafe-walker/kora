@@ -367,17 +367,17 @@ Covers Kora receiving email AT `kora@<domain>` via
 `imap.purelymail.com:993` SSL. The daemon polls Purelymail's INBOX
 every 5 minutes (configurable), fetches UNSEEN messages, runs each
 through a 5-step filter precedence (state gate → sender allowlist
-→ recipient → spoofing → identity), writes a JSONL audit entry,
-and — when AUTO_REPLY is enabled — drives a reasoning-engine reply
-through the outbound SMTP path from Part 1.
+→ recipient → spoofing → identity), and writes a JSONL audit
+entry. No AI reply is drafted or sent from the inbound path (Lock
+R3-8 (a) / KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL); inbound mail is a
+read-only signal that future consumers
+(KR-INTENT-EMAIL-TO-SEA-TICKET) will project into Sea_Tickets.
 
-Inbound is purely opt-in at three layers:
+Inbound is purely opt-in at two layers:
 1. The IMAP client listener fail-softs on missing creds (daemon
    boots with inbound disabled).
 2. The sender allowlist defaults to **fail-CLOSED DENY ALL** —
    nothing reaches identity check until the operator sets it.
-3. AUTO_REPLY (reasoning-driven outbound) defaults OFF — Kora
-   logs received mail but doesn't reply until the operator opts in.
 
 ---
 
@@ -424,9 +424,9 @@ Procedure (separate App Password — recommended default):
 
 ## Part 2 Step 2 — Configure Doppler secrets (inbound)
 
-8 new envs land in the same `kora-runtime-gateways` Doppler
+7 new envs land in the same `kora-runtime-gateways` Doppler
 project alongside the outbound ones. 4 are IMAP transport config;
-4 are email-handler config (allowlist, addresses, AUTO_REPLY).
+3 are email-handler config (allowlist, recipient address, identity).
 
 ```sh
 CONFIG=stg  # or prd
@@ -448,7 +448,7 @@ doppler secrets set KORA_PUREMAIL_IMAP_APP_PASSWORD \
 # doppler secrets set KORA_PUREMAIL_IMAP_PORT "993" \
 #   -p kora-runtime-gateways -c "$CONFIG"
 
-# --- Email handler config (4 envs) ---
+# --- Email handler config (3 envs) ---
 # Sender allowlist — empty = fail-CLOSED DENY ALL
 doppler secrets set KORA_EMAIL_SENDER_ALLOWLIST \
   "joshua@$DOMAIN" \
@@ -464,16 +464,17 @@ doppler secrets set KORA_EMAIL_JOSHUA_ADDRESS \
   "joshua@$DOMAIN" \
   -p kora-runtime-gateways -c "$CONFIG"
 
-# AUTO_REPLY — default OFF. Set to "true" to opt in (see
-# Part 2 Step 5 for the cost trade-off note).
-doppler secrets set KORA_EMAIL_AUTO_REPLY \
-  "false" \
-  -p kora-runtime-gateways -c "$CONFIG"
-
 # Optional cadence override (default 300s = 5 min)
 # doppler secrets set KORA_EMAIL_IMAP_POLL_INTERVAL_SEC "300" \
 #   -p kora-runtime-gateways -c "$CONFIG"
 ```
+
+> **Removed**: `KORA_EMAIL_AUTO_REPLY` (Lock R3-8 (a) /
+> KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL). The handler no longer reads
+> this env; if a legacy value remains in Doppler from before the
+> removal, it's ignored cleanly. Operators may delete it at the
+> next secret-rotation cadence (`doppler secrets delete
+> KORA_EMAIL_AUTO_REPLY`).
 
 ### Validation
 
@@ -482,8 +483,7 @@ for SECRET in KORA_PUREMAIL_IMAP_USERNAME \
               KORA_PUREMAIL_IMAP_APP_PASSWORD \
               KORA_EMAIL_SENDER_ALLOWLIST \
               KORA_EMAIL_KORA_ADDRESS \
-              KORA_EMAIL_JOSHUA_ADDRESS \
-              KORA_EMAIL_AUTO_REPLY; do
+              KORA_EMAIL_JOSHUA_ADDRESS; do
   doppler secrets get "$SECRET" -p kora-runtime-gateways \
     -c "$CONFIG" --plain >/dev/null \
     && echo "OK   gateways:$SECRET" \
@@ -491,7 +491,7 @@ for SECRET in KORA_PUREMAIL_IMAP_USERNAME \
 done
 ```
 
-All six should print `OK`. Any `MISS` blocks the smoke test —
+All five should print `OK`. Any `MISS` blocks the smoke test —
 the IMAP listener will boot but stay disabled OR every inbound
 message will hit a fail-CLOSED filter.
 
@@ -551,78 +551,32 @@ If both checks pass, inbound is live in receive-only mode.
 
 ---
 
-## Part 2 Step 4 — Smoke test (full loop: Joshua → Kora → Joshua, AUTO_REPLY enabled)
+## Part 2 Step 4 — Auto-reply (REMOVED — Lock R3-8 (a))
 
-Only run this AFTER Part 2 Step 3 passes (received-only smoke).
-This step enables AUTO_REPLY + confirms the reasoning engine plus
-outbound SMTP path complete the loop.
+Previously Step 4 ("full loop: Joshua → Kora → Joshua, AUTO_REPLY
+enabled") and Step 5 ("AUTO_REPLY opt-in cost trade-off") covered
+enabling `KORA_EMAIL_AUTO_REPLY` so the handler would draft a
+reasoning-engine reply for every identified Joshua email and send
+it back via SMTP. Per Lock R3-8 (a) during the R3 walkthrough +
+KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL, that branch has been cut. The
+handler no longer reads `KORA_EMAIL_AUTO_REPLY`, the reasoning
+engine is no longer invoked from the email path, and no auto-reply
+SMTP send is attempted.
 
-1. Set AUTO_REPLY ON:
+What remains:
 
-   ```sh
-   doppler secrets set KORA_EMAIL_AUTO_REPLY "true" \
-     -p kora-runtime-gateways -c "$CONFIG"
-   flyctl deploy -a kora-runtime-staging
-   ```
+  * Inbound parsing + JSONL emission (Part 2 Step 3)
+  * IMAP polling (same listener; unchanged)
+  * Outbound SMTP for non-inbound-reply paths (Kora emailing
+    artifacts / reports; driven from other modules using
+    `PurelymailClient.send_email` directly — Part 1 still applies
+    for those)
 
-2. Joshua sends a fresh email to `kora@stormhavenenterprises.com`
-   (do NOT reuse a thread from Step 3 — those were already marked
-   SEEN so the IMAP poll won't fetch them).
-
-3. Wait one poll cycle (≤5 min).
-
-4. Joshua's inbox should receive a reply from
-   `kora@stormhavenenterprises.com`:
-   - **Subject**: `Re: <original subject>` (or `Re: (no subject)`
-     if the original was blank)
-   - **In-Reply-To header**: matches the original email's
-     `Message-ID` (mail client groups them as one thread)
-   - **Body**: either Kora's reasoning-driven response OR the
-     canned fallback (`"Kora is currently unable to respond by
-     email; operator notified."`) if the reasoning engine couldn't
-     produce a response
-
-5. Verify both JSONL files captured the round-trip:
-
-   ```sh
-   tail -n 1 /home/hermes/.kora/email_inbound_log.jsonl  # received
-   tail -n 1 /home/hermes/.kora/email_outbound_log.jsonl  # ok
-   ```
-
-   The outbound entry's `in_reply_to` should equal the inbound
-   entry's `message_id` (this is what threads the reply correctly
-   in Joshua's mail client).
-
----
-
-## Part 2 Step 5 — AUTO_REPLY opt-in cost trade-off
-
-`KORA_EMAIL_AUTO_REPLY` is off by default for a reason: email
-reasoning is **more expensive than Slack DM reasoning**. Reasons:
-
-- Email bodies are typically longer than Slack messages → more
-  input tokens
-- Email threads accumulate longer context windows (the loader
-  pulls up to 10 prior turns transitively across the chain)
-- A poll-cycle batch can include multiple emails Joshua sent in
-  rapid succession, each triggering its own reasoning call
-- Email senders (even other humans Joshua talks to) may CC Kora
-  or send mailing-list traffic; the allowlist + identity-check
-  gate against this but operators should monitor the
-  `cost_state_holder` rung after enabling AUTO_REPLY
-
-Recommended rollout:
-1. Enable Part 2 Step 3 (receive-only) for ≥48h. Monitor inbound
-   JSONL for any unexpected senders / patterns.
-2. Add additional senders to `KORA_EMAIL_SENDER_ALLOWLIST` only
-   after verifying they belong (comma-separated list).
-3. Enable AUTO_REPLY (Part 2 Step 4) ONLY after the cost-ladder
-   is set up with appropriate per-rung limits and operator alerts
-   wired up. See `kora_runtime_first_deploy_runbook.md` cost
-   section.
-4. After enabling AUTO_REPLY, monitor outbound JSONL for entries
-   with `reasoning_error` populated — these are canned-fallback
-   sends, which still cost outbound SMTP but no reasoning tokens.
+Future work: KR-INTENT-EMAIL-TO-SEA-TICKET will read the inbound
+JSONL and project Joshua's emails into Sea_Tickets / scratchpad
+items, replacing the auto-reply path with a structured persistence
+path. The `cost_telemetry.ROUTE_EMAIL_INBOUND` literal remains
+reserved for that future wiring.
 
 ---
 
@@ -635,8 +589,9 @@ table below. The status enum is defined in
 ### `handled_status: received`
 
 Success — email passed all 5 filters. Chain event was emitted.
-If AUTO_REPLY is on, the reasoning engine + outbound send already
-fired (check outbound JSONL for the reply entry).
+No reply is sent (Lock R3-8 (a)); the inbound JSONL row is the
+only side effect. Future KR-INTENT-EMAIL-TO-SEA-TICKET consumers
+will read this row to project the email into a Sea_Ticket.
 
 ### `handled_status: filtered_paused` / `filtered_stopped`
 
@@ -740,24 +695,18 @@ App Password rejected. Causes:
 `<REDACTED>` where the password would have been (security
 sanitizer).
 
-### "Inbound emails are received but AUTO_REPLY never sends"
+### "Inbound emails are received but no reply is sent"
 
-Check, in order:
-1. `KORA_EMAIL_AUTO_REPLY` is set to `true` / `1` / `yes` / `on`
-   (case-insensitive; other values keep it OFF)
-2. The reasoning engine listener is alive — daemon logs should
-   show
-   `[kora.reasoning_engine_listener] AnthropicReasoningEngine constructed`
-3. The outbound `PurelymailClient` listener is alive — same kind
-   of log line
-4. Check outbound JSONL `email_outbound_log.jsonl` — the send
-   may have happened + failed; the failed entry will have
-   `send_status: failed` + a `error` field
+Expected behavior post Lock R3-8 (a) / KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL.
+The handler no longer drafts or sends auto-replies; inbound mail
+is parsed, logged to `email_inbound_log.jsonl`, and the chain
+event `[kora.email_inbound.received]` fires. That's the complete
+processing path. Joshua's mail client will not see a reply from
+Kora in response.
 
-If the outbound entry has `reasoning_error` populated (and the
-text is the canned fallback), the reasoning engine returned an
-error code — see the Slack DM handler's reasoning-error table in
-`KR-FEAT-AI-RESPONSE-LOOP` ST2 docs for the taxonomy.
+If a legacy `KORA_EMAIL_AUTO_REPLY` env value is still in Doppler
+from before the removal, it's ignored — the handler doesn't read
+it. The env can be deleted at the next secret-rotation cadence.
 
 ---
 
@@ -775,6 +724,6 @@ error code — see the Slack DM handler's reasoning-error table in
 - `kora_cli/clients/purelymail_types.py` — `SendResult` +
   `ParsedIncomingEmail` + `AttachmentMeta` shapes
 - `kora_cli/handlers/email_inbound_handler.py` — the 5-step filter
-  precedence + JSONL log + AUTO_REPLY plumbing
+  precedence + JSONL log (no auto-reply path; Lock R3-8 (a))
 - `kora_cli/listeners/email_inbound_imap_listener.py` — IMAP poll
   listener + `register_periodic_task("email.imap_poll", ...)`

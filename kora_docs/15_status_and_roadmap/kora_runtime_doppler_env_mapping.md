@@ -126,9 +126,10 @@ Full mint + smoke-test walkthrough in `purelymail_runbook.md`
 | `KORA_PUREMAIL_IMAP_PORT` | Optional override | Default `993` (SSL). | `993` |
 | `KORA_EMAIL_SENDER_ALLOWLIST` | `EmailInboundHandler.handle_event` (fail-CLOSED DENY ALL on unset / empty) | Comma-separated allowed inbound senders. Defense against accidental processing of non-Joshua mail. | `joshua@<domain>` |
 | `KORA_EMAIL_KORA_ADDRESS` | `EmailInboundHandler.handle_event` (recipient filter) | The address Kora receives AT — parsed `to:` header must include this (case-insensitive). | `kora@<domain>` |
-| `KORA_EMAIL_JOSHUA_ADDRESS` | `EmailInboundHandler.handle_event` (identity check; fail-CLOSED on unset) | The single sender address that's allowed to drive AUTO_REPLY. | `joshua@<domain>` |
-| `KORA_EMAIL_AUTO_REPLY` | `EmailInboundHandler.handle_event` (opt-in gate) | Default OFF. Set to `true`/`1`/`yes`/`on` to enable reasoning-driven email replies. See `purelymail_runbook.md` Part 2 Step 5 for the cost trade-off note. | `false` (default) or `true` |
+| `KORA_EMAIL_JOSHUA_ADDRESS` | `EmailInboundHandler.handle_event` (identity check; fail-CLOSED on unset) | The single sender address allowed past the identity filter. Inbound mail from this sender is parsed + logged; no auto-reply is sent (Lock R3-8 (a) / KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL). | `joshua@<domain>` |
 | `KORA_EMAIL_IMAP_POLL_INTERVAL_SEC` | Optional override | Default `300` (5 min). | `300` |
+
+> **Removed**: `KORA_EMAIL_AUTO_REPLY` (Lock R3-8 (a) / KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL). The inbound auto-reply path was cut; the env is no longer read. Legacy values in Doppler are ignored cleanly and may be removed at the next secret-rotation cadence.
 
 **Validation tip**: after setting these, redeploy the daemon then
 run the smoke tests in `purelymail_runbook.md` — Part 1 Step 4

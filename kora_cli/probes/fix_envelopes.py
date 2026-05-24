@@ -175,9 +175,8 @@ ENVELOPES: Dict[str, FixEnvelope] = {
 }
 
 
-# Truthy env values per the fail-CLOSED memory + the AUTO_REPLY env
-# pattern in email_inbound_handler. Anything else (unset, "false",
-# garbage) keeps the envelope OFF.
+# Truthy env values per the fail-CLOSED memory. Anything else
+# (unset, "false", garbage) keeps the envelope OFF.
 _TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
 
 

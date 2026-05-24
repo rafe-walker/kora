@@ -3,7 +3,7 @@
 Covers:
   - Filter precedence (5 steps):
     * State gate: PAUSED → handled_status=filtered_paused +
-      should_mark_seen=True + no reply attempt
+      should_mark_seen=True
     * State gate: STOPPED → handled_status=filtered_stopped
     * State gate: ACTIVE → proceeds to next filter
     * Sender allowlist: env unset → fail-CLOSED DENY ALL
@@ -29,24 +29,16 @@ Covers:
     * received: should_mark_seen=True
     * filtered_*: should_mark_seen=True (terminal for this UID)
     * handler_error: should_mark_seen=False (UNSEEN for retry)
-    * should_reply: True iff AUTO_REPLY env AND status=received
 
   - Chain event ``[kora.email_inbound.received]`` emitted ONLY on
     identified Joshua mail
 
-  - AUTO_REPLY:
-    * Env default OFF → received status but no reply attempt
-    * Env ON + engine available → IncomingMessage built; engine.respond
-      called; PurelymailClient.send_email called with subject Re:
-      + in_reply_to=parsed.message_id
-    * Env ON + engine None → canned fallback text sent
-    * Env ON + engine.respond raises → canned fallback
-    * Env ON + result.error set → canned fallback text + recorded
-      error code
-    * Env ON + client None → send skipped (logged); inbound status
-      stays received
-    * Env ON + send raises → inbound status stays received (outbound
-      JSONL records the failure separately)
+  - Lock R3-8 (a) — KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL:
+    * No auto-reply branch — inbound mail is parsed + logged but
+      no send is attempted.
+    * Legacy ``KORA_EMAIL_AUTO_REPLY`` env values are ignored
+      cleanly (no error, no reply).
+    * The reasoning engine is NEVER invoked from the email path.
 
   - SECURITY: passwords / tokens never appear in JSONL across
     diverse failure modes
@@ -57,7 +49,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -66,9 +58,7 @@ from kora_cli.clients.purelymail_types import (
     ParsedIncomingEmail,
 )
 from kora_cli.handlers.email_inbound_handler import (
-    AUTO_REPLY_ENV,
     BODY_TRUNCATE_LIMIT,
-    CANNED_FALLBACK_TEXT,
     HANDLED_FILTERED_NON_ALLOWLIST,
     HANDLED_FILTERED_NON_JOSHUA,
     HANDLED_FILTERED_PAUSED,
@@ -80,7 +70,6 @@ from kora_cli.handlers.email_inbound_handler import (
     KORA_ADDRESS_ENV,
     SENDER_ALLOWLIST_ENV,
     EmailInboundHandler,
-    HandlerResult,
 )
 
 
@@ -102,7 +91,10 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv(
         JOSHUA_ADDRESS_ENV, "joshua@stormhavenenterprises.com"
     )
-    monkeypatch.delenv(AUTO_REPLY_ENV, raising=False)
+    # Lock R3-8 (a) — KORA_EMAIL_AUTO_REPLY was removed. Defensively
+    # clear any value that might bleed in from real env so tests run
+    # under the post-removal contract.
+    monkeypatch.delenv("KORA_EMAIL_AUTO_REPLY", raising=False)
     return tmp_path
 
 
@@ -114,10 +106,10 @@ def _reset_operational_state_holder():
     The handler's state-gate (``_check_state_gate`` in
     ``email_inbound_handler.py``) calls ``get_holder()`` to decide
     whether to drop the message as ``filtered_paused`` /
-    ``filtered_stopped``. State-gate tests in this file (lines
-    151-200) ``patch`` the accessor; the other ~30 tests expect
-    the singleton to be ``None`` so ``get_holder()`` returns
-    ``None`` and the handler proceeds.
+    ``filtered_stopped``. State-gate tests in this file ``patch``
+    the accessor; the other tests expect the singleton to be
+    ``None`` so ``get_holder()`` returns ``None`` and the handler
+    proceeds.
 
     Under pytest-xdist, OTHER test files in the same worker may
     install a non-None holder (e.g.
@@ -196,7 +188,6 @@ async def test_state_gate_paused_drops_and_marks_seen(tmp_path):
         result = await handler.handle_event(_make_parsed())
     assert result.status == HANDLED_FILTERED_PAUSED
     assert result.should_mark_seen is True
-    assert result.should_reply is False
     entries = _read_log_entries(tmp_path)
     assert len(entries) == 1
     assert entries[0]["handled_status"] == HANDLED_FILTERED_PAUSED
@@ -351,7 +342,6 @@ async def test_happy_path_received_status(tmp_path):
     result = await handler.handle_event(parsed)
     assert result.status == HANDLED_RECEIVED
     assert result.should_mark_seen is True
-    assert result.should_reply is False  # AUTO_REPLY not set
     entries = _read_log_entries(tmp_path)
     assert len(entries) == 1
     e = entries[0]
@@ -396,7 +386,6 @@ async def test_handler_error_keeps_unseen(monkeypatch, tmp_path):
         result = await handler.handle_event(_make_parsed())
     assert result.status == HANDLED_HANDLER_ERROR
     assert result.should_mark_seen is False
-    assert result.should_reply is False
     entries = _read_log_entries(tmp_path)
     assert any(
         e["handled_status"] == HANDLED_HANDLER_ERROR for e in entries
@@ -481,474 +470,73 @@ async def test_password_never_appears_in_jsonl_across_failures(
 
 
 # ===========================================================================
-# AUTO_REPLY (env-gated)
+# Lock R3-8 (a) — KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_auto_reply_default_off_no_send_attempt(monkeypatch, tmp_path):
-    monkeypatch.delenv(AUTO_REPLY_ENV, raising=False)
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock()
-    fake_engine = MagicMock()
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    result = await handler.handle_event(_make_parsed())
-    assert result.status == HANDLED_RECEIVED
-    assert result.should_reply is False
-    fake_client.send_email.assert_not_awaited()
-    fake_engine.respond.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_enabled_calls_engine_and_sends(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("legacy_value", ["true", "1", "yes", "on", "TRUE"])
+async def test_legacy_auto_reply_env_is_ignored_no_send(
+    monkeypatch, tmp_path, legacy_value
 ):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+    """Lock R3-8 (a): if a legacy ``KORA_EMAIL_AUTO_REPLY`` env value
+    remains in operator config (e.g., Doppler), the handler ignores
+    it cleanly — no error, no engine call, no outbound send. The
+    inbound is still parsed + logged + the chain event emitted.
 
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "I read your email, Joshua."
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
+    This is the canonical regression: the handler does NOT read the
+    env, so the value is irrelevant.
+    """
+    monkeypatch.setenv("KORA_EMAIL_AUTO_REPLY", legacy_value)
+    handler = EmailInboundHandler()
 
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    parsed = _make_parsed(subject="hi kora", message_id="<m-1@e.com>")
-    result = await handler.handle_event(parsed)
-
-    assert result.status == HANDLED_RECEIVED
-    assert result.should_reply is True
-    fake_engine.respond.assert_awaited_once()
-    fake_client.send_email.assert_awaited_once()
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["from_addr"] == "kora@stormhavenenterprises.com"
-    assert kw["to"] == ["joshua@stormhavenenterprises.com"]
-    assert kw["subject"] == "Re: hi kora"
-    assert kw["body_text"] == "I read your email, Joshua."
-    assert kw["in_reply_to"] == "<m-1@e.com>"
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_unavailable_sends_canned(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "1")
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=None
-    )
-    # Make accessor return None to simulate engine-unavailable.
+    # Patch BOTH the reasoning engine accessor and the purelymail
+    # client accessor — if the handler tried to call either,
+    # configure them to fail loudly.
     with patch(
         "kora_cli.listeners.reasoning_engine_listener.current_reasoning_engine",
-        return_value=None,
-    ):
-        result = await handler.handle_event(_make_parsed())
-    assert result.status == HANDLED_RECEIVED
-    fake_client.send_email.assert_awaited_once()
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["body_text"] == CANNED_FALLBACK_TEXT
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_raises_sends_canned(monkeypatch, tmp_path):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "yes")
-
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(side_effect=RuntimeError("engine boom"))
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    result = await handler.handle_event(_make_parsed())
-    assert result.status == HANDLED_RECEIVED
-    fake_client.send_email.assert_awaited_once()
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["body_text"] == CANNED_FALLBACK_TEXT
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_result_error_sends_canned(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "on")
-
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = ""
-    fake_result.error = "cost_ladder_halted"
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    result = await handler.handle_event(_make_parsed())
-    assert result.status == HANDLED_RECEIVED
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["body_text"] == CANNED_FALLBACK_TEXT
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_empty_text_sends_canned(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "   "  # whitespace only
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(_make_parsed())
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["body_text"] == CANNED_FALLBACK_TEXT
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_client_unavailable_does_not_change_inbound(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "reply"
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    handler = EmailInboundHandler(
-        purelymail_client=None, reasoning_engine=fake_engine
-    )
-    with patch(
+        side_effect=AssertionError(
+            "handler must NOT touch the reasoning engine post Lock R3-8 (a)"
+        ),
+    ), patch(
         "kora_cli.listeners.purelymail_client_listener.current_purelymail_client",
-        return_value=None,
+        side_effect=AssertionError(
+            "handler must NOT touch the outbound client post Lock R3-8 (a)"
+        ),
     ):
         result = await handler.handle_event(_make_parsed())
+
+    # Inbound parsing still works end-to-end.
     assert result.status == HANDLED_RECEIVED
     assert result.should_mark_seen is True
+    entries = _read_log_entries(tmp_path)
+    assert len(entries) == 1
+    assert entries[0]["handled_status"] == HANDLED_RECEIVED
 
 
 @pytest.mark.asyncio
-async def test_auto_reply_send_raises_inbound_still_received(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "reply"
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(side_effect=RuntimeError("smtp boom"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    result = await handler.handle_event(_make_parsed())
-    assert result.status == HANDLED_RECEIVED
-    assert result.should_mark_seen is True
+async def test_handler_constructor_accepts_only_log_path(tmp_path):
+    """The handler no longer takes purelymail_client / reasoning_engine
+    kwargs. A test that tries to inject them via positional kwargs
+    would TypeError — we just assert the constructor's surface stays
+    minimal."""
+    # Default construction works.
+    EmailInboundHandler()
+    # log_path override works.
+    EmailInboundHandler(log_path=tmp_path / "test.jsonl")
+    # Confirm the removed kwargs are no longer accepted.
+    with pytest.raises(TypeError):
+        EmailInboundHandler(reasoning_engine=MagicMock())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        EmailInboundHandler(purelymail_client=MagicMock())  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
-async def test_auto_reply_subject_re_prefix_not_doubled(monkeypatch, tmp_path):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
+async def test_handler_result_has_no_should_reply_field():
+    """HandlerResult dropped the ``should_reply`` field — consumers
+    only need ``status`` + ``should_mark_seen`` now."""
+    from kora_cli.handlers.email_inbound_handler import HandlerResult
+    import dataclasses
 
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "reply"
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    parsed = _make_parsed(subject="Re: existing thread")
-    await handler.handle_event(parsed)
-    kw = fake_client.send_email.await_args.kwargs
-    # Subject should NOT become "Re: Re: ..."
-    assert kw["subject"] == "Re: existing thread"
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_empty_subject_uses_placeholder(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-
-    fake_engine = MagicMock()
-    fake_result = MagicMock()
-    fake_result.text = "reply"
-    fake_result.error = None
-    fake_engine.respond = AsyncMock(return_value=fake_result)
-
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    parsed = _make_parsed(subject="")
-    await handler.handle_event(parsed)
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["subject"] == "Re: (no subject)"
-
-
-# ===========================================================================
-# KR-EMAIL-OUTBOUND-REASONING-META — reasoning-meta threading
-# ===========================================================================
-
-
-def _make_engine_result(
-    *,
-    text: str = "reply",
-    error=None,
-    model_used: str = "claude-opus-4-7",
-    input_tokens: int = 100,
-    output_tokens: int = 50,
-    reasoning_duration_ms: int = 1500,
-):
-    r = MagicMock()
-    r.text = text
-    r.error = error
-    r.model_used = model_used
-    r.input_tokens = input_tokens
-    r.output_tokens = output_tokens
-    r.reasoning_duration_ms = reasoning_duration_ms
-    return r
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_success_threads_full_reasoning_meta(
-    monkeypatch, tmp_path
-):
-    """Happy path: engine returns a real ResponseResult → send_email
-    receives model_used + tokens + duration + caller_session_id +
-    reasoning_error=None."""
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    parsed = _make_parsed(message_id="<m-success@e.com>")
-    await handler.handle_event(parsed)
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["model_used"] == "claude-opus-4-7"
-    assert kw["input_tokens"] == 100
-    assert kw["output_tokens"] == 50
-    assert kw["reasoning_duration_ms"] == 1500
-    assert kw["reasoning_error"] is None
-    assert kw["caller_session_id"] == "email:<m-success@e.com>"
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_unavailable_meta_carries_error_code(
-    monkeypatch, tmp_path
-):
-    """Engine None → send_email receives reasoning_error=
-    'engine_unavailable' + all SDK fields None + caller_session_id
-    still derived from the inbound message_id."""
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=None
-    )
-    with patch(
-        "kora_cli.listeners.reasoning_engine_listener.current_reasoning_engine",
-        return_value=None,
-    ):
-        await handler.handle_event(_make_parsed(message_id="<m-noeng@e.com>"))
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["reasoning_error"] == "engine_unavailable"
-    assert kw["model_used"] is None
-    assert kw["input_tokens"] is None
-    assert kw["output_tokens"] is None
-    assert kw["reasoning_duration_ms"] is None
-    assert kw["caller_session_id"] == "email:<m-noeng@e.com>"
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_raises_meta_carries_exception_code(
-    monkeypatch, tmp_path
-):
-    """engine.respond raises → reasoning_error is
-    'engine_exception:<type>'."""
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(side_effect=RuntimeError("boom"))
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(_make_parsed())
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["reasoning_error"] == "engine_exception:RuntimeError"
-    assert kw["model_used"] is None
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_result_error_preserves_sdk_meta(
-    monkeypatch, tmp_path
-):
-    """result.error set (e.g., cost_ladder_halted) → reasoning_error
-    is the engine's error code; SDK-side fields (model_used /
-    tokens) MAY still be populated by the engine even on error
-    paths (e.g., cost-halt after partial token consumption).
-    Mirrors slack_dm post-#131."""
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(
-        return_value=_make_engine_result(
-            text="",
-            error="cost_ladder_halted",
-            model_used="claude-opus-4-7",
-            input_tokens=50,
-            output_tokens=0,
-            reasoning_duration_ms=200,
-        )
-    )
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(_make_parsed())
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["reasoning_error"] == "cost_ladder_halted"
-    assert kw["model_used"] == "claude-opus-4-7"
-    assert kw["input_tokens"] == 50
-    assert kw["output_tokens"] == 0
-    assert kw["body_text"] == CANNED_FALLBACK_TEXT
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_engine_empty_text_overrides_error_code(
-    monkeypatch, tmp_path
-):
-    """Engine returned text="" with error=None → handler overrides
-    reasoning_error to 'empty_response_text' AND preserves SDK
-    meta (the engine ran, it just produced nothing usable)."""
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(
-        return_value=_make_engine_result(text="   ", error=None)
-    )
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(_make_parsed())
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["reasoning_error"] == "empty_response_text"
-    # SDK-side meta from the actual engine run survives.
-    assert kw["model_used"] == "claude-opus-4-7"
-    assert kw["input_tokens"] == 100
-
-
-@pytest.mark.asyncio
-async def test_caller_session_id_matches_engine_derivation_shape(
-    monkeypatch, tmp_path
-):
-    """The handler-side derivation must produce the SAME literal
-    string as ``_derive_caller_session_id`` in
-    ``kora_cli/reasoning/anthropic_engine.py`` so audit ↔ outbound
-    JSONL rows can be joined by caller_session_id."""
-    from kora_cli.reasoning.anthropic_engine import (
-        _derive_caller_session_id,
-    )
-    from kora_cli.reasoning.engine import IncomingMessage
-    from datetime import datetime, timezone
-
-    parsed = _make_parsed(message_id="<m-xref@e.com>")
-    # Build an IncomingMessage exactly the way the handler does
-    # internally to verify the engine's derive matches our literal.
-    msg = IncomingMessage(
-        text=parsed.body_text,
-        source="email",
-        received_at=parsed.received_at,
-        metadata={
-            "from": parsed.from_address,
-            "subject": parsed.subject,
-            "message_id": parsed.message_id,
-            "in_reply_to": parsed.message_id,
-        },
-    )
-    engine_derived = _derive_caller_session_id(msg)
-
-    monkeypatch.setenv(AUTO_REPLY_ENV, "true")
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(parsed)
-
-    kw = fake_client.send_email.await_args.kwargs
-    assert kw["caller_session_id"] == engine_derived
-    assert kw["caller_session_id"] == "email:<m-xref@e.com>"
-
-
-@pytest.mark.asyncio
-async def test_auto_reply_off_no_reasoning_meta_threaded(
-    monkeypatch, tmp_path
-):
-    """AUTO_REPLY default OFF → send_email never called; ensures
-    the reasoning-meta threading is gated on AUTO_REPLY (not on
-    every reply path)."""
-    monkeypatch.delenv(AUTO_REPLY_ENV, raising=False)
-    fake_engine = MagicMock()
-    fake_engine.respond = AsyncMock(return_value=_make_engine_result())
-    fake_client = MagicMock()
-    fake_client.send_email = AsyncMock(return_value=MagicMock(status="ok"))
-
-    handler = EmailInboundHandler(
-        purelymail_client=fake_client, reasoning_engine=fake_engine
-    )
-    await handler.handle_event(_make_parsed())
-
-    fake_engine.respond.assert_not_called()
-    fake_client.send_email.assert_not_awaited()
+    field_names = {f.name for f in dataclasses.fields(HandlerResult)}
+    assert field_names == {"status", "should_mark_seen"}

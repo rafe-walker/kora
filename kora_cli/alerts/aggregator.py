@@ -195,8 +195,7 @@ def _rules_from_cost_holder() -> List[Alert]:
                 title=f"Reasoning halted at {pct_str} of budget",
                 detail=(
                     "Cost ladder at hard_stop_100 — non-critical reasoning "
-                    "calls refuse with cost_ladder_halted; AUTO_REPLY paths "
-                    "fall back to canned text."
+                    "calls refuse with cost_ladder_halted."
                 ),
                 source_panel="cost",
                 source_panel_route="/cost-state",

@@ -3,8 +3,7 @@
 Called from :func:`kora_cli.listeners.email_inbound_imap_listener.run_poll_cycle`
 once per :class:`ParsedIncomingEmail` returned by the IMAP poll.
 Mirrors :class:`SlackDMHandler`'s shape: filter precedence, JSONL
-append, structured-log emit on identified Joshua mail, optional
-reasoning-driven outbound reply.
+append, structured-log emit on identified Joshua mail.
 
 # Filter precedence (5 steps, ordered per bucket §2.ST2.(a))
 
@@ -53,26 +52,31 @@ Chain event ``[kora.email_inbound.received]`` is emitted ONLY on
 identified Joshua mail (status ``"received"``). Filtered events
 log per-filter but don't emit the structured chain event.
 
-# AUTO_REPLY (KORA_EMAIL_AUTO_REPLY)
+# No auto-reply (Lock R3-8 (a), KR-EMAIL-AUTOREPLY-BRANCH-REMOVAL)
 
-Default OFF. When ``true`` / ``1`` / ``yes``, an identified Joshua
-email triggers:
+The handler does NOT draft and send AI replies to inbound senders.
+The previous ``KORA_EMAIL_AUTO_REPLY`` opt-in branch — which called
+the reasoning engine on every identified Joshua mail and sent the
+result back via ``PurelymailClient.send_email`` — was cut per
+operator Lock R3-8 (a) during the R3 walkthrough.
 
-  1. Load conversation context from the inbound + outbound JSONL
-     filtered to the same In-Reply-To chain.
-  2. Build :class:`IncomingMessage` (source ``"email"``).
-  3. Call ``current_reasoning_engine().respond(message, context)``.
-  4. Send the result via the daemon-singleton ``PurelymailClient``
-     with the inbound's ``Message-ID`` threaded as ``In-Reply-To``
-     and subject prefixed ``Re:``.
-  5. Engine unavailable / engine error → canned fallback text +
-     same send path.
+What stays:
+  * Inbound parsing + the 5-filter precedence + JSONL emission
+  * IMAP listener polling (separate module)
+  * Outbound send pathways for Kora-originated artifacts (PDFs,
+    reports — these never lived in the handler; they're driven
+    from other modules using ``PurelymailClient`` directly)
+  * The email-thread context loader (``kora_cli/reasoning/context_loader.py``)
+    which other features may use to read prior email threads
 
-The reply is NEVER attempted on filtered messages — only on
-``handled_status == "received"`` with ``AUTO_REPLY`` enabled. A
-send failure does NOT change the inbound's handled_status; we
-still mark the inbound SEEN (operator triages via the outbound
-JSONL's failed entry).
+What's gone:
+  * ``KORA_EMAIL_AUTO_REPLY`` env (legacy operator settings are
+    ignored cleanly; no error if the env is still present in Doppler)
+  * The reasoning-engine invocation from the inbound path
+  * The ``email_inbound`` cost-telemetry route was already reserved
+    by PR #161 (``cost_telemetry.ROUTE_EMAIL_INBOUND``); it stays
+    reserved for the future KR-EMAIL-COST-BILL wiring when
+    KR-INTENT-EMAIL-TO-SEA-TICKET ships a real consumer
 
 # Security contract
 
@@ -86,10 +90,9 @@ JSONL's failed entry).
 # Exception posture
 
 Any uncaught exception during ``handle_event`` returns
-``HandlerResult(status=handler_error, should_mark_seen=False, ...)``
-so the listener keeps the IMAP message UNSEEN for next-poll
-retry. A separate JSONL entry records the failure for operator
-triage.
+``HandlerResult(status=handler_error, should_mark_seen=False)`` so
+the listener keeps the IMAP message UNSEEN for next-poll retry. A
+separate JSONL entry records the failure for operator triage.
 """
 
 from __future__ import annotations
@@ -100,7 +103,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Optional
 
 from kora_cli.clients.purelymail_types import ParsedIncomingEmail
 
@@ -115,7 +118,6 @@ logger = logging.getLogger(__name__)
 SENDER_ALLOWLIST_ENV = "KORA_EMAIL_SENDER_ALLOWLIST"
 KORA_ADDRESS_ENV = "KORA_EMAIL_KORA_ADDRESS"
 JOSHUA_ADDRESS_ENV = "KORA_EMAIL_JOSHUA_ADDRESS"
-AUTO_REPLY_ENV = "KORA_EMAIL_AUTO_REPLY"
 LOG_PATH_ENV = "KORA_EMAIL_INBOUND_LOG_PATH"  # test override
 
 BODY_TRUNCATE_LIMIT = 2048
@@ -145,12 +147,6 @@ _MARK_SEEN_STATUSES = frozenset(
     }
 )
 
-# Canned reply when AUTO_REPLY engaged but the reasoning engine
-# can't produce a response. Mirrors SlackDMHandler._CANNED_FALLBACK_TEXT.
-CANNED_FALLBACK_TEXT = (
-    "Kora is currently unable to respond by email; operator notified."
-)
-
 
 # ---------------------------------------------------------------------------
 # Result
@@ -167,16 +163,10 @@ class HandlerResult:
         :meth:`PurelymailIMAPClient.mark_seen` for this UID iff true.
         Always false on ``handler_error`` so the message survives
         for next-poll retry.
-      should_reply: Convenience flag — true iff ``AUTO_REPLY`` is
-        enabled AND status is ``received``. The listener itself
-        doesn't act on this (the handler drives the send inline);
-        the field is surfaced so tests + operator triage can read
-        the decision.
     """
 
     status: str
     should_mark_seen: bool
-    should_reply: bool
 
 
 # ---------------------------------------------------------------------------
@@ -225,58 +215,6 @@ def _truncate_body(text: str) -> str:
     return text[:BODY_TRUNCATE_LIMIT]
 
 
-def _auto_reply_enabled() -> bool:
-    raw = os.environ.get(AUTO_REPLY_ENV, "").strip().lower()
-    return raw in {"true", "1", "yes", "on"}
-
-
-# ---------------------------------------------------------------------------
-# Reasoning-meta helpers (KR-EMAIL-OUTBOUND-REASONING-META)
-# ---------------------------------------------------------------------------
-
-
-def _empty_reasoning_meta(
-    *, reasoning_error: Optional[str] = None
-) -> Dict[str, Any]:
-    """Build a meta dict for paths where the engine didn't run (or
-    couldn't be reached). All SDK-side fields are ``None``; only
-    ``reasoning_error`` carries a stable code if supplied."""
-    return {
-        "model_used": None,
-        "input_tokens": None,
-        "output_tokens": None,
-        "reasoning_duration_ms": None,
-        "reasoning_error": reasoning_error,
-    }
-
-
-def _reasoning_meta_from_result(result: Any) -> Dict[str, Any]:
-    """Project a ResponseResult into the 5-key meta dict.
-
-    Tolerates partial / missing attributes via ``getattr`` so a
-    test-double minimal MagicMock still produces a well-shaped
-    meta. ``result.error`` is included verbatim — caller decides
-    whether to surface it (success path) or override it
-    (empty-text path).
-    """
-    return {
-        "model_used": getattr(result, "model_used", None) or None,
-        "input_tokens": getattr(result, "input_tokens", None),
-        "output_tokens": getattr(result, "output_tokens", None),
-        "reasoning_duration_ms": getattr(result, "reasoning_duration_ms", None),
-        "reasoning_error": getattr(result, "error", None),
-    }
-
-
-def _email_caller_session_id(message_id: str) -> str:
-    """Deterministic correlation key for the audit ↔ outbound JSONL
-    xref. Must match the reasoning engine's own derivation in
-    :func:`kora_cli.reasoning.anthropic_engine._derive_caller_session_id`
-    for the ``email`` source: ``f"email:{message_id}"`` (with
-    ``"unknown"`` fallback when the id is empty)."""
-    return f"email:{message_id or 'unknown'}"
-
-
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
@@ -290,31 +228,18 @@ class EmailInboundHandler:
     request-scoped; persistent state is the JSONL log on disk.
     """
 
-    def __init__(
-        self,
-        log_path: Optional[Path] = None,
-        purelymail_client: Optional[Any] = None,
-        reasoning_engine: Optional[Any] = None,
-    ) -> None:
+    def __init__(self, log_path: Optional[Path] = None) -> None:
         """Construct the handler.
 
         Args:
           log_path: Override the JSONL log path; tests inject tmp_path.
-          purelymail_client: Override the outbound :class:`PurelymailClient`;
-            production leaves ``None`` and the handler resolves
-            :func:`current_purelymail_client` at reply-time.
-          reasoning_engine: Override the reasoning engine; production
-            leaves ``None`` and the handler resolves
-            :func:`current_reasoning_engine`.
         """
         self._log_path = log_path or _resolve_log_path()
-        self._purelymail_client = purelymail_client
-        self._reasoning_engine = reasoning_engine
 
     async def handle_event(
         self, parsed: ParsedIncomingEmail
     ) -> HandlerResult:
-        """Run the 5-step filter; write JSONL + optionally reply.
+        """Run the 5-step filter; write JSONL entry.
 
         Returns a :class:`HandlerResult` the listener inspects to
         decide ``mark_seen`` per-message. Exceptions are caught at
@@ -346,7 +271,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_HANDLER_ERROR,
                 should_mark_seen=False,
-                should_reply=False,
             )
 
     async def _handle_event_inner(
@@ -366,7 +290,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=gate_status,
                 should_mark_seen=gate_status in _MARK_SEEN_STATUSES,
-                should_reply=False,
             )
 
         # Filter 2: sender allowlist
@@ -387,7 +310,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_FILTERED_NON_ALLOWLIST,
                 should_mark_seen=True,
-                should_reply=False,
             )
         if sender not in allowlist:
             self._append_log_entry(
@@ -399,7 +321,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_FILTERED_NON_ALLOWLIST,
                 should_mark_seen=True,
-                should_reply=False,
             )
 
         # Filter 3: recipient filter
@@ -418,7 +339,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_FILTERED_WRONG_RECIPIENT,
                 should_mark_seen=True,
-                should_reply=False,
             )
 
         # Filter 4: spoofing check
@@ -448,7 +368,6 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_FILTERED_NON_JOSHUA,
                 should_mark_seen=True,
-                should_reply=False,
             )
         if sender != joshua_address:
             self._append_log_entry(
@@ -460,10 +379,12 @@ class EmailInboundHandler:
             return HandlerResult(
                 status=HANDLED_FILTERED_NON_JOSHUA,
                 should_mark_seen=True,
-                should_reply=False,
             )
 
-        # All filters passed — Joshua mail received.
+        # All filters passed — Joshua mail received. Log + emit the
+        # chain event. No reply sent (Lock R3-8 (a)); future
+        # consumers (KR-INTENT-EMAIL-TO-SEA-TICKET) read from the
+        # JSONL.
         self._append_log_entry(
             parsed,
             HANDLED_RECEIVED,
@@ -471,26 +392,9 @@ class EmailInboundHandler:
         )
         self._emit_received_event(parsed)
 
-        # AUTO_REPLY (opt-in, default OFF).
-        auto_reply = _auto_reply_enabled()
-        if auto_reply:
-            try:
-                await self._send_auto_reply(parsed)
-            except Exception as exc:
-                # AUTO_REPLY failures don't change the inbound result —
-                # the outbound JSONL records the send failure; we still
-                # mark the inbound SEEN so we don't re-process.
-                logger.warning(
-                    "[kora.email_inbound] AUTO_REPLY raised %r for uid=%d "
-                    "— inbound stays handled_status=received",
-                    exc,
-                    parsed.imap_uid,
-                )
-
         return HandlerResult(
             status=HANDLED_RECEIVED,
             should_mark_seen=True,
-            should_reply=auto_reply,
         )
 
     # ------------------------------------------------------------------
@@ -596,221 +500,3 @@ class EmailInboundHandler:
             parsed.has_html,
             len(parsed.attachments),
         )
-
-    # ------------------------------------------------------------------
-    # AUTO_REPLY (env-gated)
-    # ------------------------------------------------------------------
-
-    async def _send_auto_reply(self, parsed: ParsedIncomingEmail) -> None:
-        """Reasoning-driven reply path. Build context → call engine →
-        send via PurelymailClient.
-
-        Engine unavailable / engine error → canned fallback text +
-        send anyway. Send failures DO NOT propagate beyond a WARN
-        log — outbound JSONL captures the SendResult separately.
-
-        KR-EMAIL-OUTBOUND-REASONING-META: ``_call_reasoning_engine``
-        now returns the full reasoning-meta dict (model_used /
-        tokens / duration / error) alongside the reply text; the
-        meta + a deterministic ``caller_session_id`` get threaded
-        through to ``client.send_email`` so the outbound JSONL row
-        carries the same correlation key the reasoning audit emit
-        already uses. The reasoning-panel email-xref consumes both
-        sides via this key.
-        """
-        engine = self._resolve_reasoning_engine()
-        reply_text, reasoning_meta = await self._build_reply_and_meta(
-            engine=engine, parsed=parsed
-        )
-
-        client = self._resolve_purelymail_client()
-        if client is None:
-            logger.warning(
-                "[kora.email_inbound.reply_failed] reason=purelymail_unavailable "
-                "uid=%d reasoning_error=%s",
-                parsed.imap_uid,
-                reasoning_meta.get("reasoning_error"),
-            )
-            return
-
-        from_addr = _env_address(KORA_ADDRESS_ENV)
-        if from_addr is None:
-            # We already gated on this in filter 3 — but defense in
-            # depth in case env was unset between the inbound check
-            # + this outbound build.
-            logger.warning(
-                "[kora.email_inbound.reply_failed] reason=kora_address_env_unset "
-                "uid=%d",
-                parsed.imap_uid,
-            )
-            return
-
-        subject = parsed.subject or "(no subject)"
-        if not subject.lower().startswith("re:"):
-            subject = f"Re: {subject}"
-
-        # Deterministic correlation key — must match the engine's own
-        # _derive_caller_session_id for ``email`` source
-        # (anthropic_engine.py:869-871: ``f"email:{message_id}"``).
-        # Keeping both sides on the same literal string lets the
-        # KR-REASONING-PANEL-EMAIL-XREF bucket join audit ↔ outbound
-        # JSONL rows by a single field.
-        caller_session_id = _email_caller_session_id(parsed.message_id)
-
-        try:
-            await client.send_email(
-                from_addr=from_addr,
-                to=[parsed.from_address],
-                subject=subject,
-                body_text=reply_text,
-                in_reply_to=parsed.message_id,
-                caller_session_id=caller_session_id,
-                **reasoning_meta,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[kora.email_inbound.reply_failed] uid=%d send raised %r — "
-                "outbound JSONL records the SendResult",
-                parsed.imap_uid,
-                exc,
-            )
-
-    async def _build_reply_and_meta(
-        self, *, engine: Optional[Any], parsed: ParsedIncomingEmail
-    ) -> tuple[str, Dict[str, Any]]:
-        """Resolve reply text + reasoning-meta dict.
-
-        Three paths:
-          - Engine unavailable: canned text + meta with
-            ``reasoning_error="engine_unavailable"`` and all other
-            fields ``None``.
-          - Engine call: delegate to :meth:`_call_reasoning_engine`,
-            which returns the full meta dict (model_used / tokens /
-            duration / error or fallback-error).
-        """
-        if engine is None:
-            logger.warning(
-                "[kora.email_inbound.reasoning_skipped] reason=engine_unavailable "
-                "uid=%d",
-                parsed.imap_uid,
-            )
-            return (
-                CANNED_FALLBACK_TEXT,
-                _empty_reasoning_meta(reasoning_error="engine_unavailable"),
-            )
-        return await self._call_reasoning_engine(
-            engine=engine, parsed=parsed
-        )
-
-    def _resolve_reasoning_engine(self) -> Optional[Any]:
-        if self._reasoning_engine is not None:
-            return self._reasoning_engine
-        try:
-            from kora_cli.listeners.reasoning_engine_listener import (
-                current_reasoning_engine,
-            )
-        except Exception:
-            return None
-        return current_reasoning_engine()
-
-    def _resolve_purelymail_client(self) -> Optional[Any]:
-        if self._purelymail_client is not None:
-            return self._purelymail_client
-        try:
-            from kora_cli.listeners.purelymail_client_listener import (
-                current_purelymail_client,
-            )
-        except Exception:
-            return None
-        return current_purelymail_client()
-
-    async def _call_reasoning_engine(
-        self, *, engine: Any, parsed: ParsedIncomingEmail
-    ) -> tuple[str, Dict[str, Any]]:
-        """Call engine.respond + return ``(reply_text, reasoning_meta)``.
-
-        ``reasoning_meta`` is a dict with the 5 fields PurelymailClient's
-        outbound log mirrors from the slack_dm post-#131 shape:
-
-          - ``model_used`` (str | None)
-          - ``input_tokens`` (int | None)
-          - ``output_tokens`` (int | None)
-          - ``reasoning_duration_ms`` (int | None)
-          - ``reasoning_error`` (str | None)
-
-        On engine error / exception / empty-text → reply_text is
-        the canned fallback + meta carries the error code; the
-        SDK-side fields are best-effort (populated from result when
-        available, otherwise None).
-        """
-        from kora_cli.reasoning.context_loader import load_email_context
-        from kora_cli.reasoning.engine import (
-            ConversationContext,
-            IncomingMessage,
-        )
-
-        try:
-            context = load_email_context(
-                message_id=parsed.message_id,
-                in_reply_to=None,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[kora.email_inbound.reasoning_skipped] context-load "
-                "failed uid=%d: %r — using empty context",
-                parsed.imap_uid,
-                exc,
-            )
-            context = ConversationContext()
-
-        message = IncomingMessage(
-            text=parsed.body_text,
-            source="email",
-            received_at=parsed.received_at,
-            metadata={
-                "from": parsed.from_address,
-                "subject": parsed.subject,
-                "message_id": parsed.message_id,
-                "in_reply_to": parsed.message_id,
-            },
-        )
-
-        try:
-            result = await engine.respond(message, context)
-        except Exception as exc:
-            logger.warning(
-                "[kora.email_inbound.reasoning_skipped] engine.respond "
-                "raised %r uid=%d — canned fallback",
-                exc,
-                parsed.imap_uid,
-            )
-            return (
-                CANNED_FALLBACK_TEXT,
-                _empty_reasoning_meta(
-                    reasoning_error=f"engine_exception:{type(exc).__name__}",
-                ),
-            )
-
-        meta = _reasoning_meta_from_result(result)
-
-        if result.error is not None:
-            logger.warning(
-                "[kora.email_inbound.reasoning_failed] error=%s uid=%d",
-                result.error,
-                parsed.imap_uid,
-            )
-            return (CANNED_FALLBACK_TEXT, meta)
-
-        if not (result.text or "").strip():
-            logger.warning(
-                "[kora.email_inbound.reasoning_failed] empty text on "
-                "success uid=%d — canned fallback",
-                parsed.imap_uid,
-            )
-            # Preserve SDK-side meta from the result (model + tokens
-            # ran, just produced empty text) but mark the error code
-            # so the panel can distinguish from a happy-path send.
-            meta["reasoning_error"] = "empty_response_text"
-            return (CANNED_FALLBACK_TEXT, meta)
-
-        return (result.text, meta)

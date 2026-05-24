@@ -238,7 +238,7 @@ def _make_fake_handler(results_by_uid):
             raise spec
         if spec is None:
             return HandlerResult(
-                status="received", should_mark_seen=True, should_reply=False
+                status="received", should_mark_seen=True
             )
         return spec
 
@@ -398,7 +398,6 @@ async def test_run_poll_cycle_should_mark_seen_false_keeps_unseen():
             11: HandlerResult(
                 status="handler_error",
                 should_mark_seen=False,
-                should_reply=False,
             )
         }
     )
