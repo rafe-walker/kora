@@ -64,8 +64,10 @@ import type {
   EmailHandledStatus,
   ReasoningResponse,
   AlertsResponse,
+  SnapshotResponse,
 } from "@/lib/api";
 import { AlertsBanner } from "@/components/AlertsBanner";
+import { FreshnessBadge } from "@/components/FreshnessBadge";
 
 import { usePanelView } from "@/hooks/usePanelView";
 type LoadStatus<T> =
@@ -973,11 +975,81 @@ function isStubbed(s: LoadStatus<unknown>): boolean {
   return data.stub === true;
 }
 
+// KR-FE-DASHBOARD-SNAPSHOT-WIRE projection helpers — map the
+// daemon snapshot's flat summary fields into the rich
+// per-endpoint TS interfaces the dashboard cards consume.
+//
+// Only project fields where the snapshot carries enough info to
+// avoid misleading the operator. The other ~6 fields stay on
+// fan-out (loadOne paths below) per spec §2(b) "prefer to leave
+// fan-out rather than coerce."
+//
+// Specifically NOT projected (snapshot incomplete for the card's
+// rendered fields):
+//   * cost — snapshot lacks spent_to_date_usd + credit_pool_usd
+//     (CostCardBody renders USD figures; defaulting to $0 would
+//     mislead operator)
+//   * health — snapshot's service_health is SaaS-deps health
+//     (vercel/sentry/etc), NOT Kora's own control_plane/worker
+//     daemon health (semantic mismatch with HealthHero)
+
+function projectOperationalFromSnapshot(
+  snap: SnapshotResponse,
+): OperationalStateResponse {
+  const ops = snap.operational_state;
+  return {
+    primary_state: ops.primary as OperationalStateResponse["primary_state"],
+    // Snapshot doesn't carry claim_permission; default per the
+    // paused state ("none" blocks all claims when paused; "normal"
+    // otherwise — both are valid ClaimPermission enum values per
+    // api.ts:1004. OperationalCardBody renders the value verbatim
+    // as small muted text under the primary_state badge.)
+    claim_permission: ops.paused ? "none" : "normal",
+    degradation_reasons: [],
+    is_degraded: ops.paused,
+    transition_history: [],
+    valid_next_states: [],
+    stub: false,
+  } as OperationalStateResponse;
+}
+
+function projectAlertsFromSnapshot(snap: SnapshotResponse): AlertsResponse {
+  // Snapshot carries aggregate counts only — per-alert array is
+  // empty. AlertsBanner already handles this case (renders from
+  // total_active when alerts.length === 0); the per-alert AlertsPanel
+  // uses its own fan-out (api.getCurrentAlerts) so it isn't affected.
+  return {
+    alerts: [],
+    stub: false,
+    generated_at: snap.computed_at,
+    total_active: snap.alerts.active_count,
+    by_severity: snap.alerts.by_severity,
+  };
+}
+
 export default function DashboardPage() {
   usePanelView("DashboardPage");
 
   const [data, setData] = useState<DashboardData>(INITIAL_DATA);
   const [refreshing, setRefreshing] = useState(false);
+  // KR-FE-DASHBOARD-SNAPSHOT-WIRE: freshness-badge state. Tracks
+  // whether we're on the $0 snapshot path vs live fan-out vs
+  // unavailable-snapshot fallback, plus per-card live-override
+  // count for the "mixed" sub-mode.
+  const [snapshotMode, setSnapshotMode] = useState<
+    "snapshot" | "live" | "unavailable"
+  >("live"); // optimistic default; updated after first loadAll
+  const [snapshotAt, setSnapshotAt] = useState<string | null>(null);
+  const [liveAt, setLiveAt] = useState<string | null>(null);
+  const [liveOverrides, setLiveOverrides] = useState<
+    Set<keyof DashboardData>
+  >(() => new Set());
+  // Fields the snapshot projected (vs fanned out). Used to decide
+  // whether a per-card retry counts as a "live override" — only
+  // snapshot-projected fields can be overridden by live fetch.
+  const [snapshotProjectedFields, setSnapshotProjectedFields] = useState<
+    Set<keyof DashboardData>
+  >(() => new Set());
   const { toast, showToast } = useToast();
 
   const loadOne = useCallback(
@@ -997,6 +1069,16 @@ export default function DashboardPage() {
               [key]: { state: "ready", data: result },
             }) as DashboardData,
         );
+        // If this field was originally snapshot-projected and we're
+        // now replacing it with a live fetch, count it as an
+        // override for the badge's "mixed" sub-mode.
+        setLiveOverrides((prev) => {
+          if (!snapshotProjectedFields.has(key)) return prev;
+          if (prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.add(key);
+          return next;
+        });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         setData((prev) => ({
@@ -1005,55 +1087,154 @@ export default function DashboardPage() {
         }));
       }
     },
-    [],
+    [snapshotProjectedFields],
   );
 
-  const loadAll = useCallback(
-    async (isManual: boolean) => {
-      if (isManual) setRefreshing(true);
-      // Promise.allSettled so one slow/broken endpoint doesn't stall the rest.
+  // Helper: full fan-out of every field. Used both as the initial
+  // path when snapshot is unavailable AND as the force-refresh
+  // path when the operator explicitly opts in to live data.
+  const fanOutAll = useCallback(async () => {
+    await Promise.allSettled([
+      // Row 1 — v1 surfaces
+      loadOne("health", () => api.getHealthRollup()),
+      loadOne("operational", () => api.getOperationalState()),
+      loadOne("cost", () => api.getCostState()),
+      loadOne("sea", () => api.getKoraAssignedSeaTickets()),
+      loadOne("control", () => api.getKoraControlObservedState()),
+      loadOne("boot", () => api.getBootStatus()),
+      loadOne("dr", () => api.getDRState()),
+      // Row 2 — KR-P2-DASHBOARD-V2 surfaces
+      loadOne("capabilities", () => api.getCapabilities()),
+      loadOne("charter", () => api.getCharter()),
+      loadOne("recentEvents", () => api.getChainEvents({ limit: 5 })),
+      loadOne("runbooks", () => api.getRunbooks()),
+      // KR-HB-PANEL
+      loadOne("heartbeat", () => api.getHeartbeatServices()),
+      // KR-MCP-3
+      loadOne("mcpClients", () => api.getMCPClients()),
+      // KR-WEBHOOK-EVENTS-PANEL
+      loadOne("webhookEvents", () => api.getRecentWebhookEvents()),
+      // KR-AGENT-ACTIVITY-PANEL
+      loadOne("agentActivity", () => api.getRecentAgentActivity()),
+      // KR-SLACK-DM-PANEL
+      loadOne("slackDM", () => api.getRecentSlackDM()),
+      // KR-EMAIL-PANEL
+      loadOne("email", () => api.getRecentEmail()),
+      // KR-REASONING-PANEL
+      loadOne("reasoning", () => api.getRecentReasoning()),
+      // KR-ALERTS-PANEL — drives the top-of-page banner
+      loadOne("alerts", () => api.getCurrentAlerts()),
+    ]);
+  }, [loadOne]);
+
+  // Snapshot-first initial loader. Projects what the snapshot
+  // covers cleanly, fans out everything else. Falls through to
+  // full fan-out when snapshot is unavailable.
+  const loadInitial = useCallback(async () => {
+    try {
+      const snap = await api.getSnapshot();
+      if ("error" in snap) {
+        // Snapshot unavailable — full fan-out fallback.
+        setSnapshotMode("unavailable");
+        setSnapshotAt(null);
+        setSnapshotProjectedFields(new Set());
+        setLiveOverrides(new Set());
+        await fanOutAll();
+        setLiveAt(new Date().toISOString());
+        return;
+      }
+
+      // Project the fields we can cleanly map.
+      const projectedFields = new Set<keyof DashboardData>([
+        "operational",
+        "alerts",
+      ]);
+      setSnapshotMode("snapshot");
+      setSnapshotAt(snap.computed_at);
+      setSnapshotProjectedFields(projectedFields);
+      setLiveOverrides(new Set());
+      setData((prev) => ({
+        ...prev,
+        operational: {
+          state: "ready",
+          data: projectOperationalFromSnapshot(snap),
+        },
+        alerts: {
+          state: "ready",
+          data: projectAlertsFromSnapshot(snap),
+        },
+      }));
+
+      // Fan out everything NOT covered by the snapshot projection.
+      // cost + health stay on fan-out per coercion-would-mislead
+      // analysis (see projection-helper comments above).
       await Promise.allSettled([
-        // Row 1 — v1 surfaces
         loadOne("health", () => api.getHealthRollup()),
-        loadOne("operational", () => api.getOperationalState()),
         loadOne("cost", () => api.getCostState()),
         loadOne("sea", () => api.getKoraAssignedSeaTickets()),
         loadOne("control", () => api.getKoraControlObservedState()),
         loadOne("boot", () => api.getBootStatus()),
         loadOne("dr", () => api.getDRState()),
-        // Row 2 — KR-P2-DASHBOARD-V2 surfaces
         loadOne("capabilities", () => api.getCapabilities()),
         loadOne("charter", () => api.getCharter()),
         loadOne("recentEvents", () => api.getChainEvents({ limit: 5 })),
         loadOne("runbooks", () => api.getRunbooks()),
-        // KR-HB-PANEL
         loadOne("heartbeat", () => api.getHeartbeatServices()),
-        // KR-MCP-3
         loadOne("mcpClients", () => api.getMCPClients()),
-        // KR-WEBHOOK-EVENTS-PANEL
         loadOne("webhookEvents", () => api.getRecentWebhookEvents()),
-        // KR-AGENT-ACTIVITY-PANEL
         loadOne("agentActivity", () => api.getRecentAgentActivity()),
-        // KR-SLACK-DM-PANEL
         loadOne("slackDM", () => api.getRecentSlackDM()),
-        // KR-EMAIL-PANEL
         loadOne("email", () => api.getRecentEmail()),
-        // KR-REASONING-PANEL
         loadOne("reasoning", () => api.getRecentReasoning()),
-        // KR-ALERTS-PANEL — drives the top-of-page banner
-        loadOne("alerts", () => api.getCurrentAlerts()),
       ]);
-      if (isManual) {
-        setRefreshing(false);
-        showToast("Dashboard refreshed", "success");
+    } catch {
+      // Snapshot fetch raised (network / 5xx). Treat same as
+      // unavailable; full fan-out fallback.
+      setSnapshotMode("unavailable");
+      setSnapshotAt(null);
+      setSnapshotProjectedFields(new Set());
+      setLiveOverrides(new Set());
+      await fanOutAll();
+      setLiveAt(new Date().toISOString());
+    }
+  }, [loadOne, fanOutAll]);
+
+  // Force-refresh path: bypass snapshot, do full live fan-out.
+  // Triggered by the FreshnessBadge's Force-refresh button.
+  const forceFullLiveRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setSnapshotMode("live");
+    setSnapshotAt(null);
+    setSnapshotProjectedFields(new Set());
+    setLiveOverrides(new Set());
+    try {
+      await fanOutAll();
+      setLiveAt(new Date().toISOString());
+      showToast("Dashboard refreshed (live fan-out)", "success");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [fanOutAll, showToast]);
+
+  // Hero-Reload button (existing top-right Reload above the grid).
+  // Re-runs the snapshot-first path so the operator gets the $0
+  // experience whenever they hit it — same as initial mount.
+  const loadAll = useCallback(
+    async (isManual: boolean) => {
+      if (isManual) setRefreshing(true);
+      try {
+        await loadInitial();
+        if (isManual) showToast("Dashboard refreshed", "success");
+      } finally {
+        if (isManual) setRefreshing(false);
       }
     },
-    [loadOne, showToast],
+    [loadInitial, showToast],
   );
 
   useEffect(() => {
-    void loadAll(false);
-  }, [loadAll]);
+    void loadInitial();
+  }, [loadInitial]);
 
   // All sources the dashboard fetches. Used for the anyStubbed banner
   // + the footer's live/stubbed aggregate count. capabilities + runbooks
@@ -1096,8 +1277,22 @@ export default function DashboardPage() {
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
-      <div className="flex items-start justify-between gap-4">
-        <H2>Kora — Overview</H2>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-3 flex-wrap">
+          <H2>Kora — Overview</H2>
+          {/* KR-FE-DASHBOARD-SNAPSHOT-WIRE: cost-economy thesis
+              made visible. Badge shows whether this page-load was
+              served from the $0 daemon snapshot or fanned out to
+              live endpoints (cents), plus a Force-refresh button. */}
+          <FreshnessBadge
+            mode={snapshotMode}
+            snapshotAt={snapshotAt}
+            liveAt={liveAt}
+            liveOverrideCount={liveOverrides.size}
+            onForceRefresh={() => void forceFullLiveRefresh()}
+            refreshing={refreshing}
+          />
+        </div>
         <div className="flex items-center gap-2">
           {/* Diag bundle: standard browser download via <a href download>;
               no JS fetcher needed. Operator click → zip with all 10
