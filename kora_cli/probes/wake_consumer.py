@@ -70,6 +70,14 @@ DEFAULT_DEBOUNCE_SECONDS = 600  # 10 min per spec §2(a)
 BYPASS_CRITICAL_ENV = "KORA_PROBE_DEBOUNCE_BYPASS_CRITICAL"
 JOSHUA_SLACK_USER_ID_ENV = "KORA_SLACK_JOSHUA_USER_ID"  # reused from PR #149
 
+# KR-PROBE-DEBOUNCE — consecutive-failure buffering (upgrade from
+# PR #166's flat-window debounce per CC#1's #163 follow-on tracker).
+# Default 2: a probe must fire wake_requested twice within the
+# debounce window before the consumer dispatches an investigation.
+# Operator-tunable; setting to 1 preserves pre-upgrade behavior.
+CONSECUTIVE_REQUIRED_ENV = "KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED"
+DEFAULT_CONSECUTIVE_REQUIRED = 2
+
 
 def _read_debounce_seconds() -> int:
     raw = os.environ.get(DEBOUNCE_SECONDS_ENV, "").strip()
@@ -98,6 +106,37 @@ def _read_debounce_seconds() -> int:
     return value
 
 
+def _read_consecutive_required() -> int:
+    """Read ``KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED`` with fail-soft
+    parsing. Defaults to :data:`DEFAULT_CONSECUTIVE_REQUIRED` on
+    malformed values. ``1`` disables the buffering and restores the
+    PR #166 flat-window behavior."""
+    raw = os.environ.get(CONSECUTIVE_REQUIRED_ENV, "").strip()
+    if not raw:
+        return DEFAULT_CONSECUTIVE_REQUIRED
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "[kora.probe_wake_consumer] %s=%r is not numeric; using "
+            "default %d",
+            CONSECUTIVE_REQUIRED_ENV,
+            raw,
+            DEFAULT_CONSECUTIVE_REQUIRED,
+        )
+        return DEFAULT_CONSECUTIVE_REQUIRED
+    if value < 1:
+        logger.warning(
+            "[kora.probe_wake_consumer] %s=%d must be ≥ 1; using "
+            "default %d",
+            CONSECUTIVE_REQUIRED_ENV,
+            value,
+            DEFAULT_CONSECUTIVE_REQUIRED,
+        )
+        return DEFAULT_CONSECUTIVE_REQUIRED
+    return value
+
+
 def _read_bypass_critical() -> bool:
     raw = os.environ.get(BYPASS_CRITICAL_ENV, "").strip().lower()
     return raw in {"true", "1", "yes", "on"}
@@ -119,6 +158,15 @@ class WakeConsumeOutcome:
     reasoning_invoked: bool  # False when engine None / debounced
     dm_sent: bool  # False when Slack client unavailable
     debounce_skipped: bool = False
+    # KR-PROBE-DEBOUNCE consecutive-failure upgrade. True when an
+    # event was held in the consecutive-failure buffer (didn't yet
+    # meet ``KORA_PROBE_DEBOUNCE_CONSECUTIVE_REQUIRED``) instead of
+    # being dispatched. Distinct from ``debounce_skipped`` (which
+    # remains the flat-window post-dispatch skip) so the audit
+    # / listener telemetry can tell single-tick-flake holds apart
+    # from "already-dispatched recently" skips.
+    buffered_skipped: bool = False
+    buffered_consecutive_count: int = 0
     error: Optional[str] = None
 
 
@@ -157,6 +205,14 @@ class ProbeWakeConsumer:
         self._debounce_lock = threading.RLock()
         # (probe_name, issue_category) → datetime of last dispatched
         self._last_dispatched: Dict[Tuple[str, str], datetime] = {}
+        # KR-PROBE-DEBOUNCE consecutive-failure buffer state.
+        # (probe, category) → (consecutive_count, first_seen_at).
+        # Reset when the sliding window elapses (proxy for "the
+        # probe went healthy then unhealthy again — the burst was
+        # transient, restart the counter").
+        self._consecutive_buffer: Dict[
+            Tuple[str, str], Tuple[int, datetime]
+        ] = {}
 
     @property
     def debounce_map_size(self) -> int:
@@ -164,11 +220,18 @@ class ProbeWakeConsumer:
         return len(self._last_dispatched)
 
     def reset_debounce_state(self) -> None:
-        """Clear the in-memory debounce map. Listener shutdown calls
-        this so subsequent listener start sees a clean slate.
-        Mirrors :meth:`AlertNotifier.reset_dedup_state` (PR #149)."""
+        """Clear the in-memory debounce map + consecutive-failure
+        buffer. Listener shutdown calls this so subsequent listener
+        start sees a clean slate. Mirrors :meth:`AlertNotifier.reset_dedup_state`
+        (PR #149)."""
         with self._debounce_lock:
             self._last_dispatched = {}
+            self._consecutive_buffer = {}
+
+    @property
+    def consecutive_buffer_size(self) -> int:
+        """Read-only view for tests + telemetry."""
+        return len(self._consecutive_buffer)
 
     # ------------------------------------------------------------------
     # Debounce
@@ -197,6 +260,55 @@ class ProbeWakeConsumer:
             self._last_dispatched[(probe, category)] = datetime.now(
                 timezone.utc
             )
+            # Clear the consecutive buffer once we've dispatched —
+            # the post-dispatch flat-window debounce takes over.
+            self._consecutive_buffer.pop((probe, category), None)
+
+    # ------------------------------------------------------------------
+    # Consecutive-failure buffer (KR-PROBE-DEBOUNCE upgrade)
+    # ------------------------------------------------------------------
+
+    def _record_failure_and_check_threshold(
+        self, probe: str, category: str, severity: str
+    ) -> Tuple[bool, int]:
+        """Update the consecutive-failure buffer for one (probe,
+        category) event.
+
+        Returns ``(threshold_met, count_after_update)``:
+          * ``threshold_met`` is True when this event brings the
+            buffer up to the configured required count → caller
+            should dispatch.
+          * ``count_after_update`` is the post-update buffered
+            count, surfaced in the outcome for tests / telemetry.
+
+        Window semantics: the buffer entry expires after the
+        existing :data:`DEBOUNCE_SECONDS_ENV` window elapsed since
+        ``first_seen_at`` — re-using the existing debounce window
+        keeps the operator-tunable surface minimal. A fresh event
+        AFTER expiry restarts the count at 1 (proxy for "probe
+        went healthy then unhealthy again").
+
+        Critical-severity bypass: when ``severity == "critical"``
+        AND ``KORA_PROBE_DEBOUNCE_BYPASS_CRITICAL`` is truthy, the
+        threshold is implicitly 1 (caller never reaches this
+        method; see :meth:`_should_dispatch_now`).
+        """
+        required = _read_consecutive_required()
+        window = _read_debounce_seconds()
+        now = datetime.now(timezone.utc)
+        with self._debounce_lock:
+            entry = self._consecutive_buffer.get((probe, category))
+            if entry is None:
+                self._consecutive_buffer[(probe, category)] = (1, now)
+                return (required <= 1, 1)
+            count, first_seen = entry
+            # Expired window → restart count.
+            if window > 0 and (now - first_seen).total_seconds() >= window:
+                self._consecutive_buffer[(probe, category)] = (1, now)
+                return (required <= 1, 1)
+            new_count = count + 1
+            self._consecutive_buffer[(probe, category)] = (new_count, first_seen)
+            return (new_count >= required, new_count)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -238,6 +350,41 @@ class ProbeWakeConsumer:
                 dm_sent=False,
                 debounce_skipped=True,
             )
+
+        # KR-PROBE-DEBOUNCE consecutive-failure buffering. Critical
+        # wakes can optionally bypass via BYPASS_CRITICAL_ENV (same
+        # opt-in env as the flat-window bypass — operator already
+        # tunes one knob for "trust critical urgency").
+        bypass_critical = (
+            severity == "critical" and _read_bypass_critical()
+        )
+        if not bypass_critical:
+            threshold_met, buffered_count = (
+                self._record_failure_and_check_threshold(
+                    probe, category, severity
+                )
+            )
+            if not threshold_met:
+                logger.debug(
+                    "[kora.probe_wake_consumer] buffered probe=%s "
+                    "category=%s severity=%s count=%d required=%d "
+                    "— waiting for consecutive failure",
+                    probe,
+                    category,
+                    severity,
+                    buffered_count,
+                    _read_consecutive_required(),
+                )
+                return WakeConsumeOutcome(
+                    probe=probe,
+                    category=category,
+                    severity=severity,
+                    dispatched=False,
+                    reasoning_invoked=False,
+                    dm_sent=False,
+                    buffered_skipped=True,
+                    buffered_consecutive_count=buffered_count,
+                )
 
         # KR-PROBE-INVESTIGATION-DATA-COMPLETION — wall-clock start
         # so the investigation_completed audit can carry

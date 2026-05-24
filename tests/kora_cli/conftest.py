@@ -44,3 +44,32 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
     monkeypatch.setattr(
         _cli_main, "_detect_concurrent_hermes_instances", lambda *_a, **_k: []
     )
+
+
+@pytest.fixture(autouse=True)
+def _audit_sync_writes_by_default(request, monkeypatch):
+    """KR-CHEAP-AUDIT-BATCHING — default tests to sync writes.
+
+    Production default is batching ON (BATCH_SIZE=100, 5s interval)
+    but most test suites read the audit JSONL immediately after the
+    emit call and assume sync semantics. Force BATCH_SIZE=0 globally;
+    the dedicated batching-behavior tests in
+    ``tests/kora_cli/audit/test_jsonl_sink.py`` opt back in with their
+    own ``batching_enabled`` fixture.
+
+    Tests that want to exercise the production batched path opt out
+    of this default with ``@pytest.mark.audit_batching_default``.
+    """
+    if request.node.get_closest_marker("audit_batching_default"):
+        return
+    try:
+        from kora_cli.audit.jsonl_sink import (
+            BATCH_SIZE_ENV,
+            _reset_batching_for_tests,
+        )
+    except Exception:
+        return
+    monkeypatch.setenv(BATCH_SIZE_ENV, "0")
+    _reset_batching_for_tests()
+    yield
+    _reset_batching_for_tests()

@@ -6811,6 +6811,261 @@ async def reject_phrasebook_proposal(
 
 
 # ---------------------------------------------------------------------------
+# Generic promotion-loop endpoints — KR-PROMOTE-LOOPS-COMPLETION-MEGABUCKET
+# ---------------------------------------------------------------------------
+#
+# Three additional loops landed in this bucket (router-tuning,
+# tool-trimming, probe-fix-envelopes). Each follows the phrasebook
+# (#186) pattern but without the loop-specific "approve also writes
+# to live config" step — these are propose-only at v1. The approve
+# endpoint transitions the proposal status + emits ``promotion.approved``;
+# reject does likewise with ``promotion.rejected``. Operator
+# scaffolds the actual config change manually (router prompts, tool
+# manifest, fix_envelopes.py) using the persisted proposal payload
+# as the spec.
+#
+# DRY via :func:`_promotion_loop_pending` etc. — the per-loop GET +
+# POST handlers are 3-line wrappers around the generic helpers.
+#
+# Drift-guard: ``_PROMOTION_STATUS_VALUES`` (defined above for the
+# phrasebook endpoints) is shared.
+
+
+def _promotion_loop_pending(loop_name: str) -> Dict[str, Any]:
+    from kora_cli.promote._shared.proposal_store import list_by_status
+
+    proposals = list_by_status(loop_name=loop_name, status="pending")
+    # Highest-confidence first when payloads carry that field;
+    # falls back to filesystem-name order otherwise.
+    proposals.sort(
+        key=lambda p: (
+            -float(p.get("confidence") or 0.0),
+            -int(p.get("cluster_size") or 0),
+        )
+    )
+    return {
+        "proposals": proposals,
+        "status_values": list(_PROMOTION_STATUS_VALUES),
+        "loop_name": loop_name,
+    }
+
+
+def _promotion_loop_transition(
+    *,
+    loop_name: str,
+    proposal_id: str,
+    new_status: str,
+    audit_seam: str,
+    payload: Optional[Dict[str, Any]],
+) -> Any:
+    """Shared transition helper for the 3 new loops. Validates
+    pending state, mutates payload review_notes if present, emits
+    audit row, returns the canonical response shape."""
+    from kora_cli.audit import emit_audit
+    from kora_cli.promote._shared.proposal_store import (
+        ProposalNotFound,
+        load,
+        transition,
+    )
+
+    review_notes = ""
+    if isinstance(payload, dict):
+        notes_raw = payload.get("review_notes")
+        if isinstance(notes_raw, str):
+            review_notes = notes_raw
+
+    try:
+        current_status, _ = load(loop_name=loop_name, proposal_id=proposal_id)
+    except ProposalNotFound:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "proposal_not_found", "proposal_id": proposal_id},
+        )
+    if current_status != "pending":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "proposal_not_pending",
+                "proposal_id": proposal_id,
+                "current_status": current_status,
+            },
+        )
+
+    def _mutate(p: Dict[str, Any]) -> None:
+        p["status"] = new_status
+        if review_notes:
+            p["review_notes"] = review_notes
+
+    _, updated = transition(
+        loop_name=loop_name,
+        proposal_id=proposal_id,
+        new_status=new_status,
+        payload_mutator=_mutate,
+    )
+
+    try:
+        emit_audit(
+            seam=audit_seam,
+            details=updated,
+            caller_session_id=(
+                f"promotion:{loop_name}:{proposal_id}"
+            ),
+            source="reasoning",
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote] %s emit raised %r — transition persisted; "
+            "audit row missing",
+            audit_seam,
+            exc,
+        )
+
+    return {
+        "proposal_id": proposal_id,
+        "status": new_status,
+        "review_notes": review_notes,
+    }
+
+
+# --- Router-tuning ---------------------------------------------------------
+
+
+@app.get("/api/promotions/router-tuning/pending")
+async def list_pending_router_tuning_proposals() -> Dict[str, Any]:
+    """Return pending router-tuning proposals.
+
+    Payload shape per ``kora_cli.promote.router_tuning.proposer``:
+    proposal_id / route / calls_count / escalation_count /
+    escalation_rate / recommendation_kind / rationale / confidence /
+    created_at / status.
+    """
+    return _promotion_loop_pending("router_tuning")
+
+
+@app.post("/api/promotions/router-tuning/{proposal_id}/approve")
+async def approve_router_tuning_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Approve a router-tuning proposal. Transitions the proposal
+    + emits ``promotion.approved``; does NOT mutate router config —
+    operator scaffolds the trigger-pattern change manually from the
+    proposal rationale."""
+    return _promotion_loop_transition(
+        loop_name="router_tuning",
+        proposal_id=proposal_id,
+        new_status="approved",
+        audit_seam="promotion.approved",
+        payload=payload,
+    )
+
+
+@app.post("/api/promotions/router-tuning/{proposal_id}/reject")
+async def reject_router_tuning_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    return _promotion_loop_transition(
+        loop_name="router_tuning",
+        proposal_id=proposal_id,
+        new_status="rejected",
+        audit_seam="promotion.rejected",
+        payload=payload,
+    )
+
+
+# --- Tool-trimming ---------------------------------------------------------
+
+
+@app.get("/api/promotions/tool-trimming/pending")
+async def list_pending_tool_trimming_proposals() -> Dict[str, Any]:
+    """Return pending tool-trimming proposals.
+
+    Payload per ``kora_cli.promote.tool_trimming.proposer``:
+    proposal_id / route / unused_tools / total_calls_for_route /
+    observation_window_days / confidence / created_at / status.
+    """
+    return _promotion_loop_pending("tool_trimming")
+
+
+@app.post("/api/promotions/tool-trimming/{proposal_id}/approve")
+async def approve_tool_trimming_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Approve a tool-trim proposal. v1 transitions status + emits
+    audit only — actual drop-list enforcement lands in the future
+    KR-PLUGIN-TOOL-DESC-TRIM bucket which reads the approved
+    proposals."""
+    return _promotion_loop_transition(
+        loop_name="tool_trimming",
+        proposal_id=proposal_id,
+        new_status="approved",
+        audit_seam="promotion.approved",
+        payload=payload,
+    )
+
+
+@app.post("/api/promotions/tool-trimming/{proposal_id}/reject")
+async def reject_tool_trimming_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    return _promotion_loop_transition(
+        loop_name="tool_trimming",
+        proposal_id=proposal_id,
+        new_status="rejected",
+        audit_seam="promotion.rejected",
+        payload=payload,
+    )
+
+
+# --- Probe-fix-envelopes ---------------------------------------------------
+
+
+@app.get("/api/promotions/probe-envelopes/pending")
+async def list_pending_probe_envelope_proposals() -> Dict[str, Any]:
+    """Return pending probe-fix-envelope proposals.
+
+    Payload per ``kora_cli.promote.probe_fix_envelopes.proposer``:
+    proposal_id / probe / issue_category / fix_name_suggestion /
+    cluster_size / recurring_recommendation_text /
+    blast_radius_summary / confidence / created_at / status.
+
+    HIGH-RISK loop — see module docstring. Operator manually
+    scaffolds approved envelopes into ``probes/fix_envelopes.py``
+    using the persisted payload as the spec.
+    """
+    return _promotion_loop_pending("probe_fix_envelopes")
+
+
+@app.post("/api/promotions/probe-envelopes/{proposal_id}/approve")
+async def approve_probe_envelope_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Approve a probe-fix-envelope proposal. v1 transitions status
+    + emits audit only — Kora's ``fix_envelopes.py`` MUST be edited
+    by hand. The approved/ proposal file is the audit trail for
+    when the manual scaffold lands."""
+    return _promotion_loop_transition(
+        loop_name="probe_fix_envelopes",
+        proposal_id=proposal_id,
+        new_status="approved",
+        audit_seam="promotion.approved",
+        payload=payload,
+    )
+
+
+@app.post("/api/promotions/probe-envelopes/{proposal_id}/reject")
+async def reject_probe_envelope_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    return _promotion_loop_transition(
+        loop_name="probe_fix_envelopes",
+        proposal_id=proposal_id,
+        new_status="rejected",
+        audit_seam="promotion.rejected",
+        payload=payload,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Email-intent audit lens (KR-FE-EMAIL-INTENT-LOG-PANEL)
 # ---------------------------------------------------------------------------
 #
