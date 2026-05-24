@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Sidebar (before — flat list)</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { padding: 0; max-width: none; display: flex; }
+  .sidebar { width: 240px; background: #0a0a0a; min-height: 100vh; padding: 8px 0; border-right: 1px solid #2a2a2a; }
+  .nav-link { display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; font-family: ui-monospace, monospace; }
+  .nav-link.active { color: var(--fg); }
+  .badge-count { margin-left: auto; padding: 2px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; }
+  .annotation { padding: 32px; color: var(--muted); font-size: 13px; max-width: 600px; line-height: 1.6; }
+  .annotation h1 { color: var(--fg); margin: 0 0 12px; font-size: 18px; }
+  .annotation code { background: #1a1a1a; padding: 2px 6px; border-radius: 4px; color: var(--success); font-size: 11px; }
+  .annotation .stat { display: inline-block; padding: 2px 8px; background: rgba(248,113,113,0.15); color: #fda4a4; border: 1px solid rgba(248,113,113,0.3); border-radius: 4px; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 6px; }
+</style>
+</head><body>
+
+  <div class="sidebar">
+    <div style="padding: 0 16px 12px; font-weight: 600; color: var(--fg); font-size: 14px; line-height: 1.05; border-bottom: 1px solid #2a2a2a; margin-bottom: 4px;">
+      Hermes<br>Agent
+    </div>
+    <div class="nav-link">⚠ ALERTS</div>
+    <div class="nav-link">⬢ OVERVIEW</div>
+    <div class="nav-link">💬 SESSIONS</div>
+    <div class="nav-link">📊 OPERATIONAL</div>
+    <div class="nav-link">💗 HEALTH</div>
+    <div class="nav-link">❤ HEARTBEAT</div>
+    <div class="nav-link">✨ PROBE INVESTIGATIONS</div>
+    <div class="nav-link">🔔 ALERT INVESTIGATIONS</div>
+    <div class="nav-link">📥 WEBHOOK EVENTS</div>
+    <div class="nav-link">↬ AGENT ACTIVITY</div>
+    <div class="nav-link">🧠 REASONING</div>
+    <div class="nav-link">💬 SLACK DM</div>
+    <div class="nav-link">✉ EMAIL</div>
+    <div class="nav-link">📥 EMAIL INTENT LOG</div>
+    <div class="nav-link">✨ LOGGED-ONLY</div>
+    <div class="nav-link">↗ OUTBOUND EMAIL LOG</div>
+    <div class="nav-link">📊 KORA ACTIONS</div>
+    <div class="nav-link">🔧 PROBE AUTOFIX LOG</div>
+    <div class="nav-link">⚡ MCP CLIENTS</div>
+    <div class="nav-link">▣ BOOT STATUS</div>
+    <div class="nav-link">⛒ DR</div>
+    <div class="nav-link">$ COST</div>
+    <div class="nav-link">📊 COST TELEMETRY</div>
+    <div class="nav-link">📖 PHRASEBOOK</div>
+    <div class="nav-link" style="background: rgba(250,204,21,0.08); border-left: 2px solid var(--warning);">
+      💡 PROMOTION REVIEW <span class="badge-count">3</span>
+    </div>
+    <div class="nav-link">✓ CAPABILITIES</div>
+    <div class="nav-link">📜 CHARTER</div>
+    <div class="nav-link">⛔ KORA CONTROL</div>
+    <div class="nav-link">≋ SEA TICKETS</div>
+    <div class="nav-link">📡 CHAIN EVENTS</div>
+    <div class="nav-link">📊 ANALYTICS</div>
+    <div class="nav-link">⚙ MODELS</div>
+    <div class="nav-link">📄 LOGS</div>
+    <div class="nav-link">⏱ CRON</div>
+    <div class="nav-link">🔌 MCP</div>
+    <div class="nav-link">📦 SKILLS</div>
+    <div class="nav-link">🧩 PLUGINS</div>
+    <div class="nav-link">👥 PROFILES</div>
+    <div class="nav-link">👤 IDENTITY</div>
+    <div class="nav-link">⚙ CONFIG</div>
+    <div class="nav-link">🔑 KEYS</div>
+    <div class="nav-link">📖 DOCUMENTATION</div>
+    <div class="nav-link">📔 RUNBOOKS</div>
+  </div>
+
+  <div class="annotation">
+    <h1>Sidebar — BEFORE</h1>
+    <p>
+      <span class="stat">43 flat entries</span>
+      <span class="stat">no grouping</span>
+      <span class="stat">no collapse</span>
+    </p>
+    <p>
+      Operator scans the whole list to find a specific page —
+      <em>Settings</em>, <em>Diagnostic</em>, and <em>Daemon &amp; Listeners</em>
+      pages crowd the bottom even though they're rarely used in routine
+      triage. The operator-attention surfaces (alerts, investigations,
+      promotion review) sit alongside cron/skills/identity/logs with no
+      visual separation.
+    </p>
+    <p>
+      CC#2's #198 report flagged this for restructure — the sidebar past
+      25 entries was hard to scan, and the next handful of bucket lands
+      will only add more.
+    </p>
+  </div>
+
+</body></html>

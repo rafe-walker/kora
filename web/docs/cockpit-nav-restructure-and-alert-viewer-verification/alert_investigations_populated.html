@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Alert Investigations — populated post-#197</title>
+<link rel="stylesheet" href="_styles.css"></head><body>
+
+  <h1>Alert Investigations · populated against real #197 emission</h1>
+  <p class="preamble">
+    Verified: AlertInvestigationsPage renders correctly against actual
+    <code>alert.investigation_completed</code> payloads from
+    <code>kora_cli/alerts/wake_consumer.py</code>. Endpoint rewritten to
+    drive off completed_rows (alerts don't emit a separate
+    <code>alert.wake_requested</code> seam — pre-#197 speculation).
+    FE type tightened: <code>alert_id</code> added; speculative
+    <code>title</code>/<code>detail</code> fields dropped.
+  </p>
+
+  <div class="page-header">
+    <div class="title" style="display: flex; align-items: center; gap: 8px;">🔔 Alert Investigations</div>
+    <div class="row">
+      <div style="display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden;">
+        <button class="btn" style="background: var(--primary); color: #001; border-radius: 0; border: none;">24h</button>
+        <button class="btn" style="border-radius: 0; border: none;">7d</button>
+        <button class="btn" style="border-radius: 0; border: none;">All</button>
+      </div>
+      <button class="btn outlined">↻ Refresh</button>
+    </div>
+  </div>
+
+  <p class="italic-muted" style="font-size: 12px;">
+    Alert-investigation rows (from <code>alert.investigation_completed</code>) joined with
+    <code>slack_dm_log.jsonl</code> by <code>caller_session_id="alert:{category}:{severity}"</code>.
+    Each card surfaces cost / model / dm_status / autoaction flag + drill link to the
+    InvestigationDrillDown view.
+  </p>
+
+  <!-- Summary header -->
+  <div class="card">
+    <div class="row" style="font-size: 13px;">
+      <span>🔔 <strong>3</strong> <span class="italic-muted">alert investigations</span></span>
+      <span class="italic-muted">·</span>
+      <span style="color: var(--destructive);">⊗ <strong>1</strong> <span class="italic-muted">critical</span></span>
+      <span style="color: var(--warning);">⚠ <strong>2</strong> <span class="italic-muted">warning</span></span>
+      <span class="italic-muted" style="margin-left: auto; font-size: 11px;">generated 2026-05-25 14:32:01</span>
+    </div>
+  </div>
+
+  <!-- dm_status filter chips -->
+  <div class="card">
+    <div class="row" style="font-size: 11px;">
+      <span class="italic-muted">All DM statuses</span>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">✉⊗ Failed <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--destructive); border-color: rgba(248,113,113,0.4);">⚠ Engine unavail. + failed <strong style="margin-left: 4px;">0</strong></button>
+      <button class="btn outlined" style="color: var(--success); border-color: rgba(74,222,128,0.4);">💬 Sent <strong style="margin-left: 4px;">3</strong></button>
+      <button class="btn outlined" style="color: var(--warning); border-color: rgba(250,204,21,0.4);">⊙ Engine unavail. (fallback) <strong style="margin-left: 4px;">0</strong></button>
+    </div>
+  </div>
+
+  <!-- Card 1: cost_ladder critical -->
+  <div class="card" style="border-color: rgba(248,113,113,0.4);">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--destructive); font-size: 16px; margin-top: 2px;">🔔</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">cost_ladder</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-25 14:18:42</span>
+          <span class="badge destructive">critical</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;" title="Originating alert_id">id: abc-def-uuid</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$ $0.0042</span>
+          <span class="italic-muted">· 3.8s</span>
+          <span class="italic-muted">· DM 4m ago</span>
+        </div>
+        <div style="margin-top: 6px;">
+          Cost ladder reached tier=premium today — burn $42; if pace continues we hit credit-pool exhaustion in ~3 days. Recommend reviewing /cost-telemetry for the route(s) escalating most.
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);" class="row">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: alert:cost_ladder:critical</span>
+        <a style="color: var(--primary); display: inline-flex; align-items: center; gap: 4px;">🔍 drill</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 2: webhook_dead_letter warning -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--warning); font-size: 16px; margin-top: 2px;">🔔</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">webhook_dead_letter</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-25 13:42:11</span>
+          <span class="badge warning">warning</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">id: 7e3f-2c1b</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$ $0.0018</span>
+          <span class="italic-muted">· 1.4s</span>
+          <span class="italic-muted">· DM 51m ago</span>
+        </div>
+        <div style="margin-top: 6px;">
+          Slack webhook 02f9 hit the dead-letter queue after 5 retries — payload looks valid; likely a transient Slack 503. Cleared the DLQ; if it re-fires within an hour, escalate to operator triage.
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);" class="row">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: alert:webhook_dead_letter:warning</span>
+        <a style="color: var(--primary); display: inline-flex; align-items: center; gap: 4px;">🔍 drill</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 3: reasoning_halted warning -->
+  <div class="card" style="border-color: rgba(250,204,21,0.4);">
+    <div style="display: flex; gap: 10px; align-items: flex-start;">
+      <span style="color: var(--warning); font-size: 16px; margin-top: 2px;">🔔</span>
+      <div style="flex: 1;">
+        <div class="row">
+          <span style="font-family: ui-monospace, monospace; font-weight: 500; font-size: 13px;">reasoning_halted</span>
+          <span class="italic-muted" style="font-size: 11px;">2026-05-25 11:08:33</span>
+          <span class="badge warning">warning</span>
+          <span class="badge" style="font-family: ui-monospace, monospace; font-size: 10px;">id: 9a1c-44ef</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-left: 32px; margin-top: 12px;">
+      <div style="background: rgba(30,30,30,0.4); border: 1px solid var(--border); border-radius: 4px; padding: 8px; font-size: 11px;">
+        <div class="row">
+          <span class="badge success">💬 DM sent</span>
+          <span class="badge" style="font-family: ui-monospace, monospace;">claude-haiku-4-5-20251001</span>
+          <span class="italic-muted">$ $0.0015</span>
+          <span class="italic-muted">· 1.1s</span>
+          <span class="italic-muted">· DM 3h ago</span>
+        </div>
+        <div style="margin-top: 6px;">
+          Reasoning loop halted mid-tool-call (cost_ladder_halted) on the /alerts route — cost ladder hit the daily ceiling. Reset at midnight UTC; no immediate operator action required.
+        </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 11px; color: var(--muted);" class="row">
+        <span style="font-family: ui-monospace, monospace;">caller_session_id: alert:reasoning_halted:warning</span>
+        <a style="color: var(--primary); display: inline-flex; align-items: center; gap: 4px;">🔍 drill</a>
+      </div>
+    </div>
+  </div>
+
+</body></html>

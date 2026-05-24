@@ -212,15 +212,18 @@ function AlertInvestigationCard({ item }: { item: AlertInvestigationItem }) {
                   🚨 auto-action
                 </Badge>
               )}
+              {/* alert_id surfaces the link back to the originating
+                  Alert record for cross-referencing in /alerts. */}
+              {item.investigation_completed?.alert_id && (
+                <Badge
+                  tone="outline"
+                  className="font-mono text-[10px]"
+                  title={`Originating alert_id: ${item.investigation_completed.alert_id}`}
+                >
+                  id: {item.investigation_completed.alert_id.slice(0, 12)}
+                </Badge>
+              )}
             </div>
-            {item.title && (
-              <div className="mt-1 text-sm font-medium">{item.title}</div>
-            )}
-            {item.detail && (
-              <div className="mt-1 text-xs text-muted-foreground">
-                {item.detail}
-              </div>
-            )}
           </div>
         </div>
 

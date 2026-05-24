@@ -22,6 +22,8 @@ import {
   BookOpen,
   BookOpenCheck,
   Brain,
+  ChevronDown,
+  ChevronRight,
   Clock,
   Code,
   Cpu,
@@ -133,6 +135,7 @@ import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import { usePromotionPendingCount } from "@/hooks/usePromotionPendingCount";
+import { useSidebarGroupCollapse } from "@/hooks/useSidebarGroupCollapse";
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
@@ -219,278 +222,151 @@ function ChatRouteSink() {
   return null;
 }
 
-const BUILTIN_NAV_REST: NavItem[] = [
+// KR-FE-COCKPIT-NAV-RESTRUCTURE — group definition shape. ``key`` is
+// the localStorage key for collapse-state persistence (kebab-case,
+// stable across renames of ``label``). ``defaultCollapsed`` controls
+// initial state when the operator has no stored preference — the
+// less-used groups (Daemon / Settings / Diagnostic) default
+// collapsed so the sidebar opens to the operator-priority surface.
+interface SidebarNavGroupDef {
+  key: string;
+  label: string;
+  defaultCollapsed: boolean;
+  items: NavItem[];
+}
+
+const BUILTIN_NAV_GROUPS: readonly SidebarNavGroupDef[] = [
   {
-    // Alerts at the TOP of the rest-of-sidebar per spec §1(d) —
-    // priority position so the operator sees it first. AlertTriangle
-    // icon (warning glyph; the banner on /overview already uses
-    // severity-tinted variants per active state).
-    path: "/alerts",
-    labelKey: "alerts",
-    label: "Alerts",
-    icon: AlertTriangle,
-  },
-  {
-    path: "/",
-    labelKey: "overview",
+    key: "overview",
     label: "Overview",
-    icon: LayoutDashboard,
+    defaultCollapsed: false,
+    items: [
+      // Alerts pinned to the very top of the sidebar (priority
+      // position carried over from the pre-restructure layout) —
+      // operator sees attention surface first.
+      { path: "/alerts", labelKey: "alerts", label: "Alerts", icon: AlertTriangle },
+      { path: "/", labelKey: "overview", label: "Overview", icon: LayoutDashboard },
+      // KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora do"
+      // timeline. Lives at the top with operator-attention surfaces.
+      { path: "/kora-actions", labelKey: "koraActions", label: "Kora Actions", icon: Activity },
+      { path: "/sessions", labelKey: "sessions", label: "Sessions", icon: MessageSquare },
+      { path: "/operational-state", labelKey: "operationalState", label: "Operational", icon: Activity },
+    ],
   },
   {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
+    key: "watch",
+    label: "Watch",
+    defaultCollapsed: false,
+    items: [
+      { path: "/health-rollup", labelKey: "healthRollup", label: "Health", icon: HeartPulse },
+      { path: "/heartbeat", labelKey: "heartbeat", label: "Heartbeat", icon: Heart },
+      // KR-FE-PROBE-INVESTIGATION-VIEWER + KR-FE-ALERT-INVESTIGATIONS-VIEWER
+      // — the two wake-driven investigation surfaces sit together.
+      { path: "/probe-investigations", labelKey: "probeInvestigations", label: "Probe Investigations", icon: Sparkles },
+      { path: "/alert-investigations", labelKey: "alertInvestigations", label: "Alert Investigations", icon: BellRing },
+      // Cost watching belongs to operator-attention since the
+      // cheap-substrate thesis depends on it staying visible.
+      { path: "/cost-state", labelKey: "costState", label: "Cost", icon: DollarSign },
+      { path: "/cost-telemetry", labelKey: "costTelemetry", label: "Cost Telemetry", icon: BarChart3 },
+    ],
   },
   {
-    path: "/operational-state",
-    labelKey: "operationalState",
-    label: "Operational",
-    icon: Activity,
-  },
-  {
-    path: "/health-rollup",
-    labelKey: "healthRollup",
-    label: "Health",
-    icon: HeartPulse,
-  },
-  {
-    path: "/heartbeat",
-    labelKey: "heartbeat",
-    label: "Heartbeat",
-    icon: Heart,
-  },
-  {
-    // KR-FE-PROBE-INVESTIGATION-VIEWER: wake → reasoning → DM xref.
-    // Sits right after /heartbeat since the operator-flow is
-    // "Heartbeat (raw probe state) → Probe Investigations (what Kora
-    // did about an unhealthy probe)." Joins probe.wake_requested
-    // audit + reasoning.tool_called audit on caller_session_id ==
-    // "probe:{probe}:{category}" (PR #163 + #166).
-    path: "/probe-investigations",
-    labelKey: "probeInvestigations",
-    label: "Probe Investigations",
-    icon: Sparkles,
-  },
-  {
-    // KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) —
-    // sits adjacent to probe-investigations since the operator-flow
-    // mirrors it: alerts wake the reasoning engine the same way
-    // probes do. caller_session_id pattern is
-    // ``alert:{category}:{severity}``. Empty until CC#1's #420
-    // ships the alert wake consumer.
-    path: "/alert-investigations",
-    labelKey: "alertInvestigations",
-    label: "Alert Investigations",
-    icon: BellRing,
-  },
-  {
-    path: "/webhook-events",
-    labelKey: "webhookEvents",
-    label: "Webhook Events",
-    icon: Inbox,
-  },
-  {
-    path: "/agent-activity",
-    labelKey: "agentActivity",
-    label: "Agent Activity",
-    icon: Workflow,
-  },
-  {
-    path: "/reasoning",
-    labelKey: "reasoning",
-    label: "Reasoning",
-    icon: Brain,
-  },
-  {
-    path: "/slack-dm",
-    labelKey: "slackDM",
-    label: "Slack DM",
-    icon: MessageCircle,
-  },
-  {
-    path: "/email",
-    labelKey: "email",
+    key: "email",
     label: "Email",
-    icon: Mail,
+    defaultCollapsed: false,
+    items: [
+      { path: "/email", labelKey: "email", label: "Email", icon: Mail },
+      { path: "/email-intent-log", labelKey: "emailIntentLog", label: "Email Intent Log", icon: Inbox },
+      // KR-FE-EMAIL-LOGGED-ONLY-ANALYZER — un-acted-on lens.
+      { path: "/email-intent-log/logged-only", labelKey: "emailLoggedOnly", label: "Logged-Only", icon: Sparkles },
+      { path: "/outbound-email-log", labelKey: "outboundEmailLog", label: "Outbound Email Log", icon: Send },
+    ],
   },
   {
-    // KR-FE-EMAIL-INTENT-LOG-PANEL — audit-derived per-email-intent
-    // panel. Placed right after /email so the operator-flow is
-    // "Email (inbox lens) → Email Intent Log (what Kora decided
-    // to do with each)." Inbox icon distinguishes from the
-    // raw-email panel's Mail icon.
-    path: "/email-intent-log",
-    labelKey: "emailIntentLog",
-    label: "Email Intent Log",
-    icon: Inbox,
+    key: "promotion",
+    label: "Promotion Loops",
+    defaultCollapsed: false,
+    items: [
+      // KR-FE-PROMOTION-REVIEW-PANEL + multi-loop extend — operator-
+      // approval UX. PendingBadge populates from /api/promotions/counts.
+      { path: "/promotions/phrasebook", labelKey: "promotionReview", label: "Promotion Review", icon: Lightbulb },
+      { path: "/phrasebook", labelKey: "phrasebook", label: "Phrasebook", icon: BookOpen },
+    ],
   },
   {
-    // KR-FE-EMAIL-LOGGED-ONLY-ANALYZER — un-acted-on lens. Sits
-    // right after /email-intent-log so operator-flow is
-    // "Intent Log (everything Kora evaluated) → Logged-Only
-    // (what Kora DIDN'T act on)." Sparkles icon signals "lens
-    // for finding patterns to teach Kora" (a forward-looking
-    // surface, distinct from the triage-y Inbox of the parent).
-    path: "/email-intent-log/logged-only",
-    labelKey: "emailLoggedOnly",
-    label: "Logged-Only",
-    icon: Sparkles,
+    key: "activity",
+    label: "Activity & Reasoning",
+    defaultCollapsed: false,
+    items: [
+      { path: "/reasoning", labelKey: "reasoning", label: "Reasoning", icon: Brain },
+      { path: "/slack-dm", labelKey: "slackDM", label: "Slack DM", icon: MessageCircle },
+      { path: "/webhook-events", labelKey: "webhookEvents", label: "Webhook Events", icon: Inbox },
+      { path: "/agent-activity", labelKey: "agentActivity", label: "Agent Activity", icon: Workflow },
+      { path: "/chain-events", labelKey: "chainEvents", label: "Chain Events", icon: Radio },
+      // KR-FE-AUTOFIX-LOG-PANEL — per-seam tool.probe_autofix_attempted.
+      { path: "/probe-autofix-log", labelKey: "probeAutofixLog", label: "Probe Autofix Log", icon: Wrench },
+    ],
   },
   {
-    // KR-FE-OUTBOUND-EMAIL-LOG-PANEL — symmetric to the inbound
-    // intent panel above; surfaces tool.email_to_operator_sent
-    // (PR #179) so operator sees what Kora composed and sent.
-    // Send icon completes the inbound (Inbox) / outbound (Send)
-    // pair adjacent in the sidebar.
-    path: "/outbound-email-log",
-    labelKey: "outboundEmailLog",
-    label: "Outbound Email Log",
-    icon: Send,
+    key: "control",
+    label: "Control & Tickets",
+    defaultCollapsed: false,
+    items: [
+      { path: "/sea-tickets", labelKey: "seaTickets", label: "Sea Tickets", icon: Waves },
+      { path: "/kora-control", labelKey: "koraControl", label: "Kora Control", icon: OctagonAlert },
+      { path: "/capabilities", labelKey: "capabilities", label: "Capabilities", icon: ShieldCheck },
+      { path: "/charter", labelKey: "charter", label: "Charter", icon: Scroll },
+    ],
   },
   {
-    // KR-FE-KORA-ACTIONS-AGGREGATED-PANEL — apex "what did Kora
-    // do" timeline. Placed prominently with the other action-
-    // surfaces. Activity icon to signal cross-seam aggregation.
-    path: "/kora-actions",
-    labelKey: "koraActions",
-    label: "Kora Actions",
-    icon: Activity,
+    key: "daemon",
+    label: "Daemon & Listeners",
+    // Collapsed by default — diagnostic/listener pages are less-used
+    // for routine operator triage; collapsing keeps the top-of-
+    // sidebar focused on attention surfaces.
+    defaultCollapsed: true,
+    items: [
+      { path: "/boot-status", labelKey: "bootStatus", label: "Boot Status", icon: PowerSquare },
+      { path: "/dr-state", labelKey: "drState", label: "DR", icon: ShieldAlert },
+      { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
+      { path: "/mcp-clients", labelKey: "mcpClients", label: "MCP Clients", icon: Cable },
+      { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
+      { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
+      { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+      { path: "/analytics", labelKey: "analytics", label: "Analytics", icon: BarChart3 },
+    ],
   },
   {
-    // KR-FE-AUTOFIX-LOG-PANEL — per-seam panel for
-    // tool.probe_autofix_attempted (PR #182). Wrench icon
-    // matches the per-row card icon for visual consistency.
-    path: "/probe-autofix-log",
-    labelKey: "probeAutofixLog",
-    label: "Probe Autofix Log",
-    icon: Wrench,
+    key: "settings",
+    label: "Settings",
+    defaultCollapsed: true,
+    items: [
+      { path: "/models", labelKey: "models", label: "Models", icon: Cpu },
+      { path: "/config", labelKey: "config", label: "Config", icon: Settings },
+      { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+      { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
+      { path: "/identity", labelKey: "identity", label: "Identity", icon: UserCircle },
+    ],
   },
   {
-    path: "/mcp-clients",
-    labelKey: "mcpClients",
-    label: "MCP Clients",
-    icon: Cable,
-  },
-  {
-    path: "/boot-status",
-    labelKey: "bootStatus",
-    label: "Boot Status",
-    icon: PowerSquare,
-  },
-  {
-    path: "/dr-state",
-    labelKey: "drState",
-    label: "DR",
-    icon: ShieldAlert,
-  },
-  {
-    path: "/cost-state",
-    labelKey: "costState",
-    label: "Cost",
-    icon: DollarSign,
-  },
-  {
-    // KR-FE-COST-TELEMETRY-PANEL: per-route burn / escalation rate /
-    // cache effectiveness — the cost-economy thesis made visible.
-    // Lives next to /cost-state in the sidebar (related domain;
-    // CostState = aggregate rung/budget, CostTelemetry = per-route
-    // breakdown).
-    path: "/cost-telemetry",
-    labelKey: "costTelemetry",
-    label: "Cost Telemetry",
-    icon: BarChart3,
-  },
-  {
-    // KR-FE-PHRASEBOOK-VIEWER: read-only viewer + live tester for
-    // the Slack DM short-circuit phrasebook. Adjacent to Cost
-    // Telemetry in the sidebar since both surface the cheap-
-    // substrate thesis (phrasebook hits are the $0 reply path
-    // that show up as model_used="short_circuit" in cost
-    // telemetry's model breakdown).
-    path: "/phrasebook",
-    labelKey: "phrasebook",
-    label: "Phrasebook",
-    icon: BookOpen,
-  },
-  {
-    // KR-FE-PROMOTION-REVIEW-PANEL — operator-approval UX for the
-    // Kora-generated phrasebook promotion proposals (PR #186).
-    // Adjacent to /phrasebook in the sidebar — the operator-flow
-    // is "Phrasebook (current state) → Promotion Review (what
-    // Kora wants to ADD)." Lightbulb icon signals "Kora's idea
-    // waiting for your read." PendingBadge populates from
-    // /api/promotions/phrasebook/pending so the operator sees
-    // attention demand without entering the page.
-    path: "/promotions/phrasebook",
-    labelKey: "promotionReview",
-    label: "Promotion Review",
-    icon: Lightbulb,
-  },
-  {
-    path: "/capabilities",
-    labelKey: "capabilities",
-    label: "Capabilities",
-    icon: ShieldCheck,
-  },
-  {
-    path: "/charter",
-    labelKey: "charter",
-    label: "Charter",
-    icon: Scroll,
-  },
-  {
-    path: "/kora-control",
-    labelKey: "koraControl",
-    label: "Kora Control",
-    icon: OctagonAlert,
-  },
-  {
-    path: "/sea-tickets",
-    labelKey: "seaTickets",
-    label: "Sea Tickets",
-    icon: Waves,
-  },
-  {
-    path: "/chain-events",
-    labelKey: "chainEvents",
-    label: "Chain Events",
-    icon: Radio,
-  },
-  {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
-  },
-  {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
-  },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/identity", labelKey: "identity", label: "Identity", icon: UserCircle },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
-  },
-  {
-    path: "/runbooks",
-    labelKey: "runbooks",
-    label: "Runbooks",
-    icon: BookOpenCheck,
+    key: "diagnostic",
+    label: "Diagnostic & Docs",
+    defaultCollapsed: true,
+    items: [
+      { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
+      { path: "/docs", labelKey: "documentation", label: "Documentation", icon: BookOpen },
+      { path: "/runbooks", labelKey: "runbooks", label: "Runbooks", icon: BookOpenCheck },
+    ],
   },
 ];
+
+// Derived flat list — kept for backward-compat with buildNavItems +
+// partitionSidebarNav (which insert plugin items into the flat
+// merged sequence). Source-of-truth lives in BUILTIN_NAV_GROUPS;
+// the flat list is generated to avoid drift between the two views.
+const BUILTIN_NAV_REST: NavItem[] = BUILTIN_NAV_GROUPS.flatMap(
+  (g) => g.items,
+);
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
@@ -571,6 +447,77 @@ function partitionSidebarNav(
   }
   return { coreItems, pluginItems };
 }
+
+// KR-FE-COCKPIT-NAV-RESTRUCTURE — re-group a flat coreItems list
+// back into the canonical BUILTIN_NAV_GROUPS shape. ``coreItems``
+// may have plugin-inserted entries spliced into the flat sequence
+// (via the ``after:`` / ``before:`` manifest positioning); those
+// entries pick up the group of the item they sit next to so the
+// sidebar respects plugin author intent.
+interface RenderedNavGroup {
+  key: string;
+  label: string;
+  defaultCollapsed: boolean;
+  items: NavItem[];
+}
+
+function groupCoreItems(
+  coreItems: NavItem[],
+  groups: readonly SidebarNavGroupDef[],
+): RenderedNavGroup[] {
+  // Build the path → groupKey lookup from the canonical groups.
+  const pathToGroup = new Map<string, string>();
+  for (const group of groups) {
+    for (const item of group.items) {
+      pathToGroup.set(item.path, group.key);
+    }
+  }
+  // Initialise rendered groups in canonical order with empty
+  // items[] — preserves operator-expected group ordering even
+  // when a group has zero items after a feature flag hides it.
+  const rendered: Map<string, RenderedNavGroup> = new Map();
+  for (const group of groups) {
+    rendered.set(group.key, {
+      key: group.key,
+      label: group.label,
+      defaultCollapsed: group.defaultCollapsed,
+      items: [],
+    });
+  }
+  // Walk coreItems in their flat order. For plugin items spliced
+  // into the flat list (not in pathToGroup), drop them into the
+  // group whose last-seen item preceded them — keeping the
+  // ``after:`` semantic visible in the sidebar.
+  let lastSeenGroup: string | null = null;
+  for (const item of coreItems) {
+    let groupKey = pathToGroup.get(item.path);
+    if (groupKey === undefined) {
+      // Plugin-inserted item OR a route hidden by feature flag
+      // (e.g. /analytics gated by show_token_analytics). The flag
+      // drops the item from coreItems entirely so we never hit
+      // this branch for built-in routes; plugin paths fall back
+      // to the last-seen group, or the first group if none seen.
+      groupKey = lastSeenGroup ?? groups[0]?.key ?? "overview";
+    }
+    rendered.get(groupKey)?.items.push(item);
+    lastSeenGroup = groupKey;
+  }
+  return [...rendered.values()];
+}
+
+// Drift-guard: every built-in path must belong to exactly one
+// group. Exported for the test_sidebar_orphan_pages_caught test
+// to walk BUILTIN_NAV_REST and assert no orphans creep in.
+export const SIDEBAR_GROUP_KEYS_IN_ORDER: readonly string[] =
+  BUILTIN_NAV_GROUPS.map((g) => g.key);
+export const SIDEBAR_PATH_TO_GROUP: Readonly<Record<string, string>> =
+  Object.freeze(
+    Object.fromEntries(
+      BUILTIN_NAV_GROUPS.flatMap((g) =>
+        g.items.map((i) => [i.path, g.key] as const),
+      ),
+    ),
+  );
 
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
@@ -718,6 +665,18 @@ export default function App() {
       ),
     };
   }, [builtinNav, manifests, promotionPendingCount]);
+
+  // KR-FE-COCKPIT-NAV-RESTRUCTURE — re-group the flat coreItems into
+  // the canonical SIDEBAR_GROUPS shape. Plugin-inserted items take
+  // the group of the item they sit next to (see groupCoreItems).
+  const sidebarGroups = useMemo(
+    () => groupCoreItems(sidebarNav.coreItems, BUILTIN_NAV_GROUPS),
+    [sidebarNav.coreItems],
+  );
+
+  // Per-group collapse state with localStorage persistence — the
+  // hook resolves operator-override vs group default in one place.
+  const groupCollapse = useSidebarGroupCollapse();
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
@@ -867,16 +826,25 @@ export default function App() {
               className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
               aria-label={t.app.navigation}
             >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                  />
-                ))}
-              </ul>
+              {/* KR-FE-COCKPIT-NAV-RESTRUCTURE — grouped sidebar.
+                  Each group has a collapsible header with optional
+                  badge-sum. Plugin items keep their own bottom
+                  section (existing behavior). */}
+              {sidebarGroups.map((group) => (
+                <SidebarNavGroup
+                  key={group.key}
+                  group={group}
+                  isCollapsed={groupCollapse.isCollapsed(
+                    group.key,
+                    group.defaultCollapsed,
+                  )}
+                  onToggle={() =>
+                    groupCollapse.toggle(group.key, group.defaultCollapsed)
+                  }
+                  closeMobile={closeMobile}
+                  t={t}
+                />
+              ))}
 
               {sidebarNav.pluginItems.length > 0 && (
                 <div
@@ -1060,6 +1028,84 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
         )}
       </NavLink>
     </li>
+  );
+}
+
+// KR-FE-COCKPIT-NAV-RESTRUCTURE — group header + collapsible body.
+// The header is keyboard-actionable (operator can tab + space/enter
+// to toggle). Per-group ``badgeCount`` is the SUM of in-group items'
+// badgeCounts (so the operator sees "Promotion Loops ▾ 3" without
+// expanding the group to find which sub-item is demanding attention).
+function SidebarNavGroup({
+  group,
+  isCollapsed,
+  onToggle,
+  closeMobile,
+  t,
+}: {
+  group: RenderedNavGroup;
+  isCollapsed: boolean;
+  onToggle: () => void;
+  closeMobile: () => void;
+  t: Translations;
+}) {
+  if (group.items.length === 0) return null;
+  // Group label honors i18n if a matching key exists in t.app.nav,
+  // otherwise falls back to the declared label — same fallback
+  // pattern SidebarNavLink uses for per-item labels.
+  const navLabels = t.app.nav as Record<string, string>;
+  const groupLabel = navLabels[`group_${group.key}`] ?? group.label;
+  const badgeSum = group.items.reduce(
+    (acc, item) =>
+      acc + (typeof item.badgeCount === "number" ? item.badgeCount : 0),
+    0,
+  );
+  return (
+    <div className="flex flex-col" role="group" aria-labelledby={`sidebar-group-${group.key}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!isCollapsed}
+        aria-controls={`sidebar-group-${group.key}-items`}
+        id={`sidebar-group-${group.key}`}
+        className={cn(
+          "flex items-center gap-2 px-5 pt-2.5 pb-1",
+          "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase",
+          "opacity-50 hover:opacity-90 transition-opacity",
+          "cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+        )}
+      >
+        {isCollapsed ? (
+          <ChevronRight className="h-3 w-3 shrink-0" />
+        ) : (
+          <ChevronDown className="h-3 w-3 shrink-0" />
+        )}
+        <span className="flex-1 text-left">{groupLabel}</span>
+        {badgeSum > 0 && (
+          <span
+            aria-label={`${badgeSum} total awaiting review across ${groupLabel}`}
+            className="rounded-sm px-1.5 py-0.5 font-mono text-[0.55rem] tracking-normal bg-yellow-500/30 text-yellow-200"
+          >
+            {badgeSum}
+          </span>
+        )}
+      </button>
+      {!isCollapsed && (
+        <ul
+          id={`sidebar-group-${group.key}-items`}
+          className="flex flex-col"
+        >
+          {group.items.map((item) => (
+            <SidebarNavLink
+              closeMobile={closeMobile}
+              item={item}
+              key={item.path}
+              t={t}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -2574,17 +2574,23 @@ export interface ProbeInvestigationsResponse {
   by_dm_status_24h: Record<string, number>;
 }
 
-// KR-FE-ALERT-INVESTIGATIONS-VIEWER (forward-compat #420) — mirror
-// of probe investigations for alert-driven wakes. The wake +
-// investigation_completed seams + caller_session_id substrate match
-// the probe pattern; CC#1 #420 ships the emitter. ``AlertSeverity``
-// is already exported above for the alerts panel — we don't
-// re-export here; the alert-investigations payload uses ``string``
-// since the wake-emitter may produce sentinel values like
-// ``"unknown"`` for malformed rows.
-
+// KR-FE-ALERT-INVESTIGATIONS-VIEWER (verified against real #197
+// emission shape via KR-FE-ALERT-VIEWER-VERIFICATION). Mirror of
+// probe investigations for alert-driven wakes. The
+// alert.investigation_completed seam + caller_session_id substrate
+// match the probe pattern except #197 does NOT emit a separate
+// ``alert.wake_requested`` row at wake-time — the
+// alert.investigation_completed row IS the per-investigation
+// atom. FE drops ``title`` / ``detail`` fields (CC#2 forward-
+// compat speculation; not in real BE payload) and gains
+// ``alert_id`` (real BE field for cross-referencing the alert
+// object).
 export interface AlertInvestigationCompleted {
   emitted_at: string;
+  // ``alert_id`` is the real BE field that links this investigation
+  // back to the originating Alert record (aggregator-emitted UUID).
+  // Null when the row pre-dates the alert_id addition (defensive).
+  alert_id: string | null;
   summary_text: string;
   model_used: string | null;
   total_cost_usd: number | null;
@@ -2601,12 +2607,19 @@ export interface AlertInvestigationCompleted {
 
 export interface AlertInvestigationItem {
   wake_event_id: string;
+  // ``wake_timestamp`` is now the completion emit timestamp
+  // (alerts don't emit a separate wake row — see endpoint
+  // docstring). Kept the field name for FE key stability so
+  // existing render paths don't need rewiring.
   wake_timestamp: string;
   alert_category: string;
   severity: string;
-  title: string;
-  detail: string;
   caller_session_id: string;
+  // Always non-null when the panel surfaces an item — the
+  // endpoint now drives off completed_rows, so every item carries
+  // an investigation_completed payload by construction. Typed as
+  // nullable for future compat (e.g. a future wake_requested
+  // emitter that surfaces "in-flight" investigations).
   investigation_completed: AlertInvestigationCompleted | null;
   dm_entry: ProbeInvestigationDmEntry | null;
 }

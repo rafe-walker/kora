@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Sidebar (after — grouped + collapsible)</title>
+<link rel="stylesheet" href="_styles.css">
+<style>
+  body { padding: 0; max-width: none; display: flex; }
+  .sidebar { width: 240px; background: #0a0a0a; min-height: 100vh; padding: 8px 0; border-right: 1px solid #2a2a2a; }
+  .group-header { display: flex; align-items: center; gap: 6px; padding: 10px 16px 4px; font-size: 9px; color: var(--muted); opacity: 0.5; letter-spacing: 0.15em; text-transform: uppercase; font-family: ui-monospace, monospace; cursor: pointer; }
+  .group-header .chevron { font-size: 10px; }
+  .group-header .group-badge { margin-left: auto; padding: 1px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; letter-spacing: 0.05em; }
+  .nav-link { display: flex; align-items: center; gap: 8px; padding: 5px 16px; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; font-family: ui-monospace, monospace; }
+  .nav-link.active { color: var(--fg); }
+  .badge-count { margin-left: auto; padding: 2px 6px; font-family: ui-monospace, monospace; font-size: 9px; border-radius: 2px; background: rgba(250,204,21,0.3); color: #fde68a; }
+  .annotation { padding: 32px; color: var(--muted); font-size: 13px; max-width: 600px; line-height: 1.6; }
+  .annotation h1 { color: var(--fg); margin: 0 0 12px; font-size: 18px; }
+  .annotation code { background: #1a1a1a; padding: 2px 6px; border-radius: 4px; color: var(--success); font-size: 11px; }
+  .annotation .stat { display: inline-block; padding: 2px 8px; background: rgba(74,222,128,0.15); color: #86efac; border: 1px solid rgba(74,222,128,0.3); border-radius: 4px; font-family: ui-monospace, monospace; font-size: 11px; margin-right: 6px; }
+</style>
+</head><body>
+
+  <div class="sidebar">
+    <div style="padding: 0 16px 12px; font-weight: 600; color: var(--fg); font-size: 14px; line-height: 1.05; border-bottom: 1px solid #2a2a2a; margin-bottom: 4px;">
+      Hermes<br>Agent
+    </div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Overview</span>
+    </div>
+    <div class="nav-link">⚠ ALERTS</div>
+    <div class="nav-link">⬢ OVERVIEW</div>
+    <div class="nav-link">📊 KORA ACTIONS</div>
+    <div class="nav-link">💬 SESSIONS</div>
+    <div class="nav-link">📊 OPERATIONAL</div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Watch</span>
+    </div>
+    <div class="nav-link">💗 HEALTH</div>
+    <div class="nav-link">❤ HEARTBEAT</div>
+    <div class="nav-link">✨ PROBE INVESTIGATIONS</div>
+    <div class="nav-link">🔔 ALERT INVESTIGATIONS</div>
+    <div class="nav-link">$ COST</div>
+    <div class="nav-link">📊 COST TELEMETRY</div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Email</span>
+    </div>
+    <div class="nav-link">✉ EMAIL</div>
+    <div class="nav-link">📥 EMAIL INTENT LOG</div>
+    <div class="nav-link">✨ LOGGED-ONLY</div>
+    <div class="nav-link">↗ OUTBOUND EMAIL LOG</div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Promotion Loops</span>
+      <span class="group-badge">3</span>
+    </div>
+    <div class="nav-link" style="background: rgba(250,204,21,0.08); border-left: 2px solid var(--warning);">
+      💡 PROMOTION REVIEW <span class="badge-count">3</span>
+    </div>
+    <div class="nav-link">📖 PHRASEBOOK</div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Activity &amp; Reasoning</span>
+    </div>
+    <div class="nav-link">🧠 REASONING</div>
+    <div class="nav-link">💬 SLACK DM</div>
+    <div class="nav-link">📥 WEBHOOK EVENTS</div>
+    <div class="nav-link">↬ AGENT ACTIVITY</div>
+    <div class="nav-link">📡 CHAIN EVENTS</div>
+    <div class="nav-link">🔧 PROBE AUTOFIX LOG</div>
+
+    <div class="group-header">
+      <span class="chevron">▾</span><span>Control &amp; Tickets</span>
+    </div>
+    <div class="nav-link">≋ SEA TICKETS</div>
+    <div class="nav-link">⛔ KORA CONTROL</div>
+    <div class="nav-link">✓ CAPABILITIES</div>
+    <div class="nav-link">📜 CHARTER</div>
+
+    <div class="group-header" style="opacity: 0.4;">
+      <span class="chevron">▸</span><span>Daemon &amp; Listeners</span>
+    </div>
+    <div class="group-header" style="opacity: 0.4;">
+      <span class="chevron">▸</span><span>Settings</span>
+    </div>
+    <div class="group-header" style="opacity: 0.4;">
+      <span class="chevron">▸</span><span>Diagnostic &amp; Docs</span>
+    </div>
+  </div>
+
+  <div class="annotation">
+    <h1>Sidebar — AFTER</h1>
+    <p>
+      <span class="stat">9 groups</span>
+      <span class="stat">3 default-collapsed</span>
+      <span class="stat">collapse persists per-user (localStorage)</span>
+      <span class="stat">per-group badge sum</span>
+    </p>
+    <p>
+      Operator-priority surfaces stay expanded by default (Overview /
+      Watch / Email / Promotion / Activity / Control); the less-used
+      groups (Daemon &amp; Listeners / Settings / Diagnostic &amp; Docs)
+      default collapsed.
+    </p>
+    <p>
+      Per-group <span class="badge-count" style="display: inline; margin: 0;">3</span> badge
+      sums the in-group items' <code>badgeCount</code> values — operator
+      can see "Promotion Loops <strong>3</strong>" without expanding to
+      find which sub-item is demanding attention.
+    </p>
+    <p>
+      Drift-guards: <code>SIDEBAR_GROUP_KEYS_IN_ORDER</code> +
+      <code>SIDEBAR_PATH_TO_GROUP</code> exports + orphan-page test +
+      9 group-structure pins.
+    </p>
+  </div>
+
+</body></html>
