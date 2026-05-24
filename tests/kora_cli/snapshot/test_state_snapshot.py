@@ -102,6 +102,8 @@ def test_compute_snapshot_has_all_required_top_level_keys(env):
         "service_health",
         # KR-CHEAP-COST-TELEMETRY v2 addition.
         "cost_telemetry",
+        # KR-SNAPSHOT-DAEMON-HEALTH v4 addition.
+        "daemon_health",
     }
 
 
@@ -375,12 +377,13 @@ def test_cost_ladder_populated_from_holder(env, monkeypatch):
 # ===========================================================================
 
 
-def test_schema_version_is_v3(env):
-    """Spec §2: schema_version bumps from 2 to 3 for the cost-field
-    expansion. Stable contract for consumer branches."""
-    assert SCHEMA_VERSION == 3
+def test_schema_version_is_v4(env):
+    """KR-SNAPSHOT-DAEMON-HEALTH bumps schema_version 3 → 4 for the
+    new ``daemon_health`` section. Stable contract for consumer
+    branches."""
+    assert SCHEMA_VERSION == 4
     snap = compute_snapshot()
-    assert snap["schema_version"] == 3
+    assert snap["schema_version"] == 4
 
 
 def test_credit_pool_env_override_truthy(env, monkeypatch):

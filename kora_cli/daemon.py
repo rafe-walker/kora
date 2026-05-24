@@ -45,6 +45,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,12 @@ class DaemonCoordinator:
         # ``None`` until startup completes; read by ``get_status()`` for
         # uptime computation. KR-D-DAEMON ST2 (kora__daemon_status).
         self._startup_completed_at: Optional[float] = None
+        # KR-SNAPSHOT-DAEMON-HEALTH — wall-clock pair to
+        # ``_startup_completed_at``. Monotonic is correct for elapsed
+        # uptime; wall-clock is needed for the snapshot's ISO
+        # ``boot_at`` field that operators read. Set in lockstep so
+        # they never drift.
+        self._startup_completed_wall_at: Optional[datetime] = None
         # KR-MCP-STOP-CONTROL ST2 — process-stable session id surfaced
         # via get_status() so MCP callers can echo it back as the
         # confirm_token on kora__request_stop. Re-generated on each
@@ -246,6 +253,7 @@ class DaemonCoordinator:
         # straight to teardown.
         if not startup_failed:
             self._startup_completed_at = time.monotonic()
+            self._startup_completed_wall_at = datetime.now(timezone.utc)
             logger.info(
                 "[kora.daemon] all %d listener(s) started; awaiting shutdown",
                 len(self._listeners),
@@ -334,6 +342,16 @@ class DaemonCoordinator:
         daemon instance. Changes only across process restarts.
         """
         return self._daemon_session_id
+
+    def get_boot_at(self) -> Optional[datetime]:
+        """Wall-clock UTC timestamp when all listeners finished startup.
+
+        ``None`` until startup completes (i.e., daemon is still
+        ``"booting"``). Stamped once in :meth:`run` and never moves
+        for the daemon's lifetime. Read by the snapshot's
+        ``daemon_health.boot_at`` field.
+        """
+        return self._startup_completed_wall_at
 
     # ------------------------------------------------------------------
     # Signal handling

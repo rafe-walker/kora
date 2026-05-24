@@ -59,7 +59,12 @@ logger = logging.getLogger(__name__)
 # v2 → v3: cost_ladder.spent_to_date_usd + credit_pool_usd populated;
 #          cost_ladder.model_default resolved from KR-HAIKU-ROUTER's
 #          DEFAULT_HAIKU_MODEL constant (was "unknown" in v1/v2).
-SCHEMA_VERSION = 3
+# v3 → v4: added daemon_health section (KR-SNAPSHOT-DAEMON-HEALTH) —
+#          overall_status + boot_at + uptime_seconds + per-listener
+#          status + recent_error_count_5min. Companion to
+#          service_health which covers external SaaS dependencies;
+#          daemon_health covers Kora's own runtime.
+SCHEMA_VERSION = 4
 SNAPSHOT_FRESH_THRESHOLD_SECONDS = 600  # 10 min — spec §2(a) is_snapshot_fresh
 
 # Probe names the snapshot exposes. Matches the 5 default probes in
@@ -476,6 +481,228 @@ def _collect_cost_telemetry() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Daemon health (KR-SNAPSHOT-DAEMON-HEALTH — v4)
+# ---------------------------------------------------------------------------
+
+
+# Audit seams that represent listener-side failure events. Used by
+# :func:`_count_recent_audit_errors` to filter the audit JSONL into
+# the snapshot's ``recent_error_count_5min`` field.
+#
+#   * webhook.dead_letter — webhook processor gave up after retries
+#   * slack_dm.reply_failed — slack listener couldn't post a reply
+#
+# notification.dispatched is NOT included by seam alone — only its
+# failed-status rows count (filtered by ``details.status``). The
+# others (mcp.tool_called / reasoning.tool_called / probe.wake_requested)
+# are success-path seams and don't contribute to the error count.
+_FAILURE_AUDIT_SEAMS = ("webhook.dead_letter", "slack_dm.reply_failed")
+_NOTIFICATION_SEAM = "notification.dispatched"
+
+# Recent-error window — operator-visible cadence. 5 min matches the
+# snapshot's own write cadence, so consumers can read the snapshot
+# and know the count covers "since the last snapshot tick".
+RECENT_ERROR_WINDOW_SECONDS = 300
+
+# overall_status thresholds — see _derive_overall_status. Numbers
+# come from spec §2; tuned to surface 1-2 listener flaps as
+# degraded without hitting unhealthy until something is materially
+# wrong (3+ listeners down OR a sustained error storm).
+_DOWN_LISTENERS_DEGRADED = 1  # 1-2 listeners down → degraded
+_DOWN_LISTENERS_UNHEALTHY = 3  # 3+ → unhealthy
+_ERRORS_DEGRADED = 5  # 5-19 errors in 5 min → degraded
+_ERRORS_UNHEALTHY = 20  # 20+ → unhealthy
+
+
+def _count_recent_audit_errors(window_seconds: int = RECENT_ERROR_WINDOW_SECONDS) -> int:
+    """Tail the audit JSONL for failure-shaped entries in the last
+    ``window_seconds``.
+
+    Failure shapes:
+      * Any entry with seam in :data:`_FAILURE_AUDIT_SEAMS`.
+      * ``notification.dispatched`` entries where
+        ``details.status == "failed"``.
+
+    Fail-soft: missing file / read error → 0 (the audit reader
+    already swallows OSError + returns []). Never raises.
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+
+        from kora_cli.audit.jsonl_reader import read_audit_entries
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] audit reader import failed: %r — "
+            "recent_error_count_5min degrades to 0",
+            exc,
+        )
+        return 0
+
+    try:
+        since = datetime.now(timezone.utc) - timedelta(seconds=window_seconds)
+        entries = read_audit_entries(since=since)
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot] read_audit_entries raised %r — "
+            "recent_error_count_5min degrades to 0",
+            exc,
+        )
+        return 0
+
+    count = 0
+    for entry in entries:
+        if entry.seam in _FAILURE_AUDIT_SEAMS:
+            count += 1
+            continue
+        if entry.seam == _NOTIFICATION_SEAM:
+            status = (entry.details or {}).get("status")
+            if isinstance(status, str) and status.lower() == "failed":
+                count += 1
+    return count
+
+
+def _derive_overall_status(
+    listeners: Dict[str, Dict[str, Any]],
+    recent_error_count: int,
+) -> str:
+    """Roll up per-listener status + recent-error count into a single
+    overall status string. See spec §2 thresholds.
+
+    Returns ``"unknown"`` if every listener's status is ``"unknown"``
+    (e.g., coordinator unreachable) — we can't claim healthy without
+    SOME signal.
+    """
+    if not listeners:
+        return "unknown"
+    statuses = [v.get("status", "unknown") for v in listeners.values()]
+    if all(s == "unknown" for s in statuses):
+        return "unknown"
+    down_count = sum(1 for s in statuses if s == "down")
+    if (
+        down_count >= _DOWN_LISTENERS_UNHEALTHY
+        or recent_error_count >= _ERRORS_UNHEALTHY
+    ):
+        return "unhealthy"
+    if (
+        down_count >= _DOWN_LISTENERS_DEGRADED
+        or recent_error_count >= _ERRORS_DEGRADED
+    ):
+        return "degraded"
+    return "healthy"
+
+
+def _collect_daemon_health() -> Dict[str, Any]:
+    """Snapshot section: Kora daemon's own runtime health.
+
+    Distinct from ``service_health`` (which covers external SaaS
+    dependencies). Reads exclusively from
+    :func:`kora_cli.daemon.current_coordinator` + the audit JSONL —
+    never mutates state.
+
+    Fields (schema v4):
+      * ``overall_status`` — rolled up from per-listener + error count
+      * ``boot_at`` — ISO 8601 UTC when listeners finished startup,
+        or ``"unknown"`` if daemon still booting / not running
+      * ``uptime_seconds`` — float since boot_at, or ``"unknown"``
+      * ``listeners`` — per-listener ``status`` (``"up" | "down" |
+        "unknown"``). ``last_event_at`` / ``consecutive_errors`` are
+        ``"unknown"`` in v1 — per-listener event tracking is a
+        follow-on bucket; this slice surfaces what the coordinator
+        already knows (registered + startup-success).
+      * ``recent_error_count_5min`` — failure-shaped audit entries in
+        the last 5 min
+
+    Fail-soft: every accessor failure degrades to "unknown" /
+    empty dict rather than raising.
+    """
+    overall_unknown = {
+        "overall_status": "unknown",
+        "boot_at": "unknown",
+        "uptime_seconds": "unknown",
+        "listeners": {},
+        "recent_error_count_5min": _count_recent_audit_errors(),
+    }
+    try:
+        from kora_cli.daemon import current_coordinator
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] daemon import failed: %r — daemon_health "
+            "fully degraded",
+            exc,
+        )
+        return overall_unknown
+
+    try:
+        coord = current_coordinator()
+    except Exception as exc:
+        logger.warning(
+            "[kora.snapshot] current_coordinator() raised %r — "
+            "daemon_health fully degraded",
+            exc,
+        )
+        return overall_unknown
+    if coord is None:
+        # Daemon not running (snapshot computed by a CLI subcommand
+        # outside the daemon process, or pre-cmd_daemon). Still
+        # surface the audit error count — it's process-independent.
+        return overall_unknown
+
+    # boot_at + uptime_seconds — coordinator's wall-clock + monotonic
+    # are stamped in lockstep at startup-complete; either both
+    # populate or both stay "unknown" (daemon still booting).
+    boot_at_iso: Any = "unknown"
+    uptime_seconds: Any = "unknown"
+    try:
+        boot_at = coord.get_boot_at()
+        if boot_at is not None:
+            boot_at_iso = boot_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] coord.get_boot_at() raised %r — boot_at "
+            "degraded",
+            exc,
+        )
+    try:
+        status_dict = coord.get_status()
+        uptime_raw = status_dict.get("uptime_seconds")
+        if isinstance(uptime_raw, (int, float)):
+            uptime_seconds = round(float(uptime_raw), 1)
+    except Exception as exc:
+        logger.debug(
+            "[kora.snapshot] coord.get_status() raised %r — uptime / "
+            "listeners degraded",
+            exc,
+        )
+        status_dict = {"listeners": []}
+
+    # Per-listener status — derived from the coordinator's
+    # ``started`` bool. ``last_event_at`` + ``consecutive_errors``
+    # are "unknown" in v1; per-listener event tracking ships in a
+    # follow-on bucket (no listener exposes those today).
+    per_listener: Dict[str, Dict[str, Any]] = {}
+    for l_row in status_dict.get("listeners", []):
+        name = l_row.get("name")
+        if not isinstance(name, str):
+            continue
+        started = bool(l_row.get("started", False))
+        per_listener[name] = {
+            "status": "up" if started else "down",
+            "last_event_at": "unknown",
+            "consecutive_errors": "unknown",
+        }
+
+    recent_error_count = _count_recent_audit_errors()
+    overall = _derive_overall_status(per_listener, recent_error_count)
+    return {
+        "overall_status": overall,
+        "boot_at": boot_at_iso,
+        "uptime_seconds": uptime_seconds,
+        "listeners": per_listener,
+        "recent_error_count_5min": recent_error_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public surface
 # ---------------------------------------------------------------------------
 
@@ -503,6 +730,7 @@ def compute_snapshot() -> Dict[str, Any]:
         "tasks": _collect_tasks(),
         "service_health": _collect_service_health(),
         "cost_telemetry": _collect_cost_telemetry(),
+        "daemon_health": _collect_daemon_health(),
     }
 
 
