@@ -5958,6 +5958,42 @@ async def list_current_alerts():
 
 
 # ---------------------------------------------------------------------------
+# Pre-warmed daemon snapshot (KR-CHEAP-PRE-WARMED-SNAPSHOT)
+# ---------------------------------------------------------------------------
+#
+# Surfaces the snapshot file written every 5 min by the snapshot
+# listener's periodic task. Reading the snapshot is $0 LLM cost
+# AND $0 holder-read cost — the projection has already been done.
+# Cockpit + reasoning-engine routing layer (separate bucket) can
+# consume this for status queries without paying per-source fan-out.
+
+
+@app.get("/api/snapshot")
+async def get_daemon_snapshot():
+    """Return the most-recent fresh daemon snapshot.
+
+    Behavior:
+      * Fresh snapshot on disk (≤10 min old) → returns the snapshot
+        dict verbatim (schema_version + computed_at + the per-
+        source sections).
+      * No snapshot OR snapshot stale → returns
+        ``{"error": "no_snapshot", "stale": true}`` so consumers
+        can branch on presence without crashing.
+
+    The snapshot itself is fail-soft per
+    :mod:`kora_cli.snapshot.state_snapshot` — missing accessors
+    degrade individual fields to ``"unknown"`` rather than failing
+    the whole snapshot.
+    """
+    from kora_cli.snapshot import read_snapshot
+
+    snap = read_snapshot()
+    if snap is None:
+        return {"error": "no_snapshot", "stale": True}
+    return snap
+
+
+# ---------------------------------------------------------------------------
 # Profile management endpoints (minimal — list/create/rename/delete + SOUL.md)
 # ---------------------------------------------------------------------------
 
