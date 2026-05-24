@@ -7065,6 +7065,56 @@ async def reject_probe_envelope_proposal(
     )
 
 
+# --- Email-intent (KR-PROMOTE-EMAIL-INTENT — 6th loop) ---------------------
+
+
+@app.get("/api/promotions/email-intent/pending")
+async def list_pending_email_intent_proposals() -> Dict[str, Any]:
+    """Return pending email-intent proposals.
+
+    Payload per ``kora_cli.promote.email_intent.proposer``:
+    proposal_id / cluster_size / sample_subjects /
+    proposed_pattern / proposed_action_kind / confidence /
+    created_at / status / sample_caller_session_ids.
+
+    Operator scaffolds approved patterns manually into
+    ``kora_cli/intent/email_to_sea_ticket.py`` (probe-fix-envelope
+    precedent — see #193).
+    """
+    return _promotion_loop_pending("email_intent")
+
+
+@app.post("/api/promotions/email-intent/{proposal_id}/approve")
+async def approve_email_intent_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Approve an email-intent proposal. v1 transitions status +
+    emits audit only — the regex registry in
+    ``kora_cli/intent/email_to_sea_ticket.py`` MUST be edited by
+    hand. Approved/ proposal file is the audit trail for when the
+    manual scaffold lands."""
+    return _promotion_loop_transition(
+        loop_name="email_intent",
+        proposal_id=proposal_id,
+        new_status="approved",
+        audit_seam="promotion.approved",
+        payload=payload,
+    )
+
+
+@app.post("/api/promotions/email-intent/{proposal_id}/reject")
+async def reject_email_intent_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    return _promotion_loop_transition(
+        loop_name="email_intent",
+        proposal_id=proposal_id,
+        new_status="rejected",
+        audit_seam="promotion.rejected",
+        payload=payload,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Email-intent audit lens (KR-FE-EMAIL-INTENT-LOG-PANEL)
 # ---------------------------------------------------------------------------

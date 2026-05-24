@@ -1,29 +1,34 @@
 """Router-tuning proposal generator — KR-PROMOTE-ROUTER-TUNING.
 
-Input: per-route :class:`RouteEscalationRollup` from the observer.
+Inputs:
+  * Per-route :class:`RouteEscalationRollup` from cost_telemetry
+    (tighten-path).
+  * Per-route :class:`RouteOverrideRollup` from
+    ``opus_override.applied`` audit (loosen-path; activated by
+    KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW).
+
 Output: zero or more :class:`RouterTuningProposal` records — one
-per route whose escalation pattern crosses an operator-attention
+per route whose pattern crosses the relevant operator-attention
 threshold.
 
-# Thresholds (operator-tunable via env)
+# Tighten path
 
-  * ``KORA_PROMOTE_ROUTER_TUNING_MIN_CALLS`` (default 20) —
-    minimum calls in window before a route gets considered.
-    Below this, sample size is too noisy.
-  * ``KORA_PROMOTE_ROUTER_TUNING_TIGHTEN_THRESHOLD`` (default 0.40)
-    — escalation_rate ≥ this on an eligible route → tighten_review
-    proposal. (Default 40% — well above the natural escalation
-    baseline of <15% from healthy decision-language patterns.)
+``KORA_PROMOTE_ROUTER_TUNING_TIGHTEN_THRESHOLD`` (default 0.40) —
+escalation_rate ≥ this on an eligible route → ``tighten_review``.
 
-# Why no loosen_review in v1
+# Loosen path
 
-The signal for ``loosen_review`` is "operator overrode Haiku to
-Opus via /opus N times" — that observation doesn't have its own
-audit row yet (it lives in the routing decision logs, not the
-JSONL audit). Future bucket can emit a ``router.operator_override``
-seam; the proposer here would then surface routes with high
-override-rate as loosen candidates. Documented in
-``__init__.py`` v1 scope.
+``KORA_PROMOTE_ROUTER_TUNING_LOOSEN_OVERRIDE_THRESHOLD`` (default
+3) — operator forced Opus ≥ this many times in the window on a
+single route → ``loosen_review``. The proposer's rationale points
+the operator at the sample message texts so they can identify the
+trigger pattern that should auto-escalate.
+
+# Sample size minimum
+
+``KORA_PROMOTE_ROUTER_TUNING_MIN_CALLS`` (default 20) — applies
+to the tighten path only; the loosen path has its own threshold
+since override events are intrinsically rarer than total calls.
 """
 
 from __future__ import annotations
@@ -31,20 +36,24 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Tuple
 
-from .observer import RouteEscalationRollup
+from .observer import RouteEscalationRollup, RouteOverrideRollup
 
 logger = logging.getLogger(__name__)
 
 
 MIN_CALLS_ENV = "KORA_PROMOTE_ROUTER_TUNING_MIN_CALLS"
 TIGHTEN_THRESHOLD_ENV = "KORA_PROMOTE_ROUTER_TUNING_TIGHTEN_THRESHOLD"
+LOOSEN_OVERRIDE_THRESHOLD_ENV = (
+    "KORA_PROMOTE_ROUTER_TUNING_LOOSEN_OVERRIDE_THRESHOLD"
+)
 
 DEFAULT_MIN_CALLS = 20
 DEFAULT_TIGHTEN_THRESHOLD = 0.40
+DEFAULT_LOOSEN_OVERRIDE_THRESHOLD = 3
 
 
 ProposalStatus = Literal["pending", "approved", "rejected", "expired"]
@@ -55,7 +64,21 @@ RecommendationKind = Literal["tighten_review", "loosen_review"]
 class RouterTuningProposal:
     """Wire-stable proposal shape. Mirrors the snapshot_expand /
     phrasebook proposal shape conventions (proposal_id /
-    cluster_size / confidence / created_at / status)."""
+    cluster_size / confidence / created_at / status).
+
+    Both ``tighten_review`` and ``loosen_review`` proposals use this
+    single shape; field semantics vary by ``recommendation_kind``:
+
+      * tighten_review: ``calls_count`` / ``escalation_count`` /
+        ``escalation_rate`` / ``cost_estimate_usd_total`` are the
+        tighten-path numbers; ``override_count`` / ``sample_message_texts``
+        are 0 / empty.
+      * loosen_review: ``override_count`` + ``sample_message_texts`` +
+        ``by_override_source`` are the loosen-path numbers;
+        ``escalation_count`` / ``escalation_rate`` /
+        ``cost_estimate_usd_total`` may be 0 (the override path
+        doesn't depend on those).
+    """
 
     proposal_id: str
     route: str
@@ -69,6 +92,11 @@ class RouterTuningProposal:
     created_at: datetime
     status: ProposalStatus = "pending"
     review_notes: str = ""
+    # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW additions. Default to
+    # 0 / empty so the existing tighten-path callers keep working.
+    override_count: int = 0
+    sample_message_texts: List[str] = field(default_factory=list)
+    by_override_source: Dict[str, int] = field(default_factory=dict)
 
 
 def _format_iso(dt: datetime) -> str:
@@ -78,6 +106,10 @@ def _format_iso(dt: datetime) -> str:
 def proposal_to_dict(p: RouterTuningProposal) -> Dict[str, Any]:
     out = asdict(p)
     out["created_at"] = _format_iso(p.created_at)
+    # asdict mutates list/dict default_factory fields into new
+    # containers — defensive copy keeps caller mutation safe.
+    out["sample_message_texts"] = list(p.sample_message_texts)
+    out["by_override_source"] = dict(p.by_override_source)
     return out
 
 
@@ -176,4 +208,88 @@ def generate_proposals(
             )
         )
     out.sort(key=lambda p: (-p.confidence, -p.escalation_rate))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Loosen-path generator (KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW)
+# ---------------------------------------------------------------------------
+
+
+def _loosen_confidence(
+    override_count: int, *, threshold: int
+) -> float:
+    """0..1 confidence from override count + threshold. Hits 1.0
+    at 3× threshold so 9 overrides on default config is full
+    confidence."""
+    if override_count <= 0:
+        return 0.0
+    return min(1.0, override_count / (3 * threshold))
+
+
+def generate_loosen_proposals(
+    override_rollups: List[RouteOverrideRollup],
+    *,
+    now: datetime,
+) -> List[RouterTuningProposal]:
+    """For each route whose override_count crosses the loosen
+    threshold, emit one ``loosen_review`` proposal. Returns
+    proposals sorted by confidence descending."""
+    threshold = _int_env(
+        LOOSEN_OVERRIDE_THRESHOLD_ENV,
+        DEFAULT_LOOSEN_OVERRIDE_THRESHOLD,
+        minimum=1,
+    )
+    out: List[RouterTuningProposal] = []
+    for rollup in override_rollups:
+        if rollup.override_count < threshold:
+            continue
+        # Compose a rationale that surfaces the sample texts the
+        # operator typed when they manually escalated. That's the
+        # operator-decision-relevant context: "this is what I
+        # wanted Opus for; the trigger pattern should cover it."
+        per_source_str = (
+            ", ".join(
+                f"{src}={count}"
+                for src, count in sorted(rollup.by_source.items())
+            )
+            if rollup.by_source
+            else "(no per-source data)"
+        )
+        sample_block = (
+            "; ".join(f'"{t[:80]}"' for t in rollup.sample_message_texts)
+            if rollup.sample_message_texts
+            else "(no sample texts captured)"
+        )
+        rationale = (
+            f"Route {rollup.route!r} saw {rollup.override_count} "
+            f"operator-driven Opus override(s) in the rolling 24h "
+            f"window ({per_source_str}). The Haiku-router would "
+            f"otherwise have left these on Haiku — the trigger "
+            f"pattern likely needs loosening to auto-escalate "
+            f"similar messages. Sample message text(s) operator "
+            f"escalated: {sample_block}."
+        )
+        confidence = _loosen_confidence(
+            rollup.override_count, threshold=threshold
+        )
+        out.append(
+            RouterTuningProposal(
+                proposal_id=str(uuid.uuid4()),
+                route=rollup.route,
+                calls_count=0,
+                escalation_count=0,
+                escalation_rate=0.0,
+                cost_estimate_usd_total=0.0,
+                recommendation_kind="loosen_review",
+                rationale=rationale,
+                confidence=round(confidence, 4),
+                created_at=now,
+                status="pending",
+                override_count=rollup.override_count,
+                sample_message_texts=list(rollup.sample_message_texts),
+                by_override_source=dict(rollup.by_source),
+            )
+        )
+    out.sort(key=lambda p: (-p.confidence, -p.override_count))
     return out

@@ -31,16 +31,23 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+
+_ONE_DAY = timedelta(days=1)
 
 from kora_cli.promote._shared.proposal_store import (
     expire_older_than,
     save_pending,
 )
 
-from .observer import collect_route_rollups
-from .proposer import RouterTuningProposal, generate_proposals, proposal_to_dict
+from .observer import collect_route_overrides, collect_route_rollups
+from .proposer import (
+    RouterTuningProposal,
+    generate_loosen_proposals,
+    generate_proposals,
+    proposal_to_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +124,9 @@ async def run_router_tuning_cycle(
     summary: Dict[str, Any] = {
         "enabled": True,
         "rollups_observed": 0,
+        # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — separate counter so
+        # operator can see tighten vs loosen volume in one cycle log.
+        "overrides_observed": 0,
         "proposals_generated": 0,
         "proposals_persisted": 0,
         "expired_count": 0,
@@ -151,15 +161,41 @@ async def run_router_tuning_cycle(
 
     try:
         proposals = generate_proposals(rollups, now=started_dt)
-        summary["proposals_generated"] = len(proposals)
     except Exception as exc:
         logger.warning(
-            "[kora.promote.router_tuning] proposer failed: %r", exc
+            "[kora.promote.router_tuning] tighten proposer failed: %r",
+            exc,
         )
-        summary["duration_ms"] = int(
-            (time.monotonic() - started_monotonic) * 1000
+        proposals = []
+
+    # KR-PROMOTE-ROUTER-LOOSEN-AUDIT-ROW — loosen-path arm. Reads
+    # opus_override.applied audit since the cycle's started_at - 24h
+    # (mirrors the tighten-path's rolling_24h cost-telemetry window
+    # so the two arms see comparable observation windows).
+    try:
+        override_rollups = collect_route_overrides(
+            since=started_dt - _ONE_DAY,
         )
-        return summary
+        summary["overrides_observed"] = len(override_rollups)
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote.router_tuning] loosen observer failed: %r",
+            exc,
+        )
+        override_rollups = []
+
+    try:
+        loosen_proposals = generate_loosen_proposals(
+            override_rollups, now=started_dt
+        )
+        proposals = proposals + loosen_proposals
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote.router_tuning] loosen proposer failed: %r",
+            exc,
+        )
+
+    summary["proposals_generated"] = len(proposals)
 
     for proposal in proposals:
         try:
