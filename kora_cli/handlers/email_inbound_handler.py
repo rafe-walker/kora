@@ -382,15 +382,42 @@ class EmailInboundHandler:
             )
 
         # All filters passed — Joshua mail received. Log + emit the
-        # chain event. No reply sent (Lock R3-8 (a)); future
-        # consumers (KR-INTENT-EMAIL-TO-SEA-TICKET) read from the
-        # JSONL.
+        # chain event. No reply sent (Lock R3-8 (a)); KR-INTENT-EMAIL-
+        # TO-SEA-TICKET runs the intent recognizer here as the in-
+        # process consumer.
         self._append_log_entry(
             parsed,
             HANDLED_RECEIVED,
             spoofing_check_skipped=spoofing_skipped,
         )
         self._emit_received_event(parsed)
+
+        # KR-INTENT-EMAIL-TO-SEA-TICKET — intent recognition +
+        # Sea_Ticket write + Slack confirmation. The orchestrator
+        # is fully fail-soft: any exception inside it is caught
+        # and returned as ``action="failed"`` so HANDLED_RECEIVED
+        # is never disturbed by intent-side problems. The wrapper
+        # try/except is belt-and-suspenders against a future
+        # refactor that might accidentally let an exception
+        # escape.
+        try:
+            from kora_cli.intent.email_to_sea_ticket import (
+                process_email_intent,
+            )
+
+            await process_email_intent(
+                message_id=parsed.message_id,
+                subject=parsed.subject,
+                body_text=parsed.body_text,
+                sender=parsed.from_address,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.email_inbound] intent orchestrator raised %r "
+                "uid=%d — inbound stays HANDLED_RECEIVED",
+                exc,
+                parsed.imap_uid,
+            )
 
         return HandlerResult(
             status=HANDLED_RECEIVED,
