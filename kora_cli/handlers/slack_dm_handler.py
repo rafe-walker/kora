@@ -136,6 +136,10 @@ class SlackDMHandler:
         self._log_path = log_path or _resolve_log_path()
         self._slack_client: Optional[Any] = slack_client
         self._reasoning_engine: Optional[Any] = reasoning_engine
+        # KR-CHEAP-TRIVIAL-DM-SHORTCIRCUIT — phrasebook cached on
+        # the instance after first load. Operator-edits picked up
+        # on daemon restart (in-process reload deferred).
+        self._phrasebook: Optional[List[Any]] = None
 
     async def handle_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Process a Slack Events payload.
@@ -400,44 +404,20 @@ class SlackDMHandler:
             payload, "event", "ts"
         )
 
-        # ---- Reasoning engine acquisition ----
-        engine = self._resolve_reasoning_engine()
-        reasoning_meta: Dict[str, Any] = {
-            "model_used": None,
-            "input_tokens": None,
-            "output_tokens": None,
-            "reasoning_duration_ms": None,
-            "reasoning_error": None,
-            # KR-FEAT-AGENTIC-REASONING ST2 — names of reasoning-side
-            # tools Kora actually invoked during this response.
-            # Empty list when she didn't call any tools (flat
-            # completion path); recorded in the outbound JSONL so
-            # the REASONING-PANEL can surface "this response used
-            # N tools" without parsing structured logs.
-            "tools_used": None,
-            # KR-CHEAP-PROMPT-CACHING — cache-token totals. Default
-            # None (engine didn't run / errored) → 0 when present.
-            # Handler bills cache_creation at ~1.25x base and
-            # cache_read at ~0.1x base via CanonicalUsage in
-            # _record_inference_to_cost_ladder.
-            "cache_creation_input_tokens": None,
-            "cache_read_input_tokens": None,
-        }
-
-        if engine is None:
-            # Daemon misconfigured OR running outside-coordinator
-            # test path. Send canned fallback so Joshua isn't met
-            # with silence; record the reason for operator triage.
-            reply_text = self._CANNED_FALLBACK_TEXT
-            reasoning_meta["reasoning_error"] = "engine_unavailable"
-            logger.warning(
-                "[kora.slack_dm.reasoning_skipped] reason=engine_unavailable "
-                "channel=%s — sending canned fallback",
-                channel_id,
+        # ---- Short-circuit attempt (KR-CHEAP-TRIVIAL-DM-SHORTCIRCUIT) ----
+        # Pre-filter for routine status queries — answers from the
+        # pre-warmed snapshot at zero LLM cost. Returns None on no
+        # phrasebook match OR when the snapshot can't satisfy the
+        # template; either path falls through to the reasoning engine
+        # unchanged.
+        short_circuit_reply = self._try_short_circuit(original_text)
+        if short_circuit_reply is not None:
+            reply_text = short_circuit_reply.reply_text
+            reasoning_meta = self._short_circuit_reasoning_meta(
+                short_circuit_reply
             )
         else:
-            reply_text, reasoning_meta = await self._call_reasoning_engine(
-                engine=engine,
+            reply_text, reasoning_meta = await self._resolve_via_engine(
                 payload=payload,
                 channel_id=channel_id,
                 thread_ts=thread_ts,
@@ -500,8 +480,146 @@ class SlackDMHandler:
         # ---- Cost-ladder write (only on successful, non-canned reply) ----
         # Bill the tokens against the $200/mo Agent SDK pool. Skip
         # if the reply was canned (no real inference happened).
+        # Short-circuit hits hit this path too but the cost-ladder
+        # bails internally (all four token buckets are 0).
         if reasoning_meta["reasoning_error"] is None:
             self._record_inference_to_cost_ladder(reasoning_meta)
+        return
+
+    async def _resolve_via_engine(
+        self,
+        *,
+        payload: Dict[str, Any],
+        channel_id: str,
+        thread_ts: Optional[str],
+        original_text: str,
+    ) -> tuple[str, Dict[str, Any]]:
+        """The original (pre-short-circuit) engine resolution path.
+
+        Extracted into its own method so the short-circuit branch
+        in ``handle_event`` is the only call site that touches the
+        engine; non-matching messages flow through here unchanged.
+        Returns ``(reply_text, reasoning_meta)``.
+        """
+        engine = self._resolve_reasoning_engine()
+        reasoning_meta: Dict[str, Any] = {
+            "model_used": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "reasoning_duration_ms": None,
+            "reasoning_error": None,
+            # KR-FEAT-AGENTIC-REASONING ST2 — names of reasoning-side
+            # tools Kora actually invoked during this response.
+            # Empty list when she didn't call any tools (flat
+            # completion path); recorded in the outbound JSONL so
+            # the REASONING-PANEL can surface "this response used
+            # N tools" without parsing structured logs.
+            "tools_used": None,
+            # KR-CHEAP-PROMPT-CACHING — cache-token totals. Default
+            # None (engine didn't run / errored) → 0 when present.
+            # Handler bills cache_creation at ~1.25x base and
+            # cache_read at ~0.1x base via CanonicalUsage in
+            # _record_inference_to_cost_ladder.
+            "cache_creation_input_tokens": None,
+            "cache_read_input_tokens": None,
+        }
+
+        if engine is None:
+            # Daemon misconfigured OR running outside-coordinator
+            # test path. Send canned fallback so Joshua isn't met
+            # with silence; record the reason for operator triage.
+            reply_text = self._CANNED_FALLBACK_TEXT
+            reasoning_meta["reasoning_error"] = "engine_unavailable"
+            logger.warning(
+                "[kora.slack_dm.reasoning_skipped] reason=engine_unavailable "
+                "channel=%s — sending canned fallback",
+                channel_id,
+            )
+        else:
+            reply_text, reasoning_meta = await self._call_reasoning_engine(
+                engine=engine,
+                payload=payload,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                original_text=original_text,
+            )
+
+        return reply_text, reasoning_meta
+
+    # ------------------------------------------------------------------
+    # Short-circuit (KR-CHEAP-TRIVIAL-DM-SHORTCIRCUIT)
+    # ------------------------------------------------------------------
+
+    def _try_short_circuit(self, text: str) -> Optional[Any]:
+        """Try to answer the DM from the snapshot via the phrasebook.
+
+        Returns a :class:`ShortCircuitMatch` on success or ``None``
+        on no-match / render-fall-through. Caller treats ``None`` as
+        "proceed with normal engine resolution."
+
+        Phrasebook is cached on the handler instance after first
+        load. An operator can edit
+        ``${KORA_HOME}/phrasebook/slack_dm.yml`` and restart the
+        daemon to pick up changes (in-process reload is out of
+        scope for v1).
+
+        Any unexpected exception here is logged + swallowed — a
+        broken phrasebook MUST NOT break DM handling. The caller
+        falls through to engine resolution as if no phrasebook
+        existed.
+        """
+        try:
+            from kora_cli.short_circuit import (
+                load_phrasebook,
+                try_short_circuit as _try,
+            )
+            from kora_cli.snapshot.state_snapshot import read_snapshot
+        except Exception as exc:
+            logger.warning(
+                "[kora.slack_dm.short_circuit] module import failed: %r "
+                "— falling through to engine",
+                exc,
+            )
+            return None
+
+        try:
+            if self._phrasebook is None:
+                self._phrasebook = load_phrasebook()
+            snapshot = read_snapshot()
+            return _try(text, self._phrasebook, snapshot)
+        except Exception as exc:
+            logger.warning(
+                "[kora.slack_dm.short_circuit] try failed: %r — "
+                "falling through to engine",
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _short_circuit_reasoning_meta(match: Any) -> Dict[str, Any]:
+        """Build a sentinel ``reasoning_meta`` for a short-circuit
+        hit. Keys match the engine-driven shape so downstream code
+        (the outbound logger, the cost-ladder write) treats the
+        two paths uniformly. ``model_used="short_circuit"`` is the
+        telemetry discriminator CC#1's KR-CHEAP-COST-TELEMETRY
+        will join on for zero-cost-route classification.
+
+        The two extra keys (``short_circuit_category`` +
+        ``short_circuit_pattern``) flow through ``**reasoning_meta``
+        into ``_append_outbound_log_entry`` which now accepts them.
+        """
+        return {
+            "model_used": "short_circuit",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "reasoning_duration_ms": 0,
+            "reasoning_error": None,
+            "tools_used": [],
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "short_circuit_category": match.entry.category,
+            "short_circuit_pattern": match.entry.pattern.pattern,
+        }
 
     # ------------------------------------------------------------------
     # Reasoning engine helpers
@@ -822,6 +940,16 @@ class SlackDMHandler:
         # show cache-hit rate per call without grepping logs.
         cache_creation_input_tokens: Optional[int] = None,
         cache_read_input_tokens: Optional[int] = None,
+        # KR-CHEAP-TRIVIAL-DM-SHORTCIRCUIT — when the DM was
+        # answered from the snapshot via a phrasebook match (no
+        # LLM call), these carry the phrasebook entry's category +
+        # source-regex pattern. Both None on engine-driven paths.
+        # CC#1's KR-CHEAP-COST-TELEMETRY will join on
+        # ``model_used == "short_circuit"`` to classify zero-cost
+        # route hits; the category field lets the reasoning panel
+        # break down which query shapes are getting short-circuited.
+        short_circuit_category: Optional[str] = None,
+        short_circuit_pattern: Optional[str] = None,
     ) -> None:
         """Outbound-side JSONL entry. Distinct schema from inbound
         entries (``sent_at`` instead of ``received_at``) so operator
@@ -890,6 +1018,11 @@ class SlackDMHandler:
             entry["cache_read_input_tokens"] = int(
                 cache_read_input_tokens
             )
+        # Short-circuit signal — same None-omit semantic.
+        if short_circuit_category is not None:
+            entry["short_circuit_category"] = str(short_circuit_category)
+        if short_circuit_pattern is not None:
+            entry["short_circuit_pattern"] = str(short_circuit_pattern)
 
         try:
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
