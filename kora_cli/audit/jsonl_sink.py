@@ -161,6 +161,36 @@ SeamName = Literal[
     # ``actor="kora_proposal_approved"`` from the promotion-loop
     # bucket) reuses this seam shape.
     "phrasebook.updated",
+    # KR-PROMOTE-PHRASEBOOK-FOUNDATION — first promotion loop.
+    # Three seams covering the propose → review → resolve lifecycle:
+    #
+    # ``promotion.proposed`` — proposer emits a new pending
+    # phrasebook proposal after the daily clustering cycle.
+    # Payload carries the full PromotionProposal projection
+    # (proposal_id, cluster_size, sample_questions,
+    # proposed_pattern, proposed_reply_template, proposed_category,
+    # confidence, created_at) so operator can grep the JSONL for
+    # proposal history without reading every proposal file. One
+    # row per proposal; the per-cycle summary (count / total cost)
+    # is logged via the structured-log line.
+    "promotion.proposed",
+    # ``promotion.approved`` — operator approves via the cockpit
+    # endpoint. Payload: proposal_id + the committed phrasebook
+    # entry shape (post any operator override edits). The
+    # ``phrasebook.updated`` audit row that follows uses
+    # actor="kora_proposal_approved" per #177 forward-compat —
+    # so the promotion seam stays distinct from the editor audit
+    # without the promotion-history view having to scan
+    # ``phrasebook.updated`` for actor=proposal entries.
+    "promotion.approved",
+    # ``promotion.rejected`` — operator rejects. Payload:
+    # proposal_id + ``review_notes`` (rejection rationale, written
+    # verbatim — operator-decision-relevant per the #182 precedent
+    # for reason fields). Proposal stays in the rejected/ store
+    # directory for future promotion-loop tuning (clusters that
+    # operator consistently rejects are signal to tune the
+    # proposer thresholds).
+    "promotion.rejected",
 ]
 
 SourceName = Literal[

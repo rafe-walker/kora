@@ -6508,6 +6508,309 @@ async def get_phrasebook_backups() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Phrasebook promotion review — KR-PROMOTE-PHRASEBOOK-FOUNDATION (Deliverable E)
+# ---------------------------------------------------------------------------
+#
+# Three endpoints driving the operator-approval UX. CC#2's
+# KR-FE-PROMOTION-REVIEW-PANEL follow-on reads/writes these.
+#
+#   * GET   /api/promotions/phrasebook/pending           — list pending
+#   * POST  /api/promotions/phrasebook/{id}/approve      — approve + PUT phrasebook
+#   * POST  /api/promotions/phrasebook/{id}/reject       — reject
+#
+# Drift-guard pin: ``_PROMOTION_STATUS_VALUES`` mirrors the proposer
+# module's ``PROPOSAL_STATUS_VALUES``. The KR-FE-PROMOTION-REVIEW-PANEL
+# follow-on adds the symmetric FE constant + a snapshot-pin test that
+# fails CI if the two drift.
+
+
+# Wire-stable status allowlist — paired with the FE constant added
+# by KR-FE-PROMOTION-REVIEW-PANEL.
+_PROMOTION_STATUS_VALUES: Tuple[str, ...] = (
+    "pending",
+    "approved",
+    "rejected",
+    "expired",
+)
+
+
+@app.get("/api/promotions/phrasebook/pending")
+async def list_pending_phrasebook_proposals() -> Dict[str, Any]:
+    """Return all pending phrasebook proposals, highest-confidence
+    first. Each entry is the full PromotionProposal projection
+    (see ``kora_cli.promote.phrasebook.proposer.proposal_to_dict``)
+    so the cockpit panel has everything it needs to render the
+    review surface in one round-trip.
+
+    Sidebar-nav count is ``len(response["proposals"])``.
+    """
+    from kora_cli.promote.phrasebook.proposer import proposal_to_dict
+    from kora_cli.promote.phrasebook.store import list_pending
+
+    proposals = list_pending()
+    return {
+        "proposals": [proposal_to_dict(p) for p in proposals],
+        "status_values": list(_PROMOTION_STATUS_VALUES),
+    }
+
+
+@app.post("/api/promotions/phrasebook/{proposal_id}/approve")
+async def approve_phrasebook_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Approve a pending proposal. Optional payload override
+    fields the operator edited at approve-time:
+
+      {pattern_override?, reply_template_override?,
+       category_override?, review_notes?}
+
+    Workflow:
+      1. Load the pending proposal (404 if missing / not
+         pending).
+      2. Build the post-override PhrasebookEntry shape.
+      3. Validate via the existing phrasebook editor's validator
+         (regex compiles, template references real fields, etc).
+      4. PUT to the operator-override phrasebook with
+         ``actor="kora_proposal_approved"`` per #177
+         forward-compat.
+      5. Transition the proposal to ``approved/`` directory.
+      6. Emit ``promotion.approved`` audit row.
+    """
+    from kora_cli.audit import emit_audit
+    from kora_cli.promote.phrasebook.proposer import proposal_to_dict
+    from kora_cli.promote.phrasebook.store import (
+        ProposalNotFound,
+        load,
+        transition,
+    )
+    from kora_cli.short_circuit import dm_phrasebook, phrasebook_editor
+
+    overrides_dict: Dict[str, Any] = {}
+    review_notes = ""
+    if isinstance(payload, dict):
+        pattern_override = payload.get("pattern_override")
+        if isinstance(pattern_override, str):
+            overrides_dict["pattern"] = pattern_override
+        reply_template_override = payload.get("reply_template_override")
+        if isinstance(reply_template_override, str):
+            overrides_dict["reply_template"] = reply_template_override
+        category_override = payload.get("category_override")
+        if isinstance(category_override, str):
+            overrides_dict["category"] = category_override
+        notes_raw = payload.get("review_notes")
+        if isinstance(notes_raw, str):
+            review_notes = notes_raw
+
+    try:
+        existing = load(proposal_id)
+    except ProposalNotFound:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "proposal_not_found", "proposal_id": proposal_id},
+        )
+    if existing.status != "pending":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "proposal_not_pending",
+                "proposal_id": proposal_id,
+                "current_status": existing.status,
+            },
+        )
+
+    final_pattern = overrides_dict.get("pattern") or existing.proposed_pattern
+    final_reply_template = (
+        overrides_dict.get("reply_template")
+        or existing.proposed_reply_template
+    )
+    final_category = (
+        overrides_dict.get("category") or existing.proposed_category
+    )
+
+    new_entry = {
+        "pattern": final_pattern,
+        "category": final_category,
+        "description": (
+            f"Promoted from Kora proposal {proposal_id} "
+            f"(cluster size {existing.cluster_size}, "
+            f"confidence {existing.confidence:.2f})"
+        ),
+        "reply_template": final_reply_template,
+    }
+
+    # Merge into existing override entries — promotion ADDS, never
+    # replaces. Operator edits the result later via the PUT
+    # endpoint if they want different ordering.
+    current_entries: List[Dict[str, Any]] = []
+    for entry in dm_phrasebook.load_phrasebook():
+        current_entries.append(
+            {
+                "pattern": entry.pattern.pattern,
+                "category": entry.category,
+                "description": entry.description,
+                "reply_template": entry.reply_template,
+            }
+        )
+    proposed_entries = current_entries + [new_entry]
+    validation_errors = phrasebook_editor.validate_entries(
+        proposed_entries
+    )
+    if validation_errors:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "validation_failed",
+                "errors": [e.as_dict() for e in validation_errors],
+                "proposal_id": proposal_id,
+            },
+        )
+
+    count_before = len(current_entries)
+    override_path = phrasebook_editor._override_path()
+    backup_path = phrasebook_editor.write_backup_for(override_path)
+    try:
+        phrasebook_editor.write_phrasebook(proposed_entries)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "phrasebook_write_failed",
+                "detail": repr(exc),
+                "backup_filename": (
+                    backup_path.name if backup_path is not None else None
+                ),
+            },
+        )
+
+    # ``phrasebook.updated`` audit row uses the forward-compat
+    # actor literal per PR #177 so the promotion-history view can
+    # tell operator-edits apart from auto-approved promotions.
+    try:
+        emit_audit(
+            seam="phrasebook.updated",
+            details={
+                "actor": "kora_proposal_approved",
+                "action": "put",
+                "entry_count_before": count_before,
+                "entry_count_after": len(proposed_entries),
+                "backup_filename": (
+                    backup_path.name if backup_path is not None else None
+                ),
+                "proposal_id": proposal_id,
+            },
+            source=None,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote] phrasebook.updated emit raised %r — "
+            "approval still succeeded",
+            exc,
+        )
+
+    # Move the proposal to approved/ with operator overrides
+    # baked into the persisted record so the audit JSONL +
+    # on-disk file agree.
+    updated = transition(
+        proposal_id,
+        new_status="approved",
+        review_notes=review_notes,
+        overrides=overrides_dict or None,
+    )
+
+    try:
+        emit_audit(
+            seam="promotion.approved",
+            details={
+                **proposal_to_dict(updated),
+                "committed_entry": new_entry,
+            },
+            caller_session_id=f"promotion:phrasebook:{proposal_id}",
+            source="reasoning",
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote] promotion.approved emit raised %r — "
+            "approval persisted; audit row missing",
+            exc,
+        )
+
+    return {
+        "proposal_id": proposal_id,
+        "status": "approved",
+        "committed_entry": new_entry,
+        "entry_count_after": len(proposed_entries),
+        "backup_filename": (
+            backup_path.name if backup_path is not None else None
+        ),
+    }
+
+
+@app.post("/api/promotions/phrasebook/{proposal_id}/reject")
+async def reject_phrasebook_proposal(
+    proposal_id: str, payload: Optional[Dict[str, Any]] = None
+) -> Any:
+    """Reject a pending proposal. Payload may carry
+    ``{review_notes: str}`` — operator rationale recorded verbatim
+    in the audit row (operator-decision-relevant per the #182
+    precedent).
+    """
+    from kora_cli.audit import emit_audit
+    from kora_cli.promote.phrasebook.proposer import proposal_to_dict
+    from kora_cli.promote.phrasebook.store import (
+        ProposalNotFound,
+        load,
+        transition,
+    )
+
+    review_notes = ""
+    if isinstance(payload, dict):
+        notes_raw = payload.get("review_notes")
+        if isinstance(notes_raw, str):
+            review_notes = notes_raw
+
+    try:
+        existing = load(proposal_id)
+    except ProposalNotFound:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "proposal_not_found", "proposal_id": proposal_id},
+        )
+    if existing.status != "pending":
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "proposal_not_pending",
+                "proposal_id": proposal_id,
+                "current_status": existing.status,
+            },
+        )
+
+    updated = transition(
+        proposal_id, new_status="rejected", review_notes=review_notes
+    )
+
+    try:
+        emit_audit(
+            seam="promotion.rejected",
+            details=proposal_to_dict(updated),
+            caller_session_id=f"promotion:phrasebook:{proposal_id}",
+            source="reasoning",
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.promote] promotion.rejected emit raised %r — "
+            "rejection persisted; audit row missing",
+            exc,
+        )
+
+    return {
+        "proposal_id": proposal_id,
+        "status": "rejected",
+        "review_notes": review_notes,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Email-intent audit lens (KR-FE-EMAIL-INTENT-LOG-PANEL)
 # ---------------------------------------------------------------------------
 #
