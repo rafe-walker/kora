@@ -221,29 +221,39 @@ def test_system_prompt_env_override(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_normal_rung_selects_opus(monkeypatch, system_prompt_path):
+async def test_normal_rung_defaults_to_haiku(
+    monkeypatch, system_prompt_path
+):
+    """KR-HAIKU-ROUTER (Lock R3-3 flip): the engine no longer
+    defaults to Opus on normal rung. The router picks Haiku unless
+    an earning signal fires; this test confirms the default path."""
     monkeypatch.setenv(OAUTH_TOKEN_ENV, "tok")
-    client = _make_mock_client(response=_make_response(model=MODEL_OPUS))
+    client = _make_mock_client(response=_make_response(model=MODEL_HAIKU))
     engine = AnthropicReasoningEngine(
         system_prompt_path=system_prompt_path, client=client
     )
     result = await engine.respond(_msg(), _ctx(rung="normal"))
     assert result.error is None
-    assert client.messages.create.await_args.kwargs["model"] == MODEL_OPUS
+    assert (
+        client.messages.create.await_args.kwargs["model"] == MODEL_HAIKU
+    )
 
 
 @pytest.mark.asyncio
-async def test_warn_75_rung_selects_sonnet(monkeypatch, system_prompt_path):
+async def test_warn_75_rung_clamps_to_haiku(
+    monkeypatch, system_prompt_path
+):
+    """KR-HAIKU-ROUTER: WARN_75 forces Haiku (Sonnet middle tier
+    dropped post-flip). Replaces the pre-flip
+    ``test_warn_75_rung_selects_sonnet``."""
     monkeypatch.setenv(OAUTH_TOKEN_ENV, "tok")
-    client = _make_mock_client(
-        response=_make_response(model=MODEL_SONNET)
-    )
+    client = _make_mock_client(response=_make_response(model=MODEL_HAIKU))
     engine = AnthropicReasoningEngine(
         system_prompt_path=system_prompt_path, client=client
     )
     await engine.respond(_msg(), _ctx(rung="warn_75"))
     assert (
-        client.messages.create.await_args.kwargs["model"] == MODEL_SONNET
+        client.messages.create.await_args.kwargs["model"] == MODEL_HAIKU
     )
 
 
@@ -276,22 +286,23 @@ async def test_hard_stop_100_rung_refuses_no_sdk_call(
 
 
 @pytest.mark.asyncio
-async def test_unknown_rung_defaults_to_opus_and_continues(
-    monkeypatch, system_prompt_path, caplog
+async def test_unknown_rung_defaults_to_haiku(
+    monkeypatch, system_prompt_path
 ):
-    import logging
-
-    caplog.set_level(logging.WARNING)
+    """KR-HAIKU-ROUTER: an unknown rung isn't special-cased — the
+    router falls through to its default-Haiku branch since neither
+    the hard-stop nor the cost-clamp branches match. The old
+    ``defaults_to_opus_and_continues`` behavior + its WARN log no
+    longer applies; the router treats unknown as no-clamp."""
     monkeypatch.setenv(OAUTH_TOKEN_ENV, "tok")
-    client = _make_mock_client(response=_make_response(model=MODEL_OPUS))
+    client = _make_mock_client(response=_make_response(model=MODEL_HAIKU))
     engine = AnthropicReasoningEngine(
         system_prompt_path=system_prompt_path, client=client
     )
     result = await engine.respond(_msg(), _ctx(rung="unknown"))
     assert result.error is None
-    assert client.messages.create.await_args.kwargs["model"] == MODEL_OPUS
-    assert any(
-        "unknown cost rung" in r.getMessage() for r in caplog.records
+    assert (
+        client.messages.create.await_args.kwargs["model"] == MODEL_HAIKU
     )
 
 

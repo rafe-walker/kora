@@ -424,7 +424,17 @@ def test_record_inference_passes_cache_tokens_to_canonical_usage():
     fake_holder = MagicMock()
     captured_usage = []
 
-    def _capture(usage, *, model_name, provider):
+    def _capture(
+        usage,
+        *,
+        model_name,
+        provider=None,
+        base_url=None,
+        route="unknown",
+        escalated_to_opus=False,
+    ):
+        # Accept the KR-CHEAP-COST-TELEMETRY (#161) + KR-HAIKU-
+        # ROUTER kwargs; this test only cares about the usage shape.
         captured_usage.append(usage)
 
     fake_holder.record_inference = _capture

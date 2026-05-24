@@ -681,13 +681,27 @@ async def test_cost_ladder_record_inference_called_on_success(
 
     original = real_holder.record_inference
 
-    def _spy(canonical_usage, *, model_name, provider=None, base_url=None):
+    def _spy(
+        canonical_usage,
+        *,
+        model_name,
+        provider=None,
+        base_url=None,
+        route="unknown",
+        escalated_to_opus=False,
+    ):
+        # KR-CHEAP-COST-TELEMETRY (#161) added route +
+        # escalated_to_opus; KR-HAIKU-ROUTER passes route="slack_dm"
+        # from the handler's _record_inference_to_cost_ladder. Spy
+        # accepts both so the assertion path stays clean.
         record_calls.append(
             {
                 "input_tokens": canonical_usage.input_tokens,
                 "output_tokens": canonical_usage.output_tokens,
                 "model_name": model_name,
                 "provider": provider,
+                "route": route,
+                "escalated_to_opus": escalated_to_opus,
             }
         )
         return original(
@@ -695,6 +709,8 @@ async def test_cost_ladder_record_inference_called_on_success(
             model_name=model_name,
             provider=provider,
             base_url=base_url,
+            route=route,
+            escalated_to_opus=escalated_to_opus,
         )
 
     monkeypatch.setattr(real_holder, "record_inference", _spy)

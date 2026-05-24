@@ -105,16 +105,23 @@ MAX_TOOL_USE_ITERATIONS = 5
 
 # Model identifiers per the canonical Claude 4.X family. Values
 # verified against the project_kora memory + the latest SDK docs.
+# Per KR-HAIKU-ROUTER (Lock R3-3), the default model is HAIKU.
+# Opus is invoked only when an earning signal fires (router calls
+# ``select_model_pre_call`` / ``should_escalate_post_call``).
 MODEL_OPUS = "claude-opus-4-7"
-MODEL_SONNET = "claude-sonnet-4-6"
+MODEL_SONNET = "claude-sonnet-4-6"  # constant kept for grep; no
+                                    # active call site post-router.
 MODEL_HAIKU = "claude-haiku-4-5-20251001"
 
-# Cost-ladder rung → model mapping. Bucket spec maps the four rungs
-# to {opus, sonnet, haiku, halt}. Keyed by the CostRung enum's
-# canonical ``.value`` strings (NOT the bucket-spec paraphrases).
+# Cost-ladder rung → model mapping. **DEPRECATED post KR-HAIKU-
+# ROUTER**. The router (`kora_cli/router/cost_router.py`) takes
+# cost_rung as input and clamps to Haiku on WARN_75 / DOWNSHIFT_90,
+# fails fast on HARD_STOP_100. The map is preserved at module
+# level for backwards-compat with any downstream consumer that
+# imports it; the engine no longer consults it.
 RUNG_MODEL_MAP: Dict[str, str] = {
-    "normal": MODEL_OPUS,
-    "warn_75": MODEL_SONNET,
+    "normal": MODEL_HAIKU,        # was MODEL_OPUS pre-flip
+    "warn_75": MODEL_HAIKU,       # was MODEL_SONNET pre-flip
     "downshift_90": MODEL_HAIKU,
     # "hard_stop_100" is special-cased — refuse, no API call.
 }
@@ -318,14 +325,31 @@ class AnthropicReasoningEngine:
                 reasoning_duration_ms=_elapsed_ms(started_at),
                 error="cost_ladder_halted",
             )
-        model = RUNG_MODEL_MAP.get(rung)
-        if model is None:
-            logger.warning(
-                "[kora.reasoning] unknown cost rung %r — defaulting to "
-                "opus + continuing",
-                rung,
-            )
-            model = MODEL_OPUS
+
+        # KR-HAIKU-ROUTER (Lock R3-3) — model selection moved to
+        # the per-iteration router inside ``_tool_use_loop``.
+        # ``respond`` no longer pre-resolves a single model; it
+        # threads ``cost_rung`` + ``message_text`` into the loop
+        # so the router can pick Haiku vs Opus per iteration based
+        # on the earning signals + cost-rung backstop.
+
+        # Strip operator ``/opus`` prefix BEFORE building the
+        # message history so the routing instruction doesn't leak
+        # into the prompt. The prefix's role was detected by the
+        # router via the raw text; we hand the cleaned text to the
+        # SDK.
+        from kora_cli.router import strip_opus_prefix
+
+        message_text_for_router = message.text or ""
+        message_text_for_sdk = strip_opus_prefix(message_text_for_router)
+
+        # Reassign ``message.text`` for the history builder. We
+        # avoid mutating the input dataclass — build a shallow
+        # replacement when the prefix was present.
+        if message_text_for_sdk != message_text_for_router:
+            from dataclasses import replace as _dc_replace
+
+            message = _dc_replace(message, text=message_text_for_sdk)
 
         # Assemble the message list (oldest→newest history + fresh
         # inbound as final user turn).
@@ -360,31 +384,53 @@ class AnthropicReasoningEngine:
         client = await self._ensure_client()
         return await self._tool_use_loop(
             client=client,
-            model=model,
             messages=messages,
             tools=tools,
             started_at=started_at,
             triggered_by=triggered_by,
             caller_session_id=caller_session_id,
+            message_text=message_text_for_router,
+            cost_rung=rung or "normal",
+            source=message.source,
         )
 
     async def _tool_use_loop(
         self,
         *,
         client: Any,
-        model: str,
         messages: list,
         tools: list,
         started_at: float,
         triggered_by: str = "unknown",
         caller_session_id: str = "",
+        message_text: str = "",
+        cost_rung: str = "normal",
+        source: str = "unknown",
     ) -> ResponseResult:
         """Drive the tool-use roundtrip cascade.
 
         See ``respond`` docstring for the high-level flow. Token
         accumulation is per-iteration; SDK exceptions on any
         iteration short-circuit to a mapped error result.
+
+        KR-HAIKU-ROUTER (Lock R3-3): model selection is per-
+        iteration via the router. ``message_text`` + ``cost_rung``
+        are inputs to the router's earning-signal decision tree.
+        Iteration 1 may post-call-escalate to Opus when Haiku's
+        response is low-confidence — the escalation re-issues the
+        API call with Haiku's response woven into the messages so
+        Opus has context rather than starting cold.
+
+        ``source`` is used as the telemetry route literal (mapped
+        via ``_source_to_telemetry_route``); subsequent iterations
+        switch to ``ROUTE_TOOL_LOOP_ITERATION``.
         """
+        from kora_cli.router import (
+            DEFAULT_OPUS_MODEL,
+            RoutingDecision,
+            select_model_pre_call,
+            should_escalate_post_call,
+        )
         # Accumulators across iterations.
         total_input_tokens = 0
         total_output_tokens = 0
@@ -414,13 +460,46 @@ class AnthropicReasoningEngine:
         system_blocks = _wrap_system_as_cacheable(self._system_prompt)
         cacheable_tools = _wrap_tools_as_cacheable(tools)
 
+        # Last-known model from the most recent SDK call — needed for
+        # ResponseResult.model_used + for ``_map_sdk_exception`` if
+        # any iteration raises mid-loop. Initialized to Haiku (the
+        # router's default) so a pre-iteration failure is attributed
+        # honestly to the default model.
+        last_model = "claude-haiku-4-5-20251001"
+
         for iteration in range(1, MAX_TOOL_USE_ITERATIONS + 1):
+            # KR-HAIKU-ROUTER — per-iteration model decision.
+            decision = select_model_pre_call(
+                message_text=message_text,
+                iteration=iteration,
+                cost_rung=cost_rung,
+            )
+            if decision.model is None:
+                # cost_rung == hard_stop_100 — caller (respond) already
+                # short-circuits on this rung BEFORE entering the loop,
+                # so reaching here means the rung flipped mid-loop
+                # (unlikely but possible). Fail-fast with the same
+                # error code respond() uses.
+                return ResponseResult(
+                    text="",
+                    model_used=last_model,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens,
+                    reasoning_duration_ms=_elapsed_ms(started_at),
+                    error="cost_ladder_halted",
+                    tools_used=tools_used,
+                    cache_creation_input_tokens=total_cache_creation_tokens,
+                    cache_read_input_tokens=total_cache_read_tokens,
+                )
+            current_model = decision.model
+            last_model = current_model
+
             try:
                 # tools= is optional per the SDK; omit when the
                 # registry returned empty so we don't send an empty
                 # array (some Anthropic SDK versions are strict).
                 kwargs: Dict[str, Any] = {
-                    "model": model,
+                    "model": current_model,
                     "system": system_blocks,
                     "messages": messages,
                     "max_tokens": self._max_output_tokens,
@@ -431,26 +510,131 @@ class AnthropicReasoningEngine:
                 response = await client.messages.create(**kwargs)
             except Exception as exc:
                 return self._map_sdk_exception(
-                    exc, model=model, started_at=started_at
+                    exc, model=current_model, started_at=started_at
                 )
 
             # Per-iteration token accumulation.
             usage = getattr(response, "usage", None)
-            total_input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
-            total_output_tokens += int(
-                getattr(usage, "output_tokens", 0) or 0
-            )
-            # Cache token accumulation. SDK exposes these as
-            # ``cache_creation_input_tokens`` + ``cache_read_input_tokens``
-            # on the usage block. They're populated only when caching
-            # actually engages — uncached calls leave them at 0 (or
-            # the attr absent, which getattr-defaults to 0 here).
-            total_cache_creation_tokens += int(
+            iter_input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+            iter_output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            iter_cache_creation = int(
                 getattr(usage, "cache_creation_input_tokens", 0) or 0
             )
-            total_cache_read_tokens += int(
+            iter_cache_read = int(
                 getattr(usage, "cache_read_input_tokens", 0) or 0
             )
+            total_input_tokens += iter_input_tokens
+            total_output_tokens += iter_output_tokens
+            total_cache_creation_tokens += iter_cache_creation
+            total_cache_read_tokens += iter_cache_read
+
+            # KR-HAIKU-ROUTER — telemetry per API call.
+            self._record_call_to_telemetry(
+                source=source,
+                iteration=iteration,
+                model=current_model,
+                escalated=decision.escalated,
+                iter_input_tokens=iter_input_tokens,
+                iter_output_tokens=iter_output_tokens,
+                iter_cache_creation=iter_cache_creation,
+                iter_cache_read=iter_cache_read,
+            )
+
+            # KR-HAIKU-ROUTER post-call escalation — only on
+            # iteration 1, only if we didn't ALREADY escalate
+            # (i.e. iteration 1 was Haiku per default), and only
+            # when stop_reason is end_turn (a tool-use response
+            # isn't a candidate for escalation; the iteration-2
+            # signal already gives the next call Opus).
+            stop_reason_for_escalation_check = getattr(
+                response, "stop_reason", None
+            )
+            if (
+                iteration == 1
+                and not decision.escalated
+                and stop_reason_for_escalation_check == "end_turn"
+            ):
+                haiku_text = self._extract_text_from_response(response)
+                should_esc, esc_reason = should_escalate_post_call(
+                    haiku_response_text=haiku_text,
+                    original_message_text=message_text,
+                )
+                if should_esc:
+                    # Re-issue iteration 1 to Opus with Haiku's
+                    # response in the conversation history. Opus
+                    # sees the prior attempt + a follow-up user
+                    # turn asking it to review/improve. Cheaper
+                    # than a cold-call Opus because the system
+                    # prompt + tool cache is still warm.
+                    escalation_messages = list(messages) + [
+                        {
+                            "role": "assistant",
+                            "content": haiku_text,
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Please review my last response and "
+                                "improve it if needed. Be terse if "
+                                "you'd just confirm it."
+                            ),
+                        },
+                    ]
+                    escalation_kwargs = dict(kwargs)
+                    escalation_kwargs["model"] = DEFAULT_OPUS_MODEL
+                    escalation_kwargs["messages"] = escalation_messages
+                    try:
+                        response = await client.messages.create(
+                            **escalation_kwargs
+                        )
+                    except Exception as exc:
+                        # Escalation failed — surface honestly.
+                        # Haiku tokens already accumulated; Opus
+                        # call burned no tokens.
+                        return self._map_sdk_exception(
+                            exc,
+                            model=DEFAULT_OPUS_MODEL,
+                            started_at=started_at,
+                        )
+                    last_model = DEFAULT_OPUS_MODEL
+                    # Accumulate Opus tokens too (BOTH paths billed
+                    # — that's the cost of escalation).
+                    usage = getattr(response, "usage", None)
+                    iter_input_tokens = int(
+                        getattr(usage, "input_tokens", 0) or 0
+                    )
+                    iter_output_tokens = int(
+                        getattr(usage, "output_tokens", 0) or 0
+                    )
+                    iter_cache_creation = int(
+                        getattr(usage, "cache_creation_input_tokens", 0)
+                        or 0
+                    )
+                    iter_cache_read = int(
+                        getattr(usage, "cache_read_input_tokens", 0) or 0
+                    )
+                    total_input_tokens += iter_input_tokens
+                    total_output_tokens += iter_output_tokens
+                    total_cache_creation_tokens += iter_cache_creation
+                    total_cache_read_tokens += iter_cache_read
+                    # Update decision to reflect the escalated path
+                    # (for any downstream logic that checks it).
+                    decision = RoutingDecision(
+                        model=DEFAULT_OPUS_MODEL,
+                        reason=f"escalated_post_haiku:{esc_reason}",
+                        escalated=True,
+                        haiku_context_for_opus=haiku_text,
+                    )
+                    self._record_call_to_telemetry(
+                        source=source,
+                        iteration=iteration,
+                        model=DEFAULT_OPUS_MODEL,
+                        escalated=True,
+                        iter_input_tokens=iter_input_tokens,
+                        iter_output_tokens=iter_output_tokens,
+                        iter_cache_creation=iter_cache_creation,
+                        iter_cache_read=iter_cache_read,
+                    )
 
             # Detect tool-use vs end-of-turn. Anthropic SDK sets
             # ``response.stop_reason`` to one of:
@@ -460,7 +644,7 @@ class AnthropicReasoningEngine:
                 # Done — final text response. Project + return.
                 return self._project_final_response(
                     response,
-                    model=model,
+                    model=last_model,
                     started_at=started_at,
                     total_input_tokens=total_input_tokens,
                     total_output_tokens=total_output_tokens,
@@ -482,7 +666,7 @@ class AnthropicReasoningEngine:
                 )
                 return self._project_final_response(
                     response,
-                    model=model,
+                    model=last_model,
                     started_at=started_at,
                     total_input_tokens=total_input_tokens,
                     total_output_tokens=total_output_tokens,
@@ -520,7 +704,7 @@ class AnthropicReasoningEngine:
         )
         return ResponseResult(
             text="",
-            model_used=model,
+            model_used=last_model,
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
             reasoning_duration_ms=_elapsed_ms(started_at),
@@ -529,6 +713,115 @@ class AnthropicReasoningEngine:
             cache_creation_input_tokens=total_cache_creation_tokens,
             cache_read_input_tokens=total_cache_read_tokens,
         )
+
+    @staticmethod
+    def _extract_text_from_response(response: Any) -> str:
+        """Concatenate all ``text`` blocks from an SDK response.
+
+        Used by KR-HAIKU-ROUTER post-call escalation to capture
+        Haiku's response for the Opus re-issue's context. Returns
+        the empty string when the response has no text blocks
+        (e.g. the response was purely tool_use blocks, which we
+        don't escalate on).
+        """
+        parts: list[str] = []
+        try:
+            for block in getattr(response, "content", None) or []:
+                if getattr(block, "type", "") == "text":
+                    parts.append(getattr(block, "text", "") or "")
+        except Exception:
+            return ""
+        return "".join(parts).strip()
+
+    def _record_call_to_telemetry(
+        self,
+        *,
+        source: str,
+        iteration: int,
+        model: str,
+        escalated: bool,
+        iter_input_tokens: int,
+        iter_output_tokens: int,
+        iter_cache_creation: int,
+        iter_cache_read: int,
+    ) -> None:
+        """Record one API roundtrip's worth of usage to the
+        per-route cost telemetry (PR #161). Best-effort — any
+        failure logs + swallows so the hot reasoning path never
+        sees a telemetry exception.
+
+        Iteration 1 maps to the source's natural route
+        (``slack_dm`` / ``email_inbound`` / ``mcp_tool``);
+        iteration 2+ buckets to ``tool_loop_iteration`` so the
+        cockpit can see Opus-on-iteration vs Opus-on-escalation
+        spend as distinct slices.
+        """
+        try:
+            from agent.usage_pricing import (
+                CanonicalUsage,
+                estimate_usage_cost,
+            )
+            from kora_cli.telemetry import (
+                ROUTE_EMAIL_INBOUND,
+                ROUTE_MCP_TOOL,
+                ROUTE_SLACK_DM,
+                ROUTE_TOOL_LOOP_ITERATION,
+                ROUTE_UNKNOWN,
+                get_telemetry,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[kora.reasoning.telemetry] import failed: %r — skipping",
+                exc,
+            )
+            return
+
+        if iteration >= 2:
+            route = ROUTE_TOOL_LOOP_ITERATION
+        else:
+            route = {
+                "slack_dm": ROUTE_SLACK_DM,
+                "email": ROUTE_EMAIL_INBOUND,
+                "mcp": ROUTE_MCP_TOOL,
+            }.get(source, ROUTE_UNKNOWN)
+
+        usage = CanonicalUsage(
+            input_tokens=iter_input_tokens,
+            output_tokens=iter_output_tokens,
+            cache_read_tokens=iter_cache_read,
+            cache_write_tokens=iter_cache_creation,
+        )
+
+        cost_estimate: Any = None
+        try:
+            cost_result = estimate_usage_cost(
+                model_name=model,
+                usage=usage,
+                provider="anthropic",
+            )
+            if cost_result.amount_usd is not None:
+                cost_estimate = float(cost_result.amount_usd)
+        except Exception as exc:
+            logger.debug(
+                "[kora.reasoning.telemetry] estimate_usage_cost raised "
+                "%r — cost_estimate omitted",
+                exc,
+            )
+
+        try:
+            get_telemetry().record_call(
+                route=route,
+                model=model,
+                canonical_usage=usage,
+                cost_estimate_usd=cost_estimate,
+                escalated_to_opus=escalated,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[kora.reasoning.telemetry] record_call raised %r — "
+                "counters not updated",
+                exc,
+            )
 
     def _extract_tool_use_blocks(self, response: Any) -> list:
         """Return the list of ``tool_use`` content blocks from an
