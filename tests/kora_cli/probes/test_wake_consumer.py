@@ -458,3 +458,451 @@ async def test_reset_debounce_state_clears():
     assert consumer.debounce_map_size == 1
     consumer.reset_debounce_state()
     assert consumer.debounce_map_size == 0
+
+
+# ===========================================================================
+# KR-PROBE-INVESTIGATION-DATA-COMPLETION — 3 V1NotesBanner gaps
+# ===========================================================================
+
+
+@pytest.fixture
+def _audit_redirect(tmp_path, monkeypatch):
+    """Per-test audit + slack-log redirect — both surfaces are
+    file-backed singletons that we redirect into tmp_path so the
+    new audit-stream + outbound-log assertions are scoped to the
+    test."""
+    monkeypatch.setenv("KORA_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "kora_constants.get_kora_home", lambda: tmp_path, raising=False
+    )
+    monkeypatch.setenv(
+        "KORA_AUDIT_LOG_PATH", str(tmp_path / "audit.jsonl")
+    )
+    monkeypatch.setenv(
+        "KORA_SLACK_DM_LOG_PATH",
+        str(tmp_path / "slack_dm_log.jsonl"),
+    )
+    return tmp_path
+
+
+def _read_audit(tmp_path):
+    import json as _json
+
+    path = tmp_path / "audit.jsonl"
+    if not path.exists():
+        return []
+    return [
+        _json.loads(line)
+        for line in path.read_text().splitlines()
+        if line
+    ]
+
+
+def _read_slack_log(tmp_path):
+    import json as _json
+
+    path = tmp_path / "slack_dm_log.jsonl"
+    if not path.exists():
+        return []
+    return [
+        _json.loads(line)
+        for line in path.read_text().splitlines()
+        if line
+    ]
+
+
+def _engine_with_tokens(
+    *,
+    text: str = "investigation summary line",
+    model_used: str = "claude-haiku-4-5-20251001",
+    input_tokens: int = 1200,
+    output_tokens: int = 250,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 800,
+    error=None,
+):
+    """ResponseResult-shaped MagicMock with full token detail so
+    the cost + log assertions can verify the meta projection."""
+    engine = MagicMock()
+    result = MagicMock()
+    result.text = text
+    result.error = error
+    result.model_used = model_used
+    result.input_tokens = input_tokens
+    result.output_tokens = output_tokens
+    result.cache_creation_input_tokens = cache_creation_input_tokens
+    result.cache_read_input_tokens = cache_read_input_tokens
+    engine.respond = AsyncMock(return_value=result)
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_emitted_with_meta_on_happy_path(
+    _audit_redirect,
+):
+    """End-to-end: probe wake → reasoning runs → DM sent →
+    BOTH slack_dm_log entry AND probe.investigation_completed
+    audit row written, both keyed by the same caller_session_id."""
+    engine = _engine_with_tokens()
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+
+    outcome = await consumer.consume_wake_event(_make_event())
+
+    assert outcome.dispatched is True
+    assert outcome.dm_sent is True
+    slack.post_dm.assert_awaited_once()
+
+    # Audit stream: probe.investigation_completed.
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert len(completed) == 1
+    row = completed[0]
+    assert row["caller_session_id"] == "probe:fly:service_unhealthy"
+    assert row["source"] == "reasoning"
+    assert row["details"]["probe"] == "fly"
+    assert row["details"]["issue_category"] == "service_unhealthy"
+    assert row["details"]["severity"] == "critical"
+    assert row["details"]["model_used"] == "claude-haiku-4-5-20251001"
+    assert row["details"]["input_tokens"] == 1200
+    assert row["details"]["output_tokens"] == 250
+    assert row["details"]["cache_read_input_tokens"] == 800
+    assert row["details"]["dm_status"] == "sent"
+    assert row["details"]["autofix_attempted"] is False
+    # Reason field is the actual reasoning text VERBATIM (operator-
+    # decision-relevant — per #182 precedent, not #179 redaction).
+    assert "investigation summary line" in row["details"][
+        "investigation_summary_text"
+    ]
+    assert isinstance(row["details"]["investigation_duration_ms"], int)
+    # Cost may be None when the pricing registry doesn't know the
+    # model (test env doesn't ship pricing data for haiku-4-5); the
+    # FIELD must always be present so the panel can render
+    # "(unknown)" without a key-error.
+    assert "total_cost_usd" in row["details"]
+
+    # Outbound-log stream: slack_dm_log.jsonl.
+    log = _read_slack_log(_audit_redirect)
+    assert len(log) == 1
+    entry = log[0]
+    assert entry["caller_session_id"] == "probe:fly:service_unhealthy"
+    assert entry["send_status"] == "ok"
+    assert entry["model_used"] == "claude-haiku-4-5-20251001"
+    assert entry["input_tokens"] == 1200
+    assert entry["output_tokens"] == 250
+    assert entry["channel_id"] == _JOSHUA_USER_ID
+    # Same correlation key as the audit row → CC#2's viewer can
+    # JOIN the two streams cleanly.
+    assert (
+        entry["caller_session_id"] == row["caller_session_id"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_fires_on_engine_unavailable_fallback(
+    _audit_redirect,
+):
+    """Engine None → fallback DM → completed audit STILL fires
+    with dm_status=engine_unavailable_fallback."""
+    slack = _make_slack()
+    consumer = _make_consumer(engine=None, slack=slack)
+
+    outcome = await consumer.consume_wake_event(_make_event())
+    assert outcome.dm_sent is True
+    assert outcome.error == "engine_unavailable"
+
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert len(completed) == 1
+    details = completed[0]["details"]
+    assert details["dm_status"] == "engine_unavailable_fallback"
+    assert details["reasoning_error"] == "engine_unavailable"
+    # No model — engine never ran.
+    assert details["model_used"] is None
+    assert details["total_cost_usd"] is None
+    # The fallback text IS recorded (it's what the operator saw).
+    assert "engine_unavailable" in details["investigation_summary_text"]
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_on_slack_send_failure(
+    _audit_redirect,
+):
+    """post_dm raises → outbound log written with send_status=failed
+    + completed audit fires with dm_status=failed_send."""
+    engine = _engine_with_tokens()
+    slack = MagicMock()
+    slack.post_dm = AsyncMock(side_effect=RuntimeError("transport boom"))
+    consumer = _make_consumer(engine=engine, slack=slack)
+
+    outcome = await consumer.consume_wake_event(_make_event())
+    assert outcome.dm_sent is False
+
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0]["details"]["dm_status"] == "failed_send"
+
+    log = _read_slack_log(_audit_redirect)
+    assert len(log) == 1
+    assert log[0]["send_status"] == "failed"
+    assert log[0]["failure_reason"] == "post_dm_raised:RuntimeError"
+    # Same key on the failure row so the panel join still works.
+    assert log[0]["caller_session_id"] == "probe:fly:service_unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_on_engine_unavailable_failed_send(
+    _audit_redirect,
+):
+    """Engine None AND no slack client → fallback path AND no DM.
+    dm_status surfaces the combined failure."""
+    consumer = _make_consumer(engine=None, slack=None)
+
+    outcome = await consumer.consume_wake_event(_make_event())
+    assert outcome.dm_sent is False
+
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert len(completed) == 1
+    assert (
+        completed[0]["details"]["dm_status"]
+        == "engine_unavailable_failed_send"
+    )
+
+    log = _read_slack_log(_audit_redirect)
+    assert len(log) == 1
+    assert log[0]["failure_reason"] == "slack_client_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_autofix_attempted_field_picks_up_concurrent_seam(
+    _audit_redirect,
+):
+    """If tool.probe_autofix_attempted fires with the same
+    caller_session_id during the investigation, the completed
+    audit row's autofix_attempted=True. We simulate the in-flight
+    tool invocation by having the mock engine emit the autofix row
+    as a side effect of respond() — same temporal shape as a real
+    Claude tool call landing mid-respond."""
+    from kora_cli.audit.jsonl_sink import emit_audit
+
+    captured_result = MagicMock()
+    captured_result.text = "investigation done"
+    captured_result.error = None
+    captured_result.model_used = "claude-haiku-4-5-20251001"
+    captured_result.input_tokens = 100
+    captured_result.output_tokens = 50
+    captured_result.cache_creation_input_tokens = 0
+    captured_result.cache_read_input_tokens = 0
+
+    async def respond_with_autofix_side_effect(*args, **kwargs):
+        # Emit the tool.probe_autofix_attempted row "during" the
+        # respond() call. This is the temporal order the back-
+        # reference relies on (autofix row written AFTER
+        # investigation_started_at stamp).
+        emit_audit(
+            "tool.probe_autofix_attempted",
+            {
+                "probe": "fly",
+                "action": "restart_machine",
+                "target_id": "abc123",
+                "reason_from_reasoning": "synthetic",
+                "status": "attempted",
+            },
+            caller_session_id="probe:fly:service_unhealthy",
+            source="reasoning",
+        )
+        return captured_result
+
+    engine = MagicMock()
+    engine.respond = AsyncMock(side_effect=respond_with_autofix_side_effect)
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+
+    await consumer.consume_wake_event(_make_event())
+
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0]["details"]["autofix_attempted"] is True
+
+
+@pytest.mark.asyncio
+async def test_autofix_attempted_false_when_no_matching_session(
+    _audit_redirect,
+):
+    """An autofix row from a DIFFERENT investigation must not
+    flip autofix_attempted for this one."""
+    from kora_cli.audit.jsonl_sink import emit_audit
+
+    async def respond_with_other_session_autofix(*args, **kwargs):
+        # Different caller_session_id — should NOT match.
+        emit_audit(
+            "tool.probe_autofix_attempted",
+            {"probe": "vercel", "status": "attempted"},
+            caller_session_id="probe:vercel:deploy_failed",
+            source="reasoning",
+        )
+        r = MagicMock()
+        r.text = "done"
+        r.error = None
+        r.model_used = None
+        r.input_tokens = 0
+        r.output_tokens = 0
+        r.cache_creation_input_tokens = 0
+        r.cache_read_input_tokens = 0
+        return r
+
+    engine = MagicMock()
+    engine.respond = AsyncMock(
+        side_effect=respond_with_other_session_autofix
+    )
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+
+    await consumer.consume_wake_event(_make_event())
+
+    audit = _read_audit(_audit_redirect)
+    completed = [
+        e for e in audit if e["seam"] == "probe.investigation_completed"
+    ]
+    assert completed[0]["details"]["autofix_attempted"] is False
+
+
+@pytest.mark.asyncio
+async def test_completed_audit_swallows_emit_failure(
+    _audit_redirect, monkeypatch
+):
+    """Any failure in the audit emission path must not affect the
+    investigation outcome — best-effort posture."""
+    engine = _engine_with_tokens()
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+
+    def _emit_boom(*args, **kwargs):
+        raise RuntimeError("audit disk full")
+
+    monkeypatch.setattr(
+        "kora_cli.audit.jsonl_sink.emit_audit", _emit_boom
+    )
+
+    outcome = await consumer.consume_wake_event(_make_event())
+    # DM still went out; investigation didn't crash.
+    assert outcome.dispatched is True
+    assert outcome.dm_sent is True
+
+
+@pytest.mark.asyncio
+async def test_caller_session_id_consistent_across_all_streams(
+    _audit_redirect,
+):
+    """Single fact, single key: probe wake → autofix attempt →
+    completed → slack_dm_log. All four streams keyed by
+    probe:fly:service_unhealthy for the same investigation."""
+    from kora_cli.audit.jsonl_sink import emit_audit
+
+    # Simulated wake row (the bucket spec says this is already
+    # emitted by the probe runner per PR #163; we mint one here so
+    # the assertion runs end-to-end without the runner).
+    emit_audit(
+        "probe.wake_requested",
+        {"probe": "fly", "category": "service_unhealthy"},
+        caller_session_id="probe:fly:service_unhealthy",
+        source="cron",
+    )
+    # And an autofix-attempted row (the second of the 4 streams).
+    emit_audit(
+        "tool.probe_autofix_attempted",
+        {"probe": "fly", "status": "attempted"},
+        caller_session_id="probe:fly:service_unhealthy",
+        source="reasoning",
+    )
+
+    engine = _engine_with_tokens()
+    slack = _make_slack()
+    consumer = _make_consumer(engine=engine, slack=slack)
+    await consumer.consume_wake_event(_make_event())
+
+    audit = _read_audit(_audit_redirect)
+    log = _read_slack_log(_audit_redirect)
+
+    keys_by_seam = {e["seam"]: e["caller_session_id"] for e in audit}
+    assert (
+        keys_by_seam["probe.wake_requested"]
+        == "probe:fly:service_unhealthy"
+    )
+    assert (
+        keys_by_seam["tool.probe_autofix_attempted"]
+        == "probe:fly:service_unhealthy"
+    )
+    assert (
+        keys_by_seam["probe.investigation_completed"]
+        == "probe:fly:service_unhealthy"
+    )
+    assert log[0]["caller_session_id"] == "probe:fly:service_unhealthy"
+
+
+# ===========================================================================
+# Cost computation helper
+# ===========================================================================
+
+
+def test_compute_total_cost_usd_missing_model_returns_none():
+    from kora_cli.probes.wake_consumer import _compute_total_cost_usd
+
+    assert _compute_total_cost_usd({"model_used": None}) is None
+
+
+def test_compute_total_cost_usd_handles_zero_token_meta():
+    """A 0-token completion (canned-fallback shape) shouldn't crash
+    + should produce a numeric (possibly zero) cost when model is
+    known to the pricing registry — or None when it isn't."""
+    from kora_cli.probes.wake_consumer import _compute_total_cost_usd
+
+    out = _compute_total_cost_usd(
+        {
+            "model_used": "claude-opus-4-7",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+    )
+    # The pricing registry may or may not know this model in the
+    # test env. The contract: returns None or a float, never raises.
+    assert out is None or isinstance(out, float)
+
+
+def test_compute_total_cost_usd_swallows_pricing_exception(monkeypatch):
+    from kora_cli.probes import wake_consumer
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("pricing registry borked")
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost", _boom
+    )
+    assert (
+        wake_consumer._compute_total_cost_usd(
+            {
+                "model_used": "claude-opus-4-7",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+        )
+        is None
+    )

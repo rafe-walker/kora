@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -238,11 +239,21 @@ class ProbeWakeConsumer:
                 debounce_skipped=True,
             )
 
+        # KR-PROBE-INVESTIGATION-DATA-COMPLETION — wall-clock start
+        # so the investigation_completed audit can carry
+        # investigation_duration_ms. Also the lower bound for the
+        # audit-stream lookup that decides autofix_attempted (we
+        # only count autofix rows emitted DURING this investigation).
+        investigation_started_at = datetime.now(timezone.utc)
+        investigation_started_monotonic = time.monotonic()
+        caller_session_id = f"probe:{probe}:{category}"
+
         # Resolve engine + invoke reasoning. Failures fall through to
         # fallback-DM path.
         reasoning_text: str
         reasoning_invoked: bool = False
         reasoning_error: Optional[str] = None
+        reasoning_result: Optional[Any] = None
         engine = self._reasoning_engine_factory()
         if engine is None:
             reasoning_text = format_fallback_text(
@@ -256,7 +267,11 @@ class ProbeWakeConsumer:
             )
         else:
             try:
-                invocation_text, invocation_error = await self._invoke_reasoning(
+                (
+                    invocation_text,
+                    invocation_error,
+                    invocation_result,
+                ) = await self._invoke_reasoning(
                     engine=engine, event_details=event_details
                 )
             except Exception as exc:
@@ -275,6 +290,7 @@ class ProbeWakeConsumer:
                     probe,
                 )
             else:
+                reasoning_result = invocation_result
                 if invocation_error is None:
                     reasoning_text = invocation_text
                     reasoning_invoked = True
@@ -302,10 +318,36 @@ class ProbeWakeConsumer:
         # last_alert_ids regardless of dispatch success" contract.
         self._mark_dispatched(probe, category)
 
-        dm_sent = await self._send_operator_dm(
+        # KR-PROBE-INVESTIGATION-DATA-COMPLETION — send the DM
+        # through the routed helper so the slack_dm_log entry gets
+        # the caller_session_id alongside the reasoning meta. dm_status
+        # mirrors the panel-readable code emitted in the audit row.
+        dm_outcome = await self._send_operator_dm_routed(
             probe=probe,
             severity=severity,
             text=reasoning_text,
+            caller_session_id=caller_session_id,
+            reasoning_result=reasoning_result,
+            reasoning_error=reasoning_error,
+            investigation_started_monotonic=investigation_started_monotonic,
+        )
+        dm_sent = dm_outcome["dm_sent"]
+        dm_status = dm_outcome["dm_status"]
+
+        # Investigation-completed audit. Always emitted (success +
+        # fallback paths alike) so the viewer can render one row
+        # per dispatched investigation.
+        self._emit_investigation_completed(
+            probe=probe,
+            category=category,
+            severity=severity,
+            caller_session_id=caller_session_id,
+            reasoning_result=reasoning_result,
+            reasoning_error=reasoning_error,
+            reasoning_text_for_dm=reasoning_text,
+            dm_status=dm_status,
+            investigation_started_at=investigation_started_at,
+            investigation_started_monotonic=investigation_started_monotonic,
         )
 
         return WakeConsumeOutcome(
@@ -325,9 +367,9 @@ class ProbeWakeConsumer:
 
     async def _invoke_reasoning(
         self, *, engine: Any, event_details: Dict[str, Any]
-    ) -> Tuple[str, Optional[str]]:
+    ) -> Tuple[str, Optional[str], Optional[Any]]:
         """Build the IncomingMessage + ConversationContext, call
-        engine.respond, return ``(text, error_code)``.
+        engine.respond, return ``(text, error_code, result)``.
 
         ``error_code`` is ``None`` on success (text is the engine's
         response). On engine-returned-error (ResponseResult.error
@@ -335,6 +377,14 @@ class ProbeWakeConsumer:
         verbatim ("cost_ladder_halted" / "sdk_5xx" / etc) + ``text``
         is empty. On empty-text-success, ``error_code`` is
         ``"empty_response_text"``.
+
+        ``result`` is the raw ResponseResult (KR-PROBE-INVESTIGATION-
+        DATA-COMPLETION addition) so the caller can extract
+        model_used / token counts for the
+        ``probe.investigation_completed`` audit row + the
+        slack_dm_log outbound entry. ``None`` only when reasoning
+        couldn't run at all (engine path, not handled here — the
+        caller short-circuits in the outer ``consume_wake_event``).
 
         Engine ``respond()`` raising is left to the caller — this
         method only catches the engine's structured error paths.
@@ -371,51 +421,295 @@ class ProbeWakeConsumer:
         result = await engine.respond(message, context)
         engine_error = getattr(result, "error", None)
         if engine_error is not None:
-            return ("", str(engine_error))
+            return ("", str(engine_error), result)
         text = getattr(result, "text", "") or ""
         if not text.strip():
-            return ("", "empty_response_text")
-        return (text, None)
+            return ("", "empty_response_text", result)
+        return (text, None, result)
 
     # ------------------------------------------------------------------
     # Outbound DM
     # ------------------------------------------------------------------
 
-    async def _send_operator_dm(
-        self, *, probe: str, severity: str, text: str
-    ) -> bool:
-        """Send the DM. Returns True on success, False otherwise."""
+    async def _send_operator_dm_routed(
+        self,
+        *,
+        probe: str,
+        severity: str,
+        text: str,
+        caller_session_id: str,
+        reasoning_result: Optional[Any],
+        reasoning_error: Optional[str],
+        investigation_started_monotonic: float,
+    ) -> Dict[str, Any]:
+        """KR-PROBE-INVESTIGATION-DATA-COMPLETION — DM + outbound
+        log routing.
+
+        Closes the V1NotesBanner gap from PR #171: this method now
+        writes the same JSONL row to ``slack_dm_log.jsonl`` that a
+        handler-driven reply would, with the probe's
+        ``caller_session_id`` so CC#2's viewer can join the audit
+        streams.
+
+        Returns ``{"dm_sent": bool, "dm_status": str}``.
+        ``dm_status`` is one of:
+
+          * ``"sent"`` — post_dm + outbound log both succeeded.
+          * ``"failed_send"`` — post_dm raised OR
+            slack_client / channel_id is None. Outbound log entry
+            still written (with ``send_status="failed"``) so the
+            viewer can render the failure row.
+          * ``"engine_unavailable_fallback"`` — reasoning never
+            ran (engine None) but the fallback DM was sent
+            successfully. Distinct from ``"sent"`` so the operator
+            can identify cases where the cheap-cron alert text was
+            surfaced verbatim instead of investigated.
+          * ``"engine_unavailable_failed_send"`` — fallback path
+            AND the DM send failed.
+        """
         client = self._slack_client_factory()
-        if client is None:
-            logger.warning(
-                "[kora.probe_wake_consumer] slack_client_unavailable; "
-                "DM not sent probe=%s",
-                probe,
-            )
-            return False
         channel_id = self._operator_channel_id_resolver()
-        if not channel_id:
-            logger.warning(
-                "[kora.probe_wake_consumer] %s unset; DM not sent "
-                "probe=%s",
-                JOSHUA_SLACK_USER_ID_ENV,
-                probe,
+        is_fallback = reasoning_error is not None
+
+        if client is None or not channel_id:
+            if client is None:
+                logger.warning(
+                    "[kora.probe_wake_consumer] slack_client_unavailable; "
+                    "DM not sent probe=%s",
+                    probe,
+                )
+            else:
+                logger.warning(
+                    "[kora.probe_wake_consumer] %s unset; DM not sent "
+                    "probe=%s",
+                    JOSHUA_SLACK_USER_ID_ENV,
+                    probe,
+                )
+            # Best-effort outbound log even when client is unwired
+            # so the viewer can show "we tried but never had a
+            # transport." channel_id may be ``""`` here — emit
+            # anyway so the absence shows up in the panel.
+            self._append_outbound_log(
+                channel_id=channel_id or "",
+                text=text,
+                slack_message_ts=None,
+                send_status="failed",
+                failure_reason=(
+                    "slack_client_unavailable"
+                    if client is None
+                    else "channel_id_unset"
+                ),
+                caller_session_id=caller_session_id,
+                reasoning_result=reasoning_result,
+                reasoning_error=reasoning_error,
+                investigation_started_monotonic=investigation_started_monotonic,
             )
-            return False
+            return {
+                "dm_sent": False,
+                "dm_status": (
+                    "engine_unavailable_failed_send"
+                    if is_fallback
+                    else "failed_send"
+                ),
+            }
 
         dm_text = format_operator_dm(
             probe=probe, severity=severity, reasoning_text=text
         )
+        post_response: Optional[Dict[str, Any]] = None
+        send_exception: Optional[BaseException] = None
         try:
-            await client.post_dm(channel_id=channel_id, text=dm_text)
+            post_response = await client.post_dm(
+                channel_id=channel_id, text=dm_text
+            )
         except Exception as exc:
+            send_exception = exc
             logger.warning(
                 "[kora.probe_wake_consumer] post_dm raised %r probe=%s",
                 exc,
                 probe,
             )
-            return False
-        return True
+
+        slack_message_ts: Optional[str] = None
+        if isinstance(post_response, dict):
+            ts_raw = post_response.get("ts")
+            if isinstance(ts_raw, str):
+                slack_message_ts = ts_raw
+
+        if send_exception is not None:
+            self._append_outbound_log(
+                channel_id=channel_id,
+                text=dm_text,
+                slack_message_ts=None,
+                send_status="failed",
+                failure_reason=f"post_dm_raised:{type(send_exception).__name__}",
+                caller_session_id=caller_session_id,
+                reasoning_result=reasoning_result,
+                reasoning_error=reasoning_error,
+                investigation_started_monotonic=investigation_started_monotonic,
+            )
+            return {
+                "dm_sent": False,
+                "dm_status": (
+                    "engine_unavailable_failed_send"
+                    if is_fallback
+                    else "failed_send"
+                ),
+            }
+
+        self._append_outbound_log(
+            channel_id=channel_id,
+            text=dm_text,
+            slack_message_ts=slack_message_ts,
+            send_status="ok",
+            failure_reason=None,
+            caller_session_id=caller_session_id,
+            reasoning_result=reasoning_result,
+            reasoning_error=reasoning_error,
+            investigation_started_monotonic=investigation_started_monotonic,
+        )
+        return {
+            "dm_sent": True,
+            "dm_status": (
+                "engine_unavailable_fallback" if is_fallback else "sent"
+            ),
+        }
+
+    def _append_outbound_log(
+        self,
+        *,
+        channel_id: str,
+        text: str,
+        slack_message_ts: Optional[str],
+        send_status: str,
+        failure_reason: Optional[str],
+        caller_session_id: str,
+        reasoning_result: Optional[Any],
+        reasoning_error: Optional[str],
+        investigation_started_monotonic: float,
+    ) -> None:
+        """Best-effort wrapper around the extracted free function
+        from slack_dm_handler. Fail-soft (the underlying helper
+        already swallows OSError; this wrapper additionally guards
+        against the import or path-resolution path raising)."""
+        try:
+            from kora_cli.handlers.slack_dm_handler import (
+                append_outbound_log_entry,
+                resolve_slack_dm_log_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.probe_wake_consumer] outbound log import "
+                "failed: %r — slack_dm_log entry skipped",
+                exc,
+            )
+            return
+
+        duration_ms = int(
+            (time.monotonic() - investigation_started_monotonic) * 1000
+        )
+        meta = _reasoning_meta_from_result(reasoning_result)
+        try:
+            append_outbound_log_entry(
+                log_path=resolve_slack_dm_log_path(),
+                channel_id=channel_id,
+                thread_ts=None,
+                text=text,
+                slack_message_ts=slack_message_ts,
+                send_status=send_status,
+                failure_reason=failure_reason,
+                model_used=meta.get("model_used"),
+                input_tokens=meta.get("input_tokens"),
+                output_tokens=meta.get("output_tokens"),
+                reasoning_duration_ms=duration_ms,
+                reasoning_error=reasoning_error,
+                cache_creation_input_tokens=meta.get(
+                    "cache_creation_input_tokens"
+                ),
+                cache_read_input_tokens=meta.get("cache_read_input_tokens"),
+                caller_session_id=caller_session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.probe_wake_consumer] outbound log write raised "
+                "%r — investigation continues",
+                exc,
+            )
+
+    def _emit_investigation_completed(
+        self,
+        *,
+        probe: str,
+        category: str,
+        severity: str,
+        caller_session_id: str,
+        reasoning_result: Optional[Any],
+        reasoning_error: Optional[str],
+        reasoning_text_for_dm: str,
+        dm_status: str,
+        investigation_started_at: datetime,
+        investigation_started_monotonic: float,
+    ) -> None:
+        """KR-PROBE-INVESTIGATION-DATA-COMPLETION — emit the
+        per-investigation summary audit row. Closes the three
+        V1NotesBanner gaps from PR #171.
+
+        Best-effort: any failure here logs + is swallowed; the
+        investigation outcome is unaffected.
+        """
+        try:
+            from kora_cli.audit.jsonl_sink import emit_audit
+        except Exception as exc:
+            logger.warning(
+                "[kora.probe_wake_consumer] audit import failed: %r "
+                "— investigation_completed row skipped",
+                exc,
+            )
+            return
+
+        meta = _reasoning_meta_from_result(reasoning_result)
+        cost_usd = _compute_total_cost_usd(meta)
+        duration_ms = int(
+            (time.monotonic() - investigation_started_monotonic) * 1000
+        )
+        autofix_attempted = _autofix_attempted_during(
+            caller_session_id=caller_session_id,
+            since=investigation_started_at,
+        )
+
+        details: Dict[str, Any] = {
+            "probe": probe,
+            "issue_category": category,
+            "severity": severity,
+            "model_used": meta.get("model_used"),
+            "input_tokens": meta.get("input_tokens"),
+            "output_tokens": meta.get("output_tokens"),
+            "cache_creation_input_tokens": meta.get(
+                "cache_creation_input_tokens"
+            ),
+            "cache_read_input_tokens": meta.get("cache_read_input_tokens"),
+            "total_cost_usd": cost_usd,
+            "investigation_duration_ms": duration_ms,
+            "investigation_summary_text": reasoning_text_for_dm,
+            "dm_status": dm_status,
+            "autofix_attempted": autofix_attempted,
+        }
+        if reasoning_error is not None:
+            details["reasoning_error"] = reasoning_error
+
+        try:
+            emit_audit(
+                "probe.investigation_completed",
+                details,
+                caller_session_id=caller_session_id,
+                source="reasoning",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora.probe_wake_consumer] emit_audit raised %r — "
+                "investigation_completed row skipped",
+                exc,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -504,4 +798,150 @@ def format_fallback_text(
         f"{detail}\n"
         f"\n"
         f"I was unable to investigate — engine returned: {reason}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-investigation helpers — KR-PROBE-INVESTIGATION-DATA-COMPLETION
+# ---------------------------------------------------------------------------
+
+
+def _reasoning_meta_from_result(result: Optional[Any]) -> Dict[str, Any]:
+    """Project a ResponseResult into the 5-key meta dict the
+    outbound log + investigation_completed audit share.
+
+    Tolerant of partial attribute presence (test doubles may use
+    MagicMock without setting every field). ``result is None``
+    yields a dict of all-None values so the caller can pass them
+    through to the audit / log without branching.
+    """
+    if result is None:
+        return {
+            "model_used": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "cache_creation_input_tokens": None,
+            "cache_read_input_tokens": None,
+        }
+    return {
+        "model_used": getattr(result, "model_used", None) or None,
+        "input_tokens": getattr(result, "input_tokens", None),
+        "output_tokens": getattr(result, "output_tokens", None),
+        "cache_creation_input_tokens": getattr(
+            result, "cache_creation_input_tokens", None
+        ),
+        "cache_read_input_tokens": getattr(
+            result, "cache_read_input_tokens", None
+        ),
+    }
+
+
+def _compute_total_cost_usd(meta: Dict[str, Any]) -> Optional[float]:
+    """Compute the investigation's total cost in USD by calling the
+    canonical :func:`agent.usage_pricing.estimate_usage_cost`.
+
+    Returns ``None`` when:
+      * model_used is missing (engine didn't run / canned fallback)
+      * pricing lookup returns ``status="unknown"`` (model has no
+        registered pricing — e.g. a custom OpenRouter slug)
+      * pricing lookup returns ``status="included"`` (subscription
+        route — cost is bundled in the operator's flat fee; the
+        audit row encodes this as ``0.0`` so the panel can render
+        "(included)" without a separate null-vs-zero check)
+
+    We chose ``estimate_usage_cost`` over a ``cost_telemetry``
+    snapshot query (the alternative the spec mentioned) for two
+    reasons:
+      1. The telemetry snapshot is aggregated across all calls in
+         a window — there's no per-investigation row to fetch.
+         Picking "the most recent matching call" is racy under
+         concurrent investigations.
+      2. ``estimate_usage_cost`` is the SAME calculation
+         ``agent.cost_state_holder.record_inference`` runs to bill
+         the cost-ladder. Reusing it keeps the audit row in
+         lockstep with the holder's accounting (operator can
+         reconcile audit-sum-by-day against the daily-spend rung
+         without rounding drift).
+    """
+    model = meta.get("model_used")
+    if not model:
+        return None
+    try:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "[kora.probe_wake_consumer] usage_pricing import failed: %r",
+            exc,
+        )
+        return None
+
+    def _int_or_zero(key: str) -> int:
+        value = meta.get(key)
+        if isinstance(value, int):
+            return value
+        return 0
+
+    usage = CanonicalUsage(
+        input_tokens=_int_or_zero("input_tokens"),
+        output_tokens=_int_or_zero("output_tokens"),
+        cache_read_tokens=_int_or_zero("cache_read_input_tokens"),
+        cache_write_tokens=_int_or_zero("cache_creation_input_tokens"),
+    )
+    try:
+        result = estimate_usage_cost(str(model), usage)
+    except Exception as exc:
+        logger.warning(
+            "[kora.probe_wake_consumer] estimate_usage_cost raised %r "
+            "model=%s — total_cost_usd recorded as None",
+            exc,
+            model,
+        )
+        return None
+    if result.status == "unknown":
+        return None
+    if result.amount_usd is None:
+        return None
+    # Decimal → float at the audit boundary. JSON can't carry
+    # Decimal natively and the cost panel reads as float anyway.
+    return float(result.amount_usd)
+
+
+def _autofix_attempted_during(
+    *, caller_session_id: str, since: datetime
+) -> bool:
+    """Back-reference: did ``tool.probe_autofix_attempted`` fire
+    with the same ``caller_session_id`` since the investigation
+    started?
+
+    Reads via :func:`kora_cli.audit.jsonl_reader.read_audit_entries`
+    filtered by seam + time window, then matches the
+    ``caller_session_id`` field. Fail-soft on any reader error
+    (returns False — operator triage still gets the rest of the
+    row).
+
+    Cost: the window is per-investigation (seconds, typically
+    sub-second); reading + filtering the audit JSONL within that
+    window is O(N_recent_rows) which is bounded by the probe-wake
+    debounce + autofix-cap cadence. No race risk vs. concurrent
+    autofix emits since we only look at rows already on disk.
+    """
+    try:
+        from kora_cli.audit.jsonl_reader import read_audit_entries
+    except Exception:
+        return False
+    try:
+        entries = read_audit_entries(
+            seam="tool.probe_autofix_attempted",
+            since=since,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[kora.probe_wake_consumer] autofix back-reference read "
+            "raised %r — autofix_attempted recorded as False",
+            exc,
+        )
+        return False
+    return any(
+        getattr(e, "caller_session_id", None) == caller_session_id
+        for e in entries
     )
