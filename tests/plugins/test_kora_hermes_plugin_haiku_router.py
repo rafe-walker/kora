@@ -357,6 +357,10 @@ def test_handler_escalates_on_low_confidence_marker():
         {"role": "assistant", "content": haiku_text},
         {"role": "user", "content": REISSUE_REVIEW_PROMPT},
     ]
+    # KR-CC3-CLEANUP follow-up A: handler returns the reason so
+    # the loop can thread it into cost-telemetry per-reason
+    # breakdown.
+    assert result["escalation_reason"] == "low_confidence_marker"
 
 
 def test_handler_escalates_on_short_response_for_long_input():
@@ -378,6 +382,9 @@ def test_handler_escalates_on_short_response_for_long_input():
     )
     assert isinstance(result, dict)
     assert result["reissue_with"]["model"] == MODEL_OPUS
+    # KR-CC3-CLEANUP follow-up A: reason key distinguishes the
+    # short-response heuristic from the marker heuristic.
+    assert result["escalation_reason"] == "short_response_for_long_input"
 
 
 # ---------------------------------------------------------------------------

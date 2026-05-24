@@ -3052,12 +3052,24 @@ def run_conversation(
                 _original_response = response
                 _original_model = api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
                 _new_model = _new_kwargs.get("model")
+                # KR-CC3-CLEANUP follow-up to #189: plugins may
+                # ALSO return ``escalation_reason`` so the cost-
+                # telemetry per-reason breakdown lights up. Legacy
+                # plugins (without the key) still work — the
+                # telemetry just keeps reason=None for that call.
+                _escalation_reason = _reissue_result.get(
+                    "escalation_reason"
+                )
+                if not isinstance(_escalation_reason, str) or not _escalation_reason:
+                    _escalation_reason = None
                 logger.info(
                     "[kora_hermes] post_llm_call_can_reissue re-issuing "
-                    "API call (iteration=%s, original_model=%s, new_model=%s)",
+                    "API call (iteration=%s, original_model=%s, "
+                    "new_model=%s, escalation_reason=%s)",
                     api_call_count,
                     _original_model,
                     _new_model,
+                    _escalation_reason,
                 )
                 try:
                     api_kwargs = _new_kwargs
@@ -3074,7 +3086,19 @@ def run_conversation(
                     # escalated_to_opus=False — this adds the Opus
                     # call as a second $-burn event with the flag
                     # set so cockpit panels can compute escalation
-                    # rate per route.
+                    # rate per route. KR-CC3-CLEANUP: thread the
+                    # reason tag (post-#189 follow-up A) so cockpit
+                    # panels can also break down BY reason.
+                    #
+                    # api_call_count accounting (#189 follow-up B):
+                    # we DO NOT bump api_call_count here. The re-
+                    # issue is accounted as part of iteration N
+                    # ("transparent upgrade" semantic) — one logical
+                    # user-turn answer, one iteration. Token + $
+                    # cost is captured truthfully via two
+                    # record_inference events (Haiku + Opus); the
+                    # iteration counter remains a count of LOGICAL
+                    # iterations, not API calls.
                     try:
                         from agent.cost_ladder_wire import (
                             record_inference_from_response,
@@ -3087,6 +3111,7 @@ def run_conversation(
                             api_mode=agent.api_mode,
                             route=getattr(agent, "route", "") or "unknown",
                             escalated_to_opus=True,
+                            escalation_reason=_escalation_reason,
                         )
                     except Exception as _cl_exc:
                         logger.debug(
