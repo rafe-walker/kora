@@ -99,6 +99,116 @@ def _safe_extract(event: Dict[str, Any], *keys: str) -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
+# Outbound-log free function — KR-PROBE-INVESTIGATION-DATA-COMPLETION
+# ---------------------------------------------------------------------------
+#
+# Extracted from ``SlackDMHandler._append_outbound_log_entry`` so non-
+# handler call sites (notably ``probes/wake_consumer.py``) can write
+# entries into the same ``slack_dm_log.jsonl`` stream. The handler's
+# instance method now delegates here. Schema + None-omit semantics
+# are preserved verbatim from the prior in-class implementation —
+# JSONL consumers can't tell the entry was written by a non-handler
+# caller (intentional: the slack_dm panel doesn't need to branch).
+
+
+def append_outbound_log_entry(
+    *,
+    log_path: Path,
+    channel_id: str,
+    thread_ts: Optional[str],
+    text: str,
+    slack_message_ts: Optional[str],
+    send_status: str,
+    failure_reason: Optional[str] = None,
+    model_used: Optional[str] = None,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    reasoning_duration_ms: Optional[int] = None,
+    reasoning_error: Optional[str] = None,
+    caller_actor_kind: Optional[str] = None,
+    tools_used: Optional[List[str]] = None,
+    cache_creation_input_tokens: Optional[int] = None,
+    cache_read_input_tokens: Optional[int] = None,
+    short_circuit_category: Optional[str] = None,
+    short_circuit_pattern: Optional[str] = None,
+    # KR-PROBE-INVESTIGATION-DATA-COMPLETION — optional correlation
+    # key for non-DM call sites (probe wake consumer). Pre-existing
+    # handler-driven sends leave this ``None`` (omitted from JSONL)
+    # so the slack_dm panel keeps parsing legacy entries.
+    caller_session_id: Optional[str] = None,
+) -> None:
+    """Append one outbound-side JSONL entry to ``log_path``.
+
+    Pure I/O helper — no SlackDMHandler instance required. The
+    handler's :meth:`SlackDMHandler._append_outbound_log_entry`
+    delegates here so both call sites (handler reply path +
+    probe wake consumer DM path) write byte-identical rows.
+
+    See :meth:`SlackDMHandler._append_outbound_log_entry` for the
+    ST2 reasoning-meta field semantics. ``caller_session_id`` is
+    the KR-PROBE-INVESTIGATION-DATA-COMPLETION addition: present
+    for probe-driven DMs (``"probe:{probe}:{category}"``) so the
+    audit-stream join in CC#2's viewer V2 lights up; absent
+    (omitted) for handler-driven DM replies.
+    """
+    entry: Dict[str, Any] = {
+        "sent_at": _now_iso(),
+        "channel_id": channel_id,
+        "thread_ts": thread_ts,
+        "text": text,
+        "slack_message_ts": slack_message_ts,
+        "send_status": send_status,
+    }
+    if failure_reason:
+        entry["failure_reason"] = failure_reason
+    if model_used is not None:
+        entry["model_used"] = model_used
+    if input_tokens is not None:
+        entry["input_tokens"] = int(input_tokens)
+    if output_tokens is not None:
+        entry["output_tokens"] = int(output_tokens)
+    if reasoning_duration_ms is not None:
+        entry["reasoning_duration_ms"] = int(reasoning_duration_ms)
+    if reasoning_error is not None:
+        entry["reasoning_error"] = reasoning_error
+    if caller_actor_kind is not None:
+        entry["caller_actor_kind"] = caller_actor_kind
+    if tools_used is not None:
+        entry["tools_used"] = list(tools_used)
+    if cache_creation_input_tokens is not None:
+        entry["cache_creation_input_tokens"] = int(
+            cache_creation_input_tokens
+        )
+    if cache_read_input_tokens is not None:
+        entry["cache_read_input_tokens"] = int(cache_read_input_tokens)
+    if short_circuit_category is not None:
+        entry["short_circuit_category"] = str(short_circuit_category)
+    if short_circuit_pattern is not None:
+        entry["short_circuit_pattern"] = str(short_circuit_pattern)
+    if caller_session_id is not None:
+        entry["caller_session_id"] = str(caller_session_id)
+
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except OSError as exc:
+        logger.warning(
+            "[kora.slack_dm] outbound log write failed (%s): %r",
+            log_path,
+            exc,
+        )
+
+
+def resolve_slack_dm_log_path() -> Path:
+    """Public accessor for the canonical outbound-log path so
+    non-handler call sites can resolve it without monkeypatching
+    a private helper. Returns the same Path that
+    :class:`SlackDMHandler` would use under the same env state."""
+    return _resolve_log_path()
+
+
+# ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
 
@@ -982,65 +1092,29 @@ class SlackDMHandler:
         compatible — consumers handle absence; existing entries
         without the field keep parsing.
         """
-        entry: Dict[str, Any] = {
-            "sent_at": _now_iso(),
-            "channel_id": channel_id,
-            "thread_ts": thread_ts,
-            "text": text,
-            "slack_message_ts": slack_message_ts,
-            "send_status": send_status,
-        }
-        if failure_reason:
-            entry["failure_reason"] = failure_reason
-        # Reasoning meta — write fields when set (None is the
-        # placeholder for non-reasoning paths; recording None as a
-        # null in JSONL is fine, but skipping empties keeps the
-        # entry lean).
-        if model_used is not None:
-            entry["model_used"] = model_used
-        if input_tokens is not None:
-            entry["input_tokens"] = int(input_tokens)
-        if output_tokens is not None:
-            entry["output_tokens"] = int(output_tokens)
-        if reasoning_duration_ms is not None:
-            entry["reasoning_duration_ms"] = int(reasoning_duration_ms)
-        if reasoning_error is not None:
-            entry["reasoning_error"] = reasoning_error
-        if caller_actor_kind is not None:
-            entry["caller_actor_kind"] = caller_actor_kind
-        # tools_used: None means the engine wasn't engaged (canned
-        # fallback / no-reasoning paths); we omit the key so JSONL
-        # consumers can branch on presence. ``[]`` IS recorded —
-        # it means the engine ran + chose to use zero tools, which
-        # is a different signal than "engine didn't run."
-        if tools_used is not None:
-            entry["tools_used"] = list(tools_used)
-        # Cache-token persistence — same None-omit semantic as the
-        # other reasoning fields.
-        if cache_creation_input_tokens is not None:
-            entry["cache_creation_input_tokens"] = int(
-                cache_creation_input_tokens
-            )
-        if cache_read_input_tokens is not None:
-            entry["cache_read_input_tokens"] = int(
-                cache_read_input_tokens
-            )
-        # Short-circuit signal — same None-omit semantic.
-        if short_circuit_category is not None:
-            entry["short_circuit_category"] = str(short_circuit_category)
-        if short_circuit_pattern is not None:
-            entry["short_circuit_pattern"] = str(short_circuit_pattern)
-
-        try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._log_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
-        except OSError as exc:
-            logger.warning(
-                "[kora.slack_dm] outbound log write failed (%s): %r",
-                self._log_path,
-                exc,
-            )
+        # KR-PROBE-INVESTIGATION-DATA-COMPLETION — delegates to the
+        # free function so handler-driven sends + probe-wake-driven
+        # sends write byte-identical JSONL rows.
+        append_outbound_log_entry(
+            log_path=self._log_path,
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            text=text,
+            slack_message_ts=slack_message_ts,
+            send_status=send_status,
+            failure_reason=failure_reason,
+            model_used=model_used,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            reasoning_duration_ms=reasoning_duration_ms,
+            reasoning_error=reasoning_error,
+            caller_actor_kind=caller_actor_kind,
+            tools_used=tools_used,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            short_circuit_category=short_circuit_category,
+            short_circuit_pattern=short_circuit_pattern,
+        )
 
     def _emit_reply_failed_event(
         self, *, channel_id: str, reason: str

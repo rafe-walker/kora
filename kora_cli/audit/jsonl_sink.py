@@ -126,6 +126,21 @@ SeamName = Literal[
     # the primary use case. Source attribution is ``reasoning``
     # since invocations originate inside the reasoning loop.
     "tool.probe_autofix_attempted",
+    # KR-PROBE-INVESTIGATION-DATA-COMPLETION — per-investigation
+    # summary emitted by the wake consumer after reasoning + DM
+    # complete (or fail). Closes the three V1NotesBanner gaps CC#2
+    # surfaced in #171: dm_status (so the panel can render dm_sent
+    # without joining slack_dm_log.jsonl in the FE), per-call cost
+    # + model_used + token counts (so the panel doesn't have to
+    # query CostTelemetry aggregates), and the investigation
+    # summary text verbatim (operator-decision-relevant per the
+    # #182 precedent — Kora-composed, no external-string leakage).
+    # ``autofix_attempted`` is a back-reference to whether the
+    # ``tool.probe_autofix_attempted`` seam fired with the same
+    # caller_session_id during this investigation. Source is
+    # ``reasoning`` since the emit happens inside the wake
+    # consumer's reasoning flow.
+    "probe.investigation_completed",
     # KR-INTENT-EMAIL-TO-SEA-TICKET — operator-driven Sea_Ticket
     # creation from inbound email. Emitted from the email-inbound
     # handler when intent recognition runs on a Joshua-authored
