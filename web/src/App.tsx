@@ -99,6 +99,7 @@ import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
 import CostTelemetryPage from "@/pages/CostTelemetryPage";
+import PhrasebookPage from "@/pages/PhrasebookPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
@@ -161,6 +162,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
   "/cost-telemetry": CostTelemetryPage,
+  "/phrasebook": PhrasebookPage,
   "/capabilities": CapabilitiesPage,
   "/charter": CharterPage,
   "/kora-control": KoraControlPage,
@@ -294,6 +296,18 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "costTelemetry",
     label: "Cost Telemetry",
     icon: BarChart3,
+  },
+  {
+    // KR-FE-PHRASEBOOK-VIEWER: read-only viewer + live tester for
+    // the Slack DM short-circuit phrasebook. Adjacent to Cost
+    // Telemetry in the sidebar since both surface the cheap-
+    // substrate thesis (phrasebook hits are the $0 reply path
+    // that show up as model_used="short_circuit" in cost
+    // telemetry's model breakdown).
+    path: "/phrasebook",
+    labelKey: "phrasebook",
+    label: "Phrasebook",
+    icon: BookOpen,
   },
   {
     path: "/capabilities",
