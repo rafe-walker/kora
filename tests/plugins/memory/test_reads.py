@@ -305,7 +305,7 @@ def test_read_kora_policy_registry_31_rows_healthy_no_warning(caplog):
     """31-row workspace returns all entries and does NOT log a warning."""
     conn = _FakeConnection(fetch_result=_seed_policy_rows(31))
     pool = _FakePool(conn)
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.reads"):
+    with caplog.at_level(logging.WARNING, logger="isokron_client.reads"):
         entries = asyncio.run(read_kora_policy_registry(WORKSPACE_ID, pool))
     assert len(entries) == EXPECTED_POLICY_REGISTRY_ROW_COUNT == 31
     assert all(isinstance(e, PolicyRegistryEntry) for e in entries)
@@ -321,7 +321,7 @@ def test_read_kora_policy_registry_drift_warns_does_not_fail(caplog):
     """30 rows (1 short) warns but still returns the rows it has."""
     conn = _FakeConnection(fetch_result=_seed_policy_rows(30))
     pool = _FakePool(conn)
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.reads"):
+    with caplog.at_level(logging.WARNING, logger="isokron_client.reads"):
         entries = asyncio.run(read_kora_policy_registry(WORKSPACE_ID, pool))
     assert len(entries) == 30
     drift_warnings = [

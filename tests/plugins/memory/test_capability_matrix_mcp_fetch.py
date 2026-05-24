@@ -180,7 +180,7 @@ def test_provider_initialize_logs_capability_matrix_populated_on_success(caplog)
     setattr(provider, "_connection", _Conn())
 
     with caplog.at_level(
-        logging.INFO, logger="plugins.memory.isokron.capability_matrix_mirror"
+        logging.INFO, logger="isokron_client.capability_matrix_mirror"
     ):
         provider.initialize(session_id="s1")
 

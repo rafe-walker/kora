@@ -28,12 +28,74 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sys as _sys
+from pathlib import Path as _Path
 from typing import Any, Dict, Optional
 
-from agent.memory_provider import MemoryProvider  # noqa: F401  — surfaces us to plugin discovery
-from kora_cli.config import cfg_get
+# ---------------------------------------------------------------------------
+# isokron-client sys.path bootstrap (mirrors the plugins/marvin/__init__.py
+# pattern from #204). After ``pip install ./packages/isokron-client`` this
+# block is a no-op — ``import isokron_client`` already resolves via site-
+# packages and the duplicate sys.path entry is skipped by the membership
+# check. Required only for in-tree dev where the package isn't installed.
+# ---------------------------------------------------------------------------
+_ISOKRON_CLIENT_SRC = (
+    _Path(__file__).resolve().parents[2]
+    / "packages"
+    / "isokron-client"
+    / "src"
+)
+if _ISOKRON_CLIENT_SRC.is_dir() and str(_ISOKRON_CLIENT_SRC) not in _sys.path:
+    _sys.path.insert(0, str(_ISOKRON_CLIENT_SRC))
 
-from .provider import IsoKronMemoryProvider
+from agent.memory_provider import MemoryProvider  # noqa: F401,E402  — surfaces us to plugin discovery
+from kora_cli.config import cfg_get  # noqa: E402
+
+from .provider import IsoKronMemoryProvider  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Backward-compat re-exports — moved modules at packages/isokron-client/src/
+# isokron_client/. After the KR-KORA-PIP-RESTRUCTURE-PHASE-1 extraction the
+# substrate-functional code lives in the ``isokron_client`` package. Existing
+# Kora-internal imports of the form ``from plugins.memory.isokron.<name>
+# import X`` continue to work via the sys.modules aliasing below; the
+# attribute-style ``from plugins.memory.isokron import <name>`` works via
+# the explicit local bindings. New code SHOULD prefer ``from isokron_client.
+# <name> import X``.
+# ---------------------------------------------------------------------------
+import isokron_client as _isokron_client  # noqa: E402
+
+_MOVED_MODULES = (
+    "assigned_sea_tickets",
+    "cache",
+    "capability_check",
+    "capability_matrix_mirror",
+    "claim_heartbeat",
+    "config",
+    "connection",
+    "constitution",
+    "cost_deferred_tickets",
+    "dr_epoch",
+    "events",
+    "kora_control_reader",
+    "kora_operation_ledger",
+    "mcp_client",
+    "models",
+    "observed_kora_control",
+    "reads",
+    "relationlink",
+    "scratchpad",
+    "session_context",
+)
+for _name in _MOVED_MODULES:
+    _mod = getattr(_isokron_client, _name)
+    # Register under the old dotted name so ``from plugins.memory.isokron.<name>
+    # import X`` keeps working without per-file shim modules. The same module
+    # object is also bound as a package attribute so ``from plugins.memory.
+    # isokron import <name>`` resolves.
+    _sys.modules[f"{__name__}.{_name}"] = _mod
+    globals()[_name] = _mod
+del _name, _mod, _isokron_client
 
 logger = logging.getLogger(__name__)
 

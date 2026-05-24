@@ -37,7 +37,7 @@ in KR-6 — until then ``assert_kora_can_perform`` is a stub that always
 allows and logs ``D-kr3-st1-capability-check-deferred``.
 """
 
-from ..capability_check import (
+from isokron_client.capability_check import (
     CapabilityDeniedError,
     actor_has_capability,
     assert_kora_can_perform,

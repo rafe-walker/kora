@@ -245,7 +245,7 @@ def test_blake3_hash_mismatch_logs_warning_and_does_not_raise(caplog):
     bad["content_hash"] = "deadbeef" * 8  # intentional drift
     conn = _FakeConnection(fetch_rows=[bad])
     pool = _FakePool(conn)
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.scratchpad"):
+    with caplog.at_level(logging.WARNING, logger="isokron_client.scratchpad"):
         entries = asyncio.run(read_own_scratchpad(WORKSPACE_ID, pool))
     assert len(entries) == 1
     # Warning emitted; no exception raised.
@@ -270,7 +270,7 @@ def test_content_uri_entries_skip_integrity_check(caplog):
     )
     conn = _FakeConnection(fetch_rows=[uri_row])
     pool = _FakePool(conn)
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.scratchpad"):
+    with caplog.at_level(logging.WARNING, logger="isokron_client.scratchpad"):
         entries = asyncio.run(read_own_scratchpad(WORKSPACE_ID, pool))
     assert len(entries) == 1
     assert not entries[0].is_inline()

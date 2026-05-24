@@ -107,7 +107,13 @@ def test_package_level_reexport_still_works():
 def test_canonical_path_is_the_authoritative_source():
     """Sanity: the canonical path is the place where the public
     symbols are DEFINED (``__module__`` attribute). The shim
-    re-exports; the canonical module owns."""
+    re-exports; the canonical module owns. Post KR-KORA-PIP-
+    RESTRUCTURE-PHASE-1 the canonical path is ``kora_runtime.
+    cost_ladder.selector`` — the legacy
+    ``kora_cli.reasoning.kora_hermes_plugin.cost_ladder`` path
+    now resolves through the sys.modules alias installed by the
+    back-compat shim at ``kora_cli/reasoning/kora_hermes_plugin/
+    __init__.py``."""
     from kora_cli.reasoning.kora_hermes_plugin.cost_ladder import (
         RoutingDecision,
         select_model_pre_call,
@@ -115,9 +121,9 @@ def test_canonical_path_is_the_authoritative_source():
 
     assert (
         RoutingDecision.__module__
-        == "kora_cli.reasoning.kora_hermes_plugin.cost_ladder.selector"
+        == "kora_runtime.cost_ladder.selector"
     )
     assert (
         select_model_pre_call.__module__
-        == "kora_cli.reasoning.kora_hermes_plugin.cost_ladder.selector"
+        == "kora_runtime.cost_ladder.selector"
     )

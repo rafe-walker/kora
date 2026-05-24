@@ -36,7 +36,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List
 
-from ..scratchpad import (
+from isokron_client.scratchpad import (
     ScratchpadEntry,
     ScratchpadKind,
     VisibilityScope,
@@ -100,7 +100,7 @@ _TOOL_CAPABILITIES: Dict[str, str] = {
 # the existing import path used by iso_link.py + tests. KR-3 ST1's
 # stub (which always allowed + logged D-kr3-st1) was replaced in KR-6;
 # D-kr3-st1-capability-check-deferred is Closed.
-from ..capability_check import (  # noqa: F401 — re-exported
+from isokron_client.capability_check import (  # noqa: F401 — re-exported
     CapabilityDeniedError,
     actor_has_capability,
     assert_kora_can_perform,

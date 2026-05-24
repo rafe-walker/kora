@@ -281,7 +281,7 @@ def test_read_recent_events_defensive_on_malformed_payload(caplog):
 
             return _Ctx()
 
-    with caplog.at_level(logging.WARNING, logger="plugins.memory.isokron.events"):
+    with caplog.at_level(logging.WARNING, logger="isokron_client.events"):
         rows = asyncio.run(
             read_recent_events("ws", _FakePool(), event_type_prefix="kora.")
         )

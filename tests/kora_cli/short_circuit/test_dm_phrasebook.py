@@ -88,7 +88,13 @@ def test_package_level_reexport_still_works():
 def test_canonical_path_is_the_authoritative_source():
     """Sanity: the canonical path is where the public symbols
     are DEFINED (``__module__`` attribute). The shim re-exports;
-    the canonical module owns."""
+    the canonical module owns. Post KR-KORA-PIP-RESTRUCTURE-
+    PHASE-1 the canonical path is ``kora_runtime.short_circuit.
+    matcher`` — the legacy
+    ``kora_cli.reasoning.kora_hermes_plugin.short_circuit`` path
+    now resolves through the sys.modules alias installed by the
+    back-compat shim at ``kora_cli/reasoning/kora_hermes_plugin/
+    __init__.py``."""
     from kora_cli.reasoning.kora_hermes_plugin.short_circuit import (
         PhrasebookEntry,
         try_short_circuit,
@@ -96,9 +102,9 @@ def test_canonical_path_is_the_authoritative_source():
 
     assert (
         PhrasebookEntry.__module__
-        == "kora_cli.reasoning.kora_hermes_plugin.short_circuit.matcher"
+        == "kora_runtime.short_circuit.matcher"
     )
     assert (
         try_short_circuit.__module__
-        == "kora_cli.reasoning.kora_hermes_plugin.short_circuit.matcher"
+        == "kora_runtime.short_circuit.matcher"
     )
