@@ -313,6 +313,38 @@ function CostCardBody({ data }: { data: CostStateResponse }) {
   );
 }
 
+// KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — compact card
+// body for the "All tenants" pseudo-tenant. The dashboard's small
+// cost card can't host the side-by-side per-tenant grid (no
+// room); aggregate detail lives on /cost-state. This body
+// surfaces one-line aggregate totals + a hint to click through.
+function AggregateCostCardBody({
+  byTenant,
+}: {
+  byTenant: Record<string, { spent_to_date_usd: number | "unknown"; credit_pool_usd: number }>;
+}) {
+  const summable = Object.values(byTenant).filter(
+    (b): b is { spent_to_date_usd: number; credit_pool_usd: number } =>
+      typeof b.spent_to_date_usd === "number",
+  );
+  const totalSpent = summable.reduce((a, b) => a + b.spent_to_date_usd, 0);
+  const totalPool = summable.reduce((a, b) => a + b.credit_pool_usd, 0);
+  const count = Object.keys(byTenant).length;
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-xl font-semibold">
+        {formatUsd(totalSpent)}
+        <span className="text-xs text-muted-foreground font-normal ml-1.5">
+          / {formatUsd(totalPool)}
+        </span>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {count} tenant{count === 1 ? "" : "s"} · click for breakdown
+      </div>
+    </div>
+  );
+}
+
 function SeaCardBody({ data }: { data: KoraAssignedSeaTicketsResponse }) {
   if (data.in_progress.length > 0) {
     const t = data.in_progress[0];
@@ -1212,6 +1244,19 @@ export default function DashboardPage() {
   const [snapshotProjectedFields, setSnapshotProjectedFields] = useState<
     Set<keyof DashboardData>
   >(() => new Set());
+  // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — when the
+  // operator picks "All tenants", the cost card renders aggregate
+  // totals from snap.cost_ladder_by_tenant (the v6 sibling block
+  // from #206). The dashboard fetches the snapshot already in
+  // loadInitial — capture the block here so the cost card can
+  // surface it without a second snapshot fetch.
+  const [costLadderByTenant, setCostLadderByTenant] = useState<
+    | Record<
+        string,
+        { spent_to_date_usd: number | "unknown"; credit_pool_usd: number }
+      >
+    | null
+  >(null);
   const { toast, showToast } = useToast();
 
   const loadOne = useCallback(
@@ -1323,6 +1368,11 @@ export default function DashboardPage() {
       setSnapshotAt(snap.computed_at);
       setSnapshotProjectedFields(projectedFields);
       setLiveOverrides(new Set());
+      // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — capture
+      // the v6 by-tenant block for the aggregate cost-card body.
+      // Empty object on single-tenant deployments (the block is
+      // omitted on those daemons).
+      setCostLadderByTenant(snap.cost_ladder_by_tenant ?? {});
       setData((prev) => ({
         ...prev,
         operational: {
@@ -1552,14 +1602,24 @@ export default function DashboardPage() {
         </DashboardCard>
 
         <DashboardCard
-          title="Cost"
+          title={isAllTenants ? "Cost (all tenants)" : "Cost"}
           icon={DollarSign}
           to="/cost-state"
           status={data.cost}
           stubbed={isStubbed(data.cost)}
           onRetry={() => void loadOne("cost", () => api.getCostState({ tenantId: tenantForRead }))}
         >
-          {data.cost.state === "ready" && <CostCardBody data={data.cost.data} />}
+          {/* KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK —
+              aggregate body when the operator picks All tenants;
+              the full per-tenant side-by-side cards live on
+              /cost-state (DashboardCard's `to` already points
+              there). Falls back to the single-tenant body when
+              the snapshot's by-tenant block isn't populated. */}
+          {isAllTenants && costLadderByTenant !== null && Object.keys(costLadderByTenant).length > 0 ? (
+            <AggregateCostCardBody byTenant={costLadderByTenant} />
+          ) : (
+            data.cost.state === "ready" && <CostCardBody data={data.cost.data} />
+          )}
         </DashboardCard>
 
         <DashboardCard

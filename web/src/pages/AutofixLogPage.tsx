@@ -30,6 +30,7 @@ import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
 import { useActiveTenant } from "@/hooks/useActiveTenant";
+import { ActiveTenantBadge } from "@/components/ActiveTenantBadge";
 import { api } from "@/lib/api";
 import {
   PROBE_AUTOFIX_STATUS_VALUES,
@@ -217,7 +218,10 @@ export default function AutofixLogPage() {
   return (
     <div className="space-y-4 p-4 max-w-6xl">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <H2>Probe Autofix Log</H2>
+        <div className="flex items-center gap-2 flex-wrap">
+          <H2>Probe Autofix Log</H2>
+          <ActiveTenantBadge />
+        </div>
         <Button outlined size="sm" onClick={() => void load()} disabled={loading}>
           <RefreshCw
             className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`}

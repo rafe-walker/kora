@@ -39,6 +39,14 @@ export const TENANT_ID_QUERY_PARAM = "tenant" as const;
 export const DEFAULT_TENANT_ID = "default" as const;
 export const ALL_TENANTS_SENTINEL = "__all__" as const;
 
+// KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — operator-friendly
+// alias accepted in URL deep-links: ``?tenant=all`` resolves to the
+// ALL_TENANTS_SENTINEL pseudo-id. Keeps shareable URLs readable
+// while preserving a stable internal sentinel that won't collide
+// with a real tenant_id named "all". The internal sentinel is also
+// honored verbatim for completeness.
+export const ALL_TENANTS_URL_ALIAS = "all" as const;
+
 interface TenantsListResponse {
   tenants: string[];
 }
@@ -90,7 +98,13 @@ function useResolvedTenant(): [string, (next: string) => void] {
   const urlTenant = useMemo(() => {
     const params = new URLSearchParams(location.search);
     const v = params.get(TENANT_ID_QUERY_PARAM);
-    return v && v.trim() ? v : null;
+    if (!v || !v.trim()) return null;
+    // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — accept the
+    // operator-friendly ``?tenant=all`` alias and resolve to the
+    // canonical sentinel. The internal sentinel is also honored
+    // verbatim (round-trip safe).
+    if (v === ALL_TENANTS_URL_ALIAS) return ALL_TENANTS_SENTINEL;
+    return v;
   }, [location.search]);
 
   const [stored, setStored] = useState<string | null>(() => readStored());
@@ -113,6 +127,28 @@ function useResolvedTenant(): [string, (next: string) => void] {
   }, []);
 
   return [resolved, setActiveTenant];
+}
+
+/**
+ * KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — build the
+ * URL-form value for an active tenant. Operator-readable for the
+ * aggregate sentinel (``all`` rather than ``__all__``); literal for
+ * real tenant_ids. Used by the share-URL action so links round-trip
+ * cleanly via the URL alias path in useResolvedTenant.
+ */
+export function tenantToUrlValue(tenant: string): string {
+  return tenant === ALL_TENANTS_SENTINEL ? ALL_TENANTS_URL_ALIAS : tenant;
+}
+
+// KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — page-header
+// badges fire this event to ask the sidebar's TenantPicker to open
+// its dropdown. Decouples the badge (per-page) from the picker
+// (sidebar) without prop-drilling through Layout.
+export const OPEN_TENANT_PICKER_EVENT = "kora:open-tenant-picker" as const;
+
+export function requestOpenTenantPicker(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(OPEN_TENANT_PICKER_EVENT));
 }
 
 export function useActiveTenant(): UseActiveTenantResult {

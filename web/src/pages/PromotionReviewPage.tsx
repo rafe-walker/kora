@@ -51,6 +51,7 @@ import { H2 } from "@/components/NouiTypography";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePanelView } from "@/hooks/usePanelView";
 import { useActiveTenant } from "@/hooks/useActiveTenant";
+import { ActiveTenantBadge } from "@/components/ActiveTenantBadge";
 import { api } from "@/lib/api";
 import {
   PROMOTION_LOOP_NAMES,
@@ -1511,10 +1512,13 @@ export default function PromotionReviewPage() {
   return (
     <div className="space-y-4 p-4 max-w-5xl">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <H2 className="flex items-center gap-2">
-          <Lightbulb className="h-5 w-5" />
-          Promotion Review
-        </H2>
+        <div className="flex items-center gap-2 flex-wrap">
+          <H2 className="flex items-center gap-2">
+            <Lightbulb className="h-5 w-5" />
+            Promotion Review
+          </H2>
+          <ActiveTenantBadge />
+        </div>
         <Button
           outlined
           size="sm"

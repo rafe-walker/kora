@@ -21,10 +21,11 @@ import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api";
 import { usePanelView } from "@/hooks/usePanelView";
 import {
-  ALL_TENANTS_SENTINEL,
   DEFAULT_TENANT_ID,
   useActiveTenant,
 } from "@/hooks/useActiveTenant";
+import { ActiveTenantBadge } from "@/components/ActiveTenantBadge";
+import { AggregateCostCards } from "@/components/AggregateCostCards";
 import type {
   CostRung,
   CostStateResponse,
@@ -352,19 +353,29 @@ export default function CostStatePage() {
   // Default-expanded if there are deferred tickets (operator should see
   // them immediately for context); collapsed otherwise.
   const [historyExpanded, setHistoryExpanded] = useState<boolean | null>(null);
+  // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — increments
+  // on Reload click in aggregate mode; AggregateCostCards keys its
+  // snapshot reload on this counter.
+  const [aggregateReloadKey, setAggregateReloadKey] = useState(0);
   const { toast, showToast } = useToast();
 
   // KR-FE-TENANT-PICKER-COCKPIT-CHROME — the live cost-state read is
-  // a single-tenant view (the holder is per-tenant). "All tenants"
-  // falls back to default for this page since there's no
-  // aggregate-cost-state endpoint yet; the snapshot's
-  // cost_ladder_by_tenant block is the right cross-tenant surface
-  // (rendered on DashboardPage) — a dedicated aggregate panel is a
-  // follow-on bucket.
+  // a single-tenant view (the holder is per-tenant). When the
+  // operator picks "All tenants", the per-tenant aggregate view
+  // takes over (see AggregateCostCards) — we don't fetch the
+  // single-tenant endpoint at all in that mode.
   const tenantForRead = isAllTenants ? DEFAULT_TENANT_ID : activeTenant;
 
   const loadState = useCallback(
     (isManual: boolean) => {
+      // Aggregate view doesn't use /api/cost-state — short-circuit
+      // so we don't pin a misleading default-tenant payload onto the
+      // page state. The reload button bumps aggregateReloadKey
+      // instead.
+      if (isAllTenants) {
+        if (isManual) setAggregateReloadKey((k) => k + 1);
+        return;
+      }
       if (isManual) setRefreshing(true);
       setLoadError(null);
       api
@@ -384,14 +395,15 @@ export default function CostStatePage() {
           if (isManual) setRefreshing(false);
         });
     },
-    [historyExpanded, showToast, tenantForRead],
+    [historyExpanded, isAllTenants, showToast, tenantForRead],
   );
 
   useEffect(() => {
     loadState(false);
-    // Re-fetch when the operator switches tenants.
+    // Re-fetch when the operator switches tenants OR toggles in/out
+    // of aggregate mode (loadState early-exits in aggregate mode).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantForRead]);
+  }, [tenantForRead, isAllTenants]);
 
   const sortedReconciliation = useMemo(
     () =>
@@ -403,7 +415,10 @@ export default function CostStatePage() {
     [data],
   );
 
-  if (data === null && !loadError) {
+  // Single-tenant view needs cost-state data before rendering;
+  // aggregate view doesn't depend on /api/cost-state at all, so
+  // skip the cold-start spinner branch when isAllTenants.
+  if (!isAllTenants && data === null && !loadError) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
@@ -417,26 +432,22 @@ export default function CostStatePage() {
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <H2>Cost State</H2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <H2>Cost State</H2>
+            <ActiveTenantBadge />
+          </div>
           <p className="text-sm text-muted-foreground mt-1">
             Kora's monthly Agent SDK credit burn — rung, downshift state,
             deferred tickets.
           </p>
-          {/* KR-FE-TENANT-PICKER-COCKPIT-CHROME — surface which
-              tenant's holder we're reading. Hidden for the default
-              (no operator-noise on single-tenant deployments). */}
-          {tenantForRead !== DEFAULT_TENANT_ID && (
-            <p className="text-xs text-muted-foreground mt-1">
-              Viewing tenant:{" "}
-              <span className="font-mono text-foreground">{tenantForRead}</span>
-            </p>
-          )}
-          {activeTenant === ALL_TENANTS_SENTINEL && (
+          {/* KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK —
+              aggregate-view explainer (replaces the #207 fallback
+              note now that aggregate is real). */}
+          {isAllTenants && (
             <p className="text-xs text-muted-foreground italic mt-1">
-              "All tenants" aggregate view: falling back to{" "}
-              <span className="font-mono">default</span> for live cost-state
-              (aggregate cost panel is a follow-on bucket; see Dashboard
-              for the snapshot per-tenant cost block).
+              Aggregate view across every registered tenant. Switch the
+              tenant picker to a specific tenant for deferred tickets,
+              reconciliation history, and rate-limit pulse detail.
             </p>
           )}
         </div>
@@ -446,7 +457,15 @@ export default function CostStatePage() {
         </Button>
       </div>
 
-      {loadError && (
+      {/* KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK —
+          aggregate view: side-by-side per-tenant cards from
+          snapshot v6 cost_ladder_by_tenant. Skips the single-tenant
+          burn/deferred/reconciliation sections entirely. */}
+      {isAllTenants && (
+        <AggregateCostCards reloadKey={aggregateReloadKey} />
+      )}
+
+      {!isAllTenants && loadError && (
         <Card>
           <CardContent className="py-6 flex items-start gap-3 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4 mt-0.5" />
@@ -458,7 +477,7 @@ export default function CostStatePage() {
         </Card>
       )}
 
-      {data?.stub && (
+      {!isAllTenants && data?.stub && (
         <Card className="border-warning/40 bg-warning/10">
           <CardContent className="py-3 flex items-start gap-3 text-sm">
             <ShieldAlert className="h-4 w-4 mt-0.5 text-warning" />
@@ -475,7 +494,7 @@ export default function CostStatePage() {
         </Card>
       )}
 
-      {data && (
+      {!isAllTenants && data && (
         <>
           {/* ── Section 1: Burn summary ───────────────────────────── */}
           <Card>
