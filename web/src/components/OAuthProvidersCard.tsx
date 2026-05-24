@@ -226,6 +226,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       size="sm"
                       onClick={() => setLoginFor(p)}
                       prefix={<LogIn />}
+                      // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP —
+                      // state-aware accessible name. Generic "Login"
+                      // text doesn't tell SR users which provider
+                      // they're connecting to when several
+                      // providers are listed in the same panel.
+                      aria-label={`${t.oauth.login} ${p.name}`}
                     >
                       {t.oauth.login}
                     </Button>
@@ -244,6 +250,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       onClick={() => setDisconnectTarget(p)}
                       disabled={isBusy}
                       prefix={isBusy ? <Spinner /> : <LogOut />}
+                      aria-label={`${t.oauth.disconnect} ${p.name}`}
                     >
                       {t.oauth.disconnect}
                     </Button>

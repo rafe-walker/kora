@@ -818,6 +818,13 @@ export default function ChatPage({
         >
           <div
             ref={hostRef}
+            // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP —
+            // xterm host is the primary interactive surface on
+            // this page; without role+label SR users hear the
+            // child <canvas> only, with no announcement of what
+            // this large unfocused region is.
+            role="region"
+            aria-label="Hermes chat terminal"
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
           />
 

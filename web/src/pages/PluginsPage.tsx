@@ -442,6 +442,18 @@ function PluginRowCard(props: PluginRowCardProps) {
               disabled={busy || row.runtime_status === "enabled"}
               ghost
               size="sm"
+              // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP —
+              // state-aware accessible name. Disabled-because-
+              // already-enabled would otherwise read as generic
+              // "Enable runtime, dimmed" without telling SR
+              // users WHY it's disabled. Include the plugin
+              // name so a screen reader announcing across
+              // multiple plugins can disambiguate.
+              aria-label={
+                row.runtime_status === "enabled"
+                  ? `${row.name} is already enabled`
+                  : `Enable runtime for ${row.name}`
+              }
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
                   await api.enableAgentPlugin(row.name);
@@ -457,6 +469,11 @@ function PluginRowCard(props: PluginRowCardProps) {
               disabled={busy || row.runtime_status === "disabled"}
               ghost
               size="sm"
+              aria-label={
+                row.runtime_status === "disabled"
+                  ? `${row.name} is already disabled`
+                  : `Disable runtime for ${row.name}`
+              }
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
                   await api.disableAgentPlugin(row.name);
@@ -505,16 +522,23 @@ function PluginRowCard(props: PluginRowCardProps) {
                 ghost
                 size="sm"
                 title={row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
+                aria-label={
+                  row.user_hidden
+                    ? `Show ${row.name} in sidebar`
+                    : `Hide ${row.name} from sidebar`
+                }
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
                     await api.setPluginVisibility(row.name, !row.user_hidden);
                   });
                 }}
               >
+                {/* Icons are decorative — the button text +
+                    aria-label carry the accessible name. */}
                 {row.user_hidden ? (
-                  <EyeOff className="h-3.5 w-3.5" />
+                  <EyeOff aria-hidden className="h-3.5 w-3.5" />
                 ) : (
-                  <Eye className="h-3.5 w-3.5" />
+                  <Eye aria-hidden className="h-3.5 w-3.5" />
                 )}
                 {row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
               </Button>

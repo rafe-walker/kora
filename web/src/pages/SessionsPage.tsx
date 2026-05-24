@@ -304,7 +304,30 @@ function SessionRow({
       }`}
     >
       <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
+        // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP — give
+        // the click target keyboard + screen-reader semantics. We
+        // can't promote to <button> because the row contains
+        // nested action buttons (Resume / Delete) which would
+        // create invalid button-in-button HTML; role+tabIndex+
+        // keyboard handler is the standard workaround. aria-label
+        // surfaces the session metadata so SR users hear "Session
+        // <title> · <message count> messages · <when>".
+        role="button"
+        tabIndex={0}
+        aria-expanded={isExpanded}
+        aria-label={`Session ${
+          hasTitle ? session.title : (session.preview ?? "untitled")
+        } · ${session.message_count} messages · ${timeAgo(session.last_active)}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            // Don't trigger when the focus is on a nested
+            // button — let those handle their own keys.
+            if (e.target !== e.currentTarget) return;
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40"
         onClick={onToggle}
       >
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>

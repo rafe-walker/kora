@@ -17,6 +17,21 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
 
+  // KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP — dev-mode
+  // nudge for call sites that pass an empty description. The
+  // TypeScript signature already requires the prop; this catches
+  // the runtime ``description=""`` case (e.g., interpolated
+  // string that resolved empty). Production builds drop the
+  // branch via vite's import.meta.env.PROD substitution.
+  if (import.meta.env.DEV && open && !description.trim()) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[a11y] ConfirmDialog opened with empty description — screen readers " +
+        "rely on aria-describedby for context. title:",
+      title,
+    );
+  }
+
   // Focus the confirm button when opened; trap ESC to cancel.
   useEffect(() => {
     if (!open) return;
@@ -126,7 +141,15 @@ export function ConfirmDialog({
 interface ConfirmDialogProps {
   cancelLabel?: string;
   confirmLabel?: string;
-  description?: string;
+  /**
+   * Required (KR-FE-CONFIRMDIALOG-PROP-AND-COCKPIT-A11Y-SWEEP) —
+   * binds the dialog's ``aria-describedby`` so screen readers
+   * announce both the title (heading) and the explanation
+   * (body). Without it, the dialog announces only the title,
+   * leaving SR operators without context for the consequence
+   * of confirming. Use plain text; rich content not supported.
+   */
+  description: string;
   destructive?: boolean;
   loading?: boolean;
   onCancel: () => void;
