@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kora-cli"
+version = "0.1.0a1"
+description = "Kora operator command-line interface — Phase 2 of the KR-KORA-PIP-RESTRUCTURE program. Provides the ``kora`` console script + the per-subcommand handler surface for the carved-out subcommands. Remaining subcommands continue dispatching through the in-tree ``kora_cli.main`` until later phases finish the carve."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "CC#3 Kora Runtime", email = "kora-pm@stormhavenenterprises.com"},
+]
+# Phase 2 deps — declared PyPI sister packages from Phase 1.
+#
+# Source-only (NOT declared here):
+#   * hermes-agent — per the 2026-05-25 operator decision (Phase 1
+#     locked Hermes as source-only until battle-tested). Operator
+#     install procedure: clone + ``pip install -e ../hermes-agent``
+#     before ``pip install kora-cli``.
+#   * kora monorepo — many subcommand handlers still dispatch through
+#     ``kora_cli.main:main`` (the in-tree monolith). The kora-cli
+#     wheel ships the EXTRACTED handlers only; the fallback path
+#     requires the Kora monorepo on the Python path. ``pip install
+#     kora-cli`` standalone (without Kora monorepo) provides only the
+#     extracted subcommands; phase-2 carves the rest in subsequent
+#     buckets (task #456 — Phase 2B/2C).
+dependencies = [
+    "kora-runtime",
+    "isokron-client",
+]
+
+# Console-script entry point. ``[project.scripts]`` is the
+# pyproject.toml way to declare a CLI binary that pip installs into
+# the venv's ``bin/`` directory. Mirrors the top-level Kora
+# ``pyproject.toml``'s ``kora = "kora_cli.main:main"`` declaration —
+# whichever wheel is installed LAST wins on entry-point overlap.
+# That's deliberate: matches the Marvin POC (#204) pattern where the
+# bundled in-tree path and the pip-installed path coexist without
+# code branching.
+[project.scripts]
+kora = "kora_cli_pkg.main:cli_entrypoint"
+
+[project.urls]
+"Source" = "https://github.com/rafe-walker/kora/tree/feature/phase2-upgrades/packages/kora-cli"
+"Phase 1 + 2 Audit" = "https://github.com/rafe-walker/kora-docs/blob/main/kora_docs/14_research/kora_pip_packaging_2026-05-24/AUDIT.md"
+"Phase 2 Migration Pattern" = "https://github.com/rafe-walker/kora/tree/feature/phase2-upgrades/packages/kora-cli/PHASE-2-MIGRATION-PATTERN.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "--no-header -q"
+testpaths = ["tests"]

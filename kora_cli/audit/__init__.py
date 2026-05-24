@@ -1,4 +1,4 @@
-"""Audit sink — KR-AUDIT-JSONL-SINK.
+"""**LOCAL** audit — Kora-CLI-side JSONL sink + reader.
 
 Single helper :func:`emit_audit` that dual-writes:
 
@@ -9,9 +9,18 @@ Single helper :func:`emit_audit` that dual-writes:
 
 Substrate-backed promotion (filed as coord ask 2026-05-22) will
 turn this into a triple-writer; panels continue reading the same
-shape. See ``kora_cli/audit/jsonl_sink.py``.
+shape.
+
+⚠ **NOT substrate audit.** This subdir handles LOCAL-file audit
+only. For substrate chain-event emit, use
+``isokron_client.events.emit_kora_event``. The renamed module
+:mod:`kora_cli.audit.local_jsonl_sink` (was ``jsonl_sink``
+pre-KR-KORA-PIP-RESTRUCTURE-PHASE-1B 2026-05-24) makes the
+distinction explicit. A back-compat shim at
+``kora_cli/audit/jsonl_sink.py`` re-exports the public surface
+so existing callers keep working unchanged.
 """
 
-from kora_cli.audit.jsonl_sink import AuditEntry, emit_audit
+from kora_cli.audit.local_jsonl_sink import AuditEntry, emit_audit
 
 __all__ = ["AuditEntry", "emit_audit"]

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
-from kora_cli.audit.jsonl_sink import (
+from kora_cli.audit.local_jsonl_sink import (
     AUDIT_LOG_FILENAME,
     LOG_PATH_ENV,
     AuditEntry,
