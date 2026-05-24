@@ -36,6 +36,9 @@ from kora_cli.reasoning.kora_hermes_plugin.cost_ladder.plugin import (
 from kora_cli.reasoning.kora_hermes_plugin.cost_ladder.plugin import (
     cost_ladder_and_caching_hook as _pre_api_request_mutable,
 )
+from kora_cli.reasoning.kora_hermes_plugin.haiku_router.plugin import (
+    haiku_router_post_call_escalation as _post_llm_call_can_reissue,
+)
 from kora_cli.reasoning.kora_hermes_plugin.plugin import (
     KORA_ROUTES,
     KoraHermesPlugin,
@@ -59,6 +62,7 @@ __all__ = [
     "_is_kora_reasoning_tool",
     "_on_session_start",
     "_post_llm_call",
+    "_post_llm_call_can_reissue",
     "_post_tool_call",
     "_pre_api_request_mutable",
     "_pre_tool_call",

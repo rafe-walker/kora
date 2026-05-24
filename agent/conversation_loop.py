@@ -2996,6 +2996,119 @@ def run_conversation(
             agent._persist_session(messages, conversation_history)
             break
 
+        # KR-HERMES-LOCAL-EXT-REISSUE — post-LLM can-reissue hook.
+        # Fires AFTER messages.create returns a valid response and
+        # BEFORE downstream normalization / observer hooks / tool
+        # dispatch. A plugin can return ``{"reissue_with": <new
+        # api_kwargs>}`` to transparently re-call the API with
+        # modified kwargs; the re-issued response REPLACES the
+        # original for all downstream processing (normalize,
+        # post_api_request, post_llm_call, tool dispatch).
+        #
+        # Override semantics: matches #172/#181 — iterate plugin
+        # returns, FIRST non-None ``reissue_with`` wins. Subsequent
+        # plugin returns are ignored (single re-issue per
+        # iteration). Plugins returning None or a dict without
+        # ``reissue_with`` fall through.
+        #
+        # Anti-loop safety: the hook is NOT re-fired against the
+        # re-issued response. If the re-issued response would
+        # itself satisfy another plugin's escalation condition, the
+        # loop ignores it. This is intentional — without it, two
+        # plugins could ping-pong escalations indefinitely.
+        #
+        # Fail-safe: any exception in the hook firing OR the re-
+        # issue API call falls through to the original response.
+        # ``invoke_hook`` already wraps each callback in try/except;
+        # this outer guard protects against errors in the re-issue
+        # call itself (transport raise, validation failure, etc).
+        #
+        # Telemetry: when a re-issue fires, we feed cost-ladder
+        # ``record_inference`` for the re-issued response with
+        # ``escalated_to_opus=True``. The original Haiku call was
+        # already telemetered inside the retry-loop chokepoint with
+        # the default ``escalated_to_opus=False`` — both events
+        # land in the cost-ladder estimator so $-burn accounting
+        # stays accurate.
+        try:
+            from kora_cli.plugins import invoke_hook as _invoke_hook_reissue
+            _reissue_results = _invoke_hook_reissue(
+                "post_llm_call_can_reissue",
+                response=response,
+                api_kwargs=api_kwargs,
+                agent=agent,
+                iteration=api_call_count,
+                task_id=effective_task_id,
+                session_id=agent.session_id or "",
+                route=getattr(agent, "route", "") or "",
+            )
+            for _reissue_result in _reissue_results:
+                if not isinstance(_reissue_result, dict):
+                    continue
+                _new_kwargs = _reissue_result.get("reissue_with")
+                if not isinstance(_new_kwargs, dict):
+                    continue
+                # First non-None reissue_with wins.
+                _original_response = response
+                _original_model = api_kwargs.get("model") if isinstance(api_kwargs, dict) else None
+                _new_model = _new_kwargs.get("model")
+                logger.info(
+                    "[kora_hermes] post_llm_call_can_reissue re-issuing "
+                    "API call (iteration=%s, original_model=%s, new_model=%s)",
+                    api_call_count,
+                    _original_model,
+                    _new_model,
+                )
+                try:
+                    api_kwargs = _new_kwargs
+                    if _use_streaming:
+                        response = agent._interruptible_streaming_api_call(
+                            api_kwargs, on_first_delta=_stop_spinner
+                        )
+                    else:
+                        response = agent._interruptible_api_call(api_kwargs)
+                    api_duration = time.time() - api_start_time
+                    # Telemetry for the re-issued call. The first
+                    # call's record_inference already fired inside
+                    # the retry-loop chokepoint with the default
+                    # escalated_to_opus=False — this adds the Opus
+                    # call as a second $-burn event with the flag
+                    # set so cockpit panels can compute escalation
+                    # rate per route.
+                    try:
+                        from agent.cost_ladder_wire import (
+                            record_inference_from_response,
+                        )
+                        record_inference_from_response(
+                            response,
+                            model=_new_model or getattr(agent, "model", None),
+                            provider=agent.provider,
+                            base_url=agent.base_url,
+                            api_mode=agent.api_mode,
+                            route=getattr(agent, "route", "") or "unknown",
+                            escalated_to_opus=True,
+                        )
+                    except Exception as _cl_exc:
+                        logger.debug(
+                            "[kora_hermes] re-issue cost-ladder feed "
+                            "failed: %r",
+                            _cl_exc,
+                        )
+                except Exception as _reissue_call_exc:
+                    logger.warning(
+                        "post_llm_call_can_reissue re-issue API call "
+                        "failed: %s — falling back to original response",
+                        _reissue_call_exc,
+                    )
+                    response = _original_response
+                break  # anti-loop: at most one re-issue per iteration
+        except Exception as _reissue_exc:
+            logger.warning(
+                "post_llm_call_can_reissue hook failed: %s — "
+                "continuing with original response",
+                _reissue_exc,
+            )
+
         try:
             _transport = agent._get_transport()
             _normalize_kwargs = {}

@@ -27,6 +27,13 @@ top-level Hermes plugin entry
   5. state_holders — KR-PLUGIN-STATE-HOLDERS (this PR, Deliverable D)
      Owns: ``on_session_start`` (debug-log; holder liveness
      registry).
+  6. haiku_router — KR-HAIKU-ROUTER-PLUGIN (KR-HERMES-LOCAL-EXT-
+     REISSUE-AND-HAIKU-ROUTER-PLUGIN-PAIR — completes Lock R3-2
+     Phase C). Owns: ``post_llm_call_can_reissue`` (the new
+     local Hermes hook added by Deliverable A of the same
+     bucket). Consumes ``should_escalate_post_call`` from the
+     cost_ladder sub-plugin to fire parallel-Claude's Haiku-
+     as-Opus-context escalation pattern.
 
 # Remaining orchestrator-resident handlers
 
@@ -307,6 +314,17 @@ class KoraHermesPlugin:
 
         register_state_holders(ctx)
 
+        # KR-HAIKU-ROUTER-PLUGIN — owns post_llm_call_can_reissue.
+        # Consumes should_escalate_post_call from cost_ladder/
+        # selector.py to fire post-call Opus escalation per
+        # parallel-Claude's pattern. Registers against the new
+        # local Hermes hook added by the paired Deliverable A.
+        from kora_cli.reasoning.kora_hermes_plugin.haiku_router import (
+            register as register_haiku_router,
+        )
+
+        register_haiku_router(ctx)
+
         # --- Handlers still living in the orchestrator (await
         # their own KR-PLUGIN-* extraction buckets) ---
         ctx.register_hook(
@@ -319,7 +337,7 @@ class KoraHermesPlugin:
         )
 
         logger.info(
-            "[kora_hermes] plugin registered: 5 sub-plugins + 3 "
+            "[kora_hermes] plugin registered: 6 sub-plugins + 3 "
             "orchestrator-resident hooks against KORA_ROUTES=%s",
             sorted(KORA_ROUTES),
         )
