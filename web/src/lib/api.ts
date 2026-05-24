@@ -140,6 +140,11 @@ export const api = {
   // produced a fresh snapshot. Callers branch on `"error" in resp`.
   getSnapshot: () =>
     fetchJSON<SnapshotResponse | SnapshotUnavailable>("/api/snapshot"),
+  // KR-FE-COST-TELEMETRY-PANEL: live read for the cost-telemetry
+  // page's Lifetime window + the Force-refresh paths on the other
+  // two windows (snapshot covers rolling_24h + monthly only).
+  getCostTelemetry: () =>
+    fetchJSON<CostTelemetryResponse>("/api/cost_telemetry"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -1824,10 +1829,41 @@ export interface SnapshotResponse {
     open_count: number | "unknown";
     in_progress_count: number | "unknown";
   };
-  cost_telemetry?: unknown; // schema_version 2 (KR-CHEAP-COST-TELEMETRY)
+  // KR-CHEAP-COST-TELEMETRY (schema_version 2): snapshot carries the
+  // rolling_24h + monthly windows. process_lifetime stays endpoint-
+  // only (operator hits /api/cost_telemetry for that) so the on-disk
+  // snapshot stays bounded.
+  cost_telemetry?: {
+    rolling_24h: Record<string, RouteCounters>;
+    monthly: Record<string, RouteCounters>;
+  };
 }
 
 export interface SnapshotUnavailable {
   error: "no_snapshot";
   stale: true;
+}
+
+// Per-route cost counters — mirrors kora_cli/telemetry/cost_telemetry.py
+// _RouteCounters.to_dict at the wire. All counters initialize to 0
+// so a route with no traffic still emits a complete row (operator
+// can tell "reserved-route, no consumer yet" from missing data).
+export interface RouteCounters {
+  calls_count: number;
+  input_tokens_total: number;
+  output_tokens_total: number;
+  cache_read_tokens_total: number;
+  cache_creation_tokens_total: number;
+  cost_estimate_usd_total: number;
+  escalation_count: number;
+  model_breakdown: Record<string, number>;
+}
+
+// KR-FE-COST-TELEMETRY-PANEL: three-window source-of-truth for any
+// cost-economy decisions. process_lifetime is endpoint-only; the
+// rolling_24h + monthly windows are also in the snapshot ($0 path).
+export interface CostTelemetryResponse {
+  process_lifetime: Record<string, RouteCounters>;
+  rolling_24h: Record<string, RouteCounters>;
+  monthly: Record<string, RouteCounters>;
 }

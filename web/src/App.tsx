@@ -98,6 +98,7 @@ import AlertsPanel from "@/pages/AlertsPanel";
 import BootStatusPage from "@/pages/BootStatusPage";
 import DRStatePage from "@/pages/DRStatePage";
 import CostStatePage from "@/pages/CostStatePage";
+import CostTelemetryPage from "@/pages/CostTelemetryPage";
 import CapabilitiesPage from "@/pages/CapabilitiesPage";
 import CharterPage from "@/pages/CharterPage";
 import KoraControlPage from "@/pages/KoraControlPage";
@@ -159,6 +160,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/boot-status": BootStatusPage,
   "/dr-state": DRStatePage,
   "/cost-state": CostStatePage,
+  "/cost-telemetry": CostTelemetryPage,
   "/capabilities": CapabilitiesPage,
   "/charter": CharterPage,
   "/kora-control": KoraControlPage,
@@ -281,6 +283,17 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "costState",
     label: "Cost",
     icon: DollarSign,
+  },
+  {
+    // KR-FE-COST-TELEMETRY-PANEL: per-route burn / escalation rate /
+    // cache effectiveness — the cost-economy thesis made visible.
+    // Lives next to /cost-state in the sidebar (related domain;
+    // CostState = aggregate rung/budget, CostTelemetry = per-route
+    // breakdown).
+    path: "/cost-telemetry",
+    labelKey: "costTelemetry",
+    label: "Cost Telemetry",
+    icon: BarChart3,
   },
   {
     path: "/capabilities",
