@@ -1161,14 +1161,33 @@ class AnthropicReasoningEngine:
             max_tokens=self._max_output_tokens,
             quiet_mode=True,  # daemon path; no print() to stdout
         )
-        # Override agent.tools = [] — Kora's reasoning tools are
-        # NOT bridged into Hermes's toolset model in this ST.
-        # The bridge is the explicit ST2B follow-on bucket. With
-        # the toggle OFF in production, the bypass path retains
-        # full tool capability; toggling ON loses tool-use until
-        # ST2B lands.
-        agent.tools = []
-        agent.valid_tool_names = set()
+        # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — populate
+        # agent.tools from Kora's reasoning registry (replaces
+        # ST2's ``agent.tools = []`` toolless-only posture). The
+        # kora_hermes plugin's ``pre_tool_call_can_provide_result``
+        # hook intercepts Hermes's dispatch for these tool names
+        # and routes them to Kora's existing reasoning dispatch
+        # (``execute_reasoning_tool``). Empty list — registry
+        # unavailable / failed import — falls back to toolless
+        # route-through same as ST2.
+        try:
+            from plugins.kora_hermes import get_kora_tools_for_agent
+
+            kora_tools = get_kora_tools_for_agent()
+            agent.tools = kora_tools
+            agent.valid_tool_names = {
+                t["function"]["name"]
+                for t in kora_tools
+                if isinstance(t, dict) and "function" in t
+            }
+        except Exception as exc:
+            logger.warning(
+                "[kora.reasoning.gateway] tool-bridge tool population "
+                "failed: %r — falling back to toolless route-through",
+                exc,
+            )
+            agent.tools = []
+            agent.valid_tool_names = set()
 
         # Route field threading — kora_hermes plugin's hooks gate
         # on this. Setting it to "" (when source isn't mapped)

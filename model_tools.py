@@ -829,21 +829,56 @@ def handle_function_call(
         # to wrap every tool manually.  We use monotonic() so the value is
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
-        if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                enabled_tools=sandbox_enabled,
+
+        # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — give plugins a
+        # chance to provide the result themselves (e.g. Kora's
+        # reasoning tools are dispatched via the kora_hermes
+        # plugin, NOT via Hermes's tool registry). First non-None
+        # ``{"result": <str>}`` return wins; on no plugin result,
+        # fall through to Hermes's default ``registry.dispatch``.
+        # Fail-safe: any hook exception → caught + logged → fall
+        # through. Non-Kora-route plugins return None on their own
+        # gate; this is purely additive on the Hermes flow.
+        result: Optional[str] = None
+        try:
+            from kora_cli.plugins import invoke_hook as _invoke_hook
+            _provide_results = _invoke_hook(
+                "pre_tool_call_can_provide_result",
+                tool_name=function_name,
+                args=function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
             )
-        else:
-            result = registry.dispatch(
-                function_name, function_args,
-                task_id=task_id,
-                user_task=user_task,
+            for _provide in _provide_results:
+                if isinstance(_provide, dict):
+                    _r = _provide.get("result")
+                    if isinstance(_r, str):
+                        result = _r
+                        break
+        except Exception as _hook_err:
+            logger.debug(
+                "pre_tool_call_can_provide_result hook error: %s",
+                _hook_err,
             )
+            result = None
+
+        if result is None:
+            if function_name == "execute_code":
+                # Prefer the caller-provided list so subagents can't overwrite
+                # the parent's tool set via the process-global.
+                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                result = registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    enabled_tools=sandbox_enabled,
+                )
+            else:
+                result = registry.dispatch(
+                    function_name, function_args,
+                    task_id=task_id,
+                    user_task=user_task,
+                )
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:

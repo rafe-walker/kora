@@ -74,11 +74,11 @@ def test_plugin_is_discovered_but_opt_in():
     assert "not enabled in config" in (loaded.error or "")
 
 
-def test_register_function_wires_six_hooks():
-    """The plugin's register(ctx) function registers exactly 6
-    hooks. Test directly with a mock context — bypasses Hermes's
-    opt-in plugins.enabled gate (which is operator-policy
-    territory, not the plugin's responsibility)."""
+def test_register_function_wires_seven_hooks():
+    """The plugin's register(ctx) function registers exactly 7
+    hooks (ST2B added pre_tool_call_can_provide_result to ST1's
+    6). Test directly with a mock context — bypasses Hermes's
+    opt-in plugins.enabled gate (operator-policy territory)."""
     from plugins.kora_hermes import register
 
     registered = []
@@ -96,6 +96,7 @@ def test_register_function_wires_six_hooks():
         "pre_tool_call",
         "post_tool_call",
         "post_llm_call",
+        "pre_tool_call_can_provide_result",  # ST2B added
     ])
     # Each registered callback is callable.
     for name, callback in registered:

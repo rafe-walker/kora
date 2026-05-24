@@ -286,21 +286,183 @@ def _post_llm_call(
 
 
 # ---------------------------------------------------------------------------
+# KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — tool bridge
+# ---------------------------------------------------------------------------
+
+
+def _is_kora_reasoning_tool(tool_name: str) -> bool:
+    """True iff ``tool_name`` is one of Kora's reasoning-allowlist
+    tools (``kora__*``). Import is lazy so plugin discovery
+    doesn't fault when the registry isn't importable in CI."""
+    try:
+        from kora_cli.reasoning.tool_registry import REASONING_TOOL_ALLOWLIST
+    except Exception:
+        return False
+    return tool_name in REASONING_TOOL_ALLOWLIST
+
+
+def _tool_bridge_provide_result(
+    *,
+    tool_name: str = "",
+    args: Optional[dict] = None,
+    **kw,
+) -> Optional[dict]:
+    """Bridge handler for ``pre_tool_call_can_provide_result``.
+
+    Intercepts dispatch for Kora's reasoning tools and returns
+    the result the kora_cli reasoning code would have produced
+    in the bypass loop. Hermes's default ``registry.dispatch``
+    would otherwise fail (Kora's tools aren't registered as
+    Hermes tools).
+
+    Returns:
+      * ``{"result": <json_str>}`` when the tool IS in Kora's
+        allowlist + dispatch succeeded → short-circuits Hermes
+      * ``{"result": <json_str_with_error>}`` when the tool IS
+        in Kora's allowlist BUT dispatch raised → short-circuits
+        Hermes with an is_error result so the reasoning loop
+        sees the error rather than getting Hermes's
+        "tool not found" envelope.
+      * ``None`` when the tool isn't a Kora tool OR the call
+        isn't a Kora-route call → falls through to other plugins
+        or Hermes default. Non-Kora-route safety: Hermes-fork
+        users with this plugin loaded see no behavior change on
+        their own (non-Kora) sessions.
+
+    Implementation note: ``handle_function_call`` is sync;
+    ``execute_reasoning_tool`` is async. We bridge via
+    ``asyncio.run`` when no loop is running, OR via
+    ``asyncio.new_event_loop`` + ``run_until_complete`` when
+    nested under an existing loop (the daemon path runs
+    ``handle_function_call`` inside an ``asyncio.to_thread``
+    call from ``_respond_via_gateway`` — the thread has no
+    running loop, so ``asyncio.run`` is the right primitive).
+    """
+    import asyncio
+    import json
+
+    route = kw.get("route", "") or ""
+    # ``handle_function_call`` doesn't currently forward
+    # ``route`` to the hook (the kwargs it passes are tool_name,
+    # args, task_id, session_id, tool_call_id). For ST2B v1 we
+    # gate on the tool name's belonging to Kora's allowlist
+    # alone — this is the cleaner check anyway since the tool
+    # name uniquely identifies whether Kora can serve it.
+    # Future ST2C: thread ``route`` through the hook kwargs so
+    # we can also restrict to Kora routes (defense-in-depth).
+
+    if not _is_kora_reasoning_tool(tool_name):
+        return None
+
+    # Dispatch via Kora's reasoning tool registry.
+    try:
+        from kora_cli.reasoning.tool_registry import execute_reasoning_tool
+
+        result_model = asyncio.run(
+            execute_reasoning_tool(tool_name, args or {})
+        )
+
+        # Project the Pydantic model into a JSON string. Models
+        # have ``model_dump_json`` per the existing registry's
+        # contract; fall back to ``str()`` if not Pydantic.
+        if hasattr(result_model, "model_dump_json"):
+            result_str = result_model.model_dump_json()
+        else:
+            result_str = json.dumps(result_model, default=str)
+
+        logger.debug(
+            "[kora_hermes.tool_bridge] dispatched %s via Kora registry "
+            "(result %d chars)",
+            tool_name,
+            len(result_str),
+        )
+        return {"result": result_str}
+    except Exception as exc:
+        # Convert dispatch failure to an is_error tool_result so
+        # the reasoning loop can see the error rather than crash.
+        # Match Kora's existing bypass-loop error envelope shape
+        # (the JSON-serializable dict with ``error`` key, matching
+        # what Hermes's _sanitize_tool_error produces on its own
+        # dispatch errors).
+        error_msg = (
+            f"kora_tool_dispatch_error: {type(exc).__name__}: {exc!s}"
+        )
+        logger.exception(
+            "[kora_hermes.tool_bridge] dispatch raised for %s",
+            tool_name,
+        )
+        return {"result": json.dumps({"error": error_msg})}
+
+
+def get_kora_tools_for_agent() -> list:
+    """Return Kora's reasoning tools in Hermes/OpenAI tool shape
+    for ``agent.tools`` population. The kora_cli registry stores
+    Anthropic-shaped descriptors (``{"name", "description",
+    "input_schema"}``); Hermes's ``agent.tools`` reads
+    ``tool["function"]["name"]`` (OpenAI shape) at multiple
+    sites. We convert here so consumers (e.g.
+    ``_respond_via_gateway``) get the right shape.
+
+    Returns ``[]`` on any error (registry unavailable, schema
+    drift) — engine falls back to toolless route-through.
+    """
+    try:
+        from kora_cli.reasoning.tool_registry import (
+            get_reasoning_available_tools,
+        )
+
+        anthropic_tools = get_reasoning_available_tools() or []
+    except Exception as exc:
+        logger.warning(
+            "[kora_hermes.tool_bridge] tool registry unavailable: %r "
+            "— agent.tools stays empty",
+            exc,
+        )
+        return []
+
+    hermes_tools: list = []
+    for tool in anthropic_tools:
+        try:
+            hermes_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {}),
+                    },
+                }
+            )
+        except Exception as exc:
+            logger.warning(
+                "[kora_hermes.tool_bridge] tool %r conversion raised "
+                "%r — skipping",
+                tool.get("name", "<unknown>"),
+                exc,
+            )
+    return hermes_tools
+
+
+# ---------------------------------------------------------------------------
 # Plugin entry point — called once at plugin discovery
 # ---------------------------------------------------------------------------
 
 
 def register(ctx) -> None:
     """Plugin entry. Called by ``PluginManager.discover_and_load``
-    once at process startup. Registers Kora behaviors against the 7
-    Hermes hooks Kora's reasoning path needs."""
+    once at process startup. Registers Kora behaviors against the
+    7 Hermes hooks Kora's reasoning path needs (post-ST2B)."""
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("pre_api_request_mutable", _pre_api_request_mutable)
     ctx.register_hook("pre_tool_list_finalized", _pre_tool_list_finalized)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
     ctx.register_hook("post_llm_call", _post_llm_call)
+    # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — tool-bridge hook.
+    ctx.register_hook(
+        "pre_tool_call_can_provide_result", _tool_bridge_provide_result
+    )
     logger.info(
-        "[kora_hermes] plugin registered: 6 hooks against KORA_ROUTES=%s",
+        "[kora_hermes] plugin registered: 7 hooks against KORA_ROUTES=%s",
         sorted(KORA_ROUTES),
     )

@@ -161,6 +161,34 @@ ctx.register_background_daemon(
 
 **Thread safety**: registry methods are RLock-wrapped. Plugin discovery happens at import time on the main thread; consumers may iterate from any thread.
 
+### Extension 5: `pre_tool_call_can_provide_result` hook (added in KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B)
+
+**File**: `model_tools.py` (insertion in `handle_function_call` after the existing `pre_tool_call` block-check and before `registry.dispatch`).
+**VALID_HOOKS entry**: added between `pre_tool_list_finalized` and the `transform_llm_output` block in `kora_cli/plugins.py:155-167`.
+
+**Signature**:
+```python
+invoke_hook(
+    "pre_tool_call_can_provide_result",
+    tool_name=...,
+    args=...,
+    task_id=...,
+    session_id=...,
+    tool_call_id=...,
+)
+```
+
+**Return contract**:
+- `None` / non-dict / missing `"result"` key → no-op, fall through to other plugins, then Hermes default `registry.dispatch`
+- `{"result": "<tool_result_str>"}` → short-circuits Hermes dispatch; the plugin-provided string becomes the tool result
+- First non-None `result` wins (matches existing override-shape semantics for `pre_api_request_mutable` and `pre_tool_list_finalized`)
+
+**Failure handling**: any hook exception is caught + DEBUG-logged + fall-through to Hermes default. Fail-safe.
+
+**Backward compat**: no existing plugin registers it; non-Kora-route plugins gate themselves on tool-name or route checks (the kora_hermes plugin returns None when the tool isn't a Kora reasoning tool — confirms safety for Hermes-fork users loading the plugin).
+
+**Backward-compat for the dispatch site**: Hermes's `pre_tool_call` block-check + `post_tool_call` audit hook + `transform_tool_result` hook ALL still fire on the same code path; the new hook slots between the block-check and Hermes's default dispatch without altering observer ordering.
+
 ### Extension DEFERRED: post-LLM re-issue hook
 
 **Why deferred**: re-issuing `messages.create` inside `conversation_loop` requires re-running portions of the loop (streaming consumption, tool-result processing, conversation-history append). Each of those has substantial state machinery. Doing this safely needs a coordinated control-flow refactor — beyond the scope of this bucket per §4.
@@ -226,6 +254,16 @@ Each extension is designed to package cleanly into a future Hermes-upstream PR. 
 - [ ] **Gap before upstream**: Hermes-core would need to decide whether `route` is a free-form string (Kora's approach) OR a typed Literal (telemetry-friendly). Telemetry-friendly Literal is the safer upstream contract; Kora's current `kora_cli/telemetry/cost_telemetry.py:KNOWN_ROUTES` is a candidate vocabulary but it's Kora-specific.
 - **Upstream framing**: "Add `route: str` context field to all conversation-loop hooks. Threading purely from `getattr(agent, 'route', '')` so legacy callers (no route set) see no change. Use case: per-route observability (cost telemetry, latency tracking, debug logging that groups by use-case)."
 - **Upstream prep work needed**: extract Hermes-friendly `KNOWN_ROUTES` taxonomy + RFC the vocabulary before the PR.
+
+### Extension 5: `pre_tool_call_can_provide_result` (KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B) — **PR-ready after route-through battle-tests it**
+
+- [x] New hook added cleanly between existing block-check and Hermes default dispatch
+- [x] First-non-None-result wins; non-dict / missing-key returns no-op
+- [x] Fail-safe: hook exception → caught + logged → Hermes default dispatch
+- [x] Backward compat: existing pre_tool_call (block-check) + post_tool_call + transform_tool_result fire unchanged on the same code path
+- [x] Tests in `tests/plugins/test_kora_hermes_plugin_st2b.py` (Hermes-side wiring + Kora plugin consumer + bridge handler + Kora-tool-via-bridge sample trace + non-Kora-tool-fall-through-to-Hermes sample trace)
+- [ ] **Battle-test gap**: ST3 (default-flip) + a 24-48h burn-in is the natural integration test. After ST3 lands, this hook is upstreamable.
+- **Upstream framing**: "Allow plugins to short-circuit Hermes's tool dispatch with a plugin-computed result. Use case: a fork that maintains its own tool registry (parallel to Hermes's) wants those tools dispatched via fork code without registering them as Hermes tools. Fork-specific tool dispatch keeps the fork's code organization clean + enables behaviors (async tool dispatch, custom error envelopes, plugin-mediated security checks) that don't fit the Hermes tool registry's signature."
 
 ### Extension 4: `register_background_daemon` + registry — **PR-ready in isolation; consumer wiring is a separate PR**
 
