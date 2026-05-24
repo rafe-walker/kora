@@ -50,6 +50,11 @@ def _make_adapter():
     adapter._allow_from = set()
     adapter._group_policy = "open"
     adapter._group_allow_from = set()
+    # KR-P2-B introduced DEFAULT_REPLY_PREFIX as an instance attribute
+    # (it interpolates config.display_name). Tests that bypass __init__
+    # must seed it explicitly; the production prefix string is irrelevant
+    # to formatting tests so a fixed sentinel keeps assertions stable.
+    adapter.DEFAULT_REPLY_PREFIX = "⚕ *Kora Agent*\n────────────\n"
     return adapter
 
 

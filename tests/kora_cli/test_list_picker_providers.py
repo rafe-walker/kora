@@ -230,6 +230,13 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     monkeypatch.setattr("kora_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("kora_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
+    # list_authenticated_providers probes custom-provider /models endpoints
+    # via fetch_api_models when an api_key is set. On a dev host with a
+    # real Ollama at localhost:11434, that replaces the test's declared
+    # models with whatever is installed locally. Stub it to [] so the
+    # configured models pass through.
+    monkeypatch.setattr("kora_cli.models.fetch_api_models",
+                        lambda *a, **kw: [])
 
     result = model_switch.list_picker_providers(
         current_provider="custom:ollama",

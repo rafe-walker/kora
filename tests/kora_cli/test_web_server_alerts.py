@@ -302,15 +302,22 @@ def test_banner_uses_sessionStorage_not_localStorage():
 
 
 def test_banner_hides_when_no_active_alerts():
-    """Bucket §1(c): banner is shown ONLY when alerts.length > 0.
+    """Bucket §1(c): banner is shown ONLY when there are active alerts.
     Source-pin: the component returns null when data is empty so
-    the dashboard layout stays clean (no false-alarm trigger
-    from absent data, per bucket §4 ship-checklist)."""
+    the dashboard layout stays clean (no false-alarm trigger from
+    absent data, per bucket §4 ship-checklist).
+
+    KR-FE-DASHBOARD-SNAPSHOT-WIRE moved the source-of-truth for
+    "are there alerts to show" from ``data.alerts.length`` to
+    ``data.total_active``: the snapshot-projected path leaves the
+    per-alert array empty even when aggregate counts are non-zero,
+    so checking the array length there would hide real alerts.
+    Banner now branches on ``data.total_active === 0`` instead."""
     src = _BANNER_PATH.read_text()
     assert re.search(
-        r"data\.alerts\.length\s*===\s*0", src
+        r"data\.total_active\s*===\s*0", src
     ), (
-        "AlertsBanner.tsx should branch on data.alerts.length === 0 "
+        "AlertsBanner.tsx should branch on data.total_active === 0 "
         "and hide the banner in that case"
     )
 

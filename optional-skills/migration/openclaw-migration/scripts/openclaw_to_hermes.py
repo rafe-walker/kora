@@ -400,13 +400,14 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
 # memory entries, user profiles, SOUL.md, and workspace instructions
 # read as self-referential to the new agent identity.
 #
-# Case-preserving: ``OpenClaw`` → ``Hermes`` (prose), but lowercase matches
-# like ``openclaw`` → ``hermes`` (so filesystem paths like ``~/.openclaw``
-# become ``~/.kora`` — the real Hermes home — not the broken ``~/.Hermes``).
+# Case-preserving: ``OpenClaw`` → ``Kora`` (prose), but lowercase matches
+# like ``openclaw`` → ``kora`` (so filesystem paths like ``~/.openclaw``
+# become ``~/.kora`` — the real Kora home post-KR-1 rename — not the
+# broken ``~/.Kora``).
 _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
-    (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
-    (re.compile(r'\bMoltBot\b', re.IGNORECASE), 'Hermes'),
+    (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Kora'),
+    (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Kora'),
+    (re.compile(r'\bMoltBot\b', re.IGNORECASE), 'Kora'),
 ]
 
 

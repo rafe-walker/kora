@@ -297,8 +297,10 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
     first_parts = {p[0] for p in parts_list if len(p) > 1}
     if len(first_parts) == 1:
         prefix = first_parts.pop()
-        # Only strip if it looks like a hermes dir name
-        if prefix in {".kora", "hermes"}:
+        # Only strip if it looks like a kora/hermes-shaped dir name. Older
+        # backups landed as .hermes/...; new backups are .kora/...; both
+        # need to be importable (hermes/ kept as a no-dot legacy fallback).
+        if prefix in {".kora", ".hermes", "hermes", "kora"}:
             return prefix + "/"
 
     return ""

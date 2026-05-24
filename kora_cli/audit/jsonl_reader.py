@@ -30,6 +30,7 @@ from typing import List, Optional
 
 from kora_cli.audit.local_jsonl_sink import (
     AUDIT_LOG_FILENAME,
+    DEFAULT_TENANT_ID,
     LOG_PATH_ENV,
     AuditEntry,
 )
@@ -37,13 +38,13 @@ from kora_cli.audit.local_jsonl_sink import (
 logger = logging.getLogger(__name__)
 
 
-def _resolve_log_path() -> Path:
-    """Env override → ``<KORA_HOME>/kora_audit_log.jsonl``.
+def _resolve_log_path(tenant_id: Optional[str] = None) -> Path:
+    """Env override → per-tenant path → ``<KORA_HOME>/kora_audit_log.jsonl``.
 
     Re-resolves on every call so monkeypatch.setattr of
     ``get_kora_home`` in tests takes effect. Mirrors the resolution
     in ``jsonl_sink._resolve_log_path`` so writer + reader always
-    agree.
+    agree on which file holds which tenant's audit rows.
     """
     override = os.environ.get(LOG_PATH_ENV, "").strip()
     if override:
@@ -52,13 +53,23 @@ def _resolve_log_path() -> Path:
     # fixture patch get_kora_home in its own module namespace.
     from kora_constants import get_kora_home
 
-    return get_kora_home() / AUDIT_LOG_FILENAME
+    kora_home = get_kora_home()
+    if tenant_id is None or tenant_id == DEFAULT_TENANT_ID:
+        return kora_home / AUDIT_LOG_FILENAME
+    raw = tenant_id.strip()
+    if not raw or raw in {".", ".."}:
+        return kora_home / AUDIT_LOG_FILENAME
+    if "/" in raw or "\\" in raw or ".." in raw or raw.startswith("."):
+        return kora_home / AUDIT_LOG_FILENAME
+    return kora_home / "audit" / raw / AUDIT_LOG_FILENAME
 
 
 def read_audit_entries(
     seam: Optional[str] = None,
     limit: Optional[int] = None,
     since: Optional[datetime] = None,
+    *,
+    tenant_id: Optional[str] = None,
 ) -> List[AuditEntry]:
     """Read + project the audit JSONL into a newest-first list.
 
@@ -72,6 +83,11 @@ def read_audit_entries(
         WITHOUT a limit and apply their own cap after grouping.
       since: When non-None, drop entries with
         ``emitted_at < since``. Naive datetimes are assumed UTC.
+      tenant_id: Optional tenant scope. ``None`` or ``"default"``
+        reads the legacy single-file path; any other value reads
+        ``<KORA_HOME>/audit/<tenant_id>/kora_audit_log.jsonl``. Used
+        by the audit BE endpoints to honor the ``?tenant_id=…``
+        query param the cockpit picker sets.
 
     Behavior:
       * Missing file → empty list (fresh daemon; no error).
@@ -82,7 +98,7 @@ def read_audit_entries(
       * Non-dict JSON line (e.g. an array) → skipped.
       * Blank lines → skipped.
     """
-    path = _resolve_log_path()
+    path = _resolve_log_path(tenant_id=tenant_id)
     if not path.is_file():
         return []
 

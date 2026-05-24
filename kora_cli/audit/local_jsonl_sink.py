@@ -334,10 +334,33 @@ SourceName = Literal[
 
 LOG_PATH_ENV = "KORA_AUDIT_LOG_PATH"
 AUDIT_LOG_FILENAME = "kora_audit_log.jsonl"
+# KR-PER-TENANT-AUDIT-JSONL — sentinel for the single-tenant default
+# install. ``tenant_id=None`` callers and ``tenant_id="default"``
+# callers both land in the same legacy ``<KORA_HOME>/kora_audit_log.jsonl``
+# so existing readers (audit panel, reasoning context loader) keep
+# seeing the same file on single-tenant deployments. Anything else
+# becomes a per-tenant subdirectory under ``<KORA_HOME>/audit/<id>/``.
+DEFAULT_TENANT_ID = "default"
+# Drift-guard pin: the query-param name BE endpoints accept for
+# tenant scoping is sourced from this constant. The FE constant
+# (``web/src/lib/audit.ts``) and the BE allowlist test
+# (``tests/kora_cli/audit/test_per_tenant_audit_jsonl.py``)
+# both import-pin against this — 3-source agreement enforced.
+TENANT_ID_QUERY_PARAM_NAME = "tenant_id"
 
 
-def _resolve_log_path() -> Path:
-    """Env override → ``<KORA_HOME>/kora_audit_log.jsonl``.
+def _resolve_log_path(tenant_id: Optional[str] = None) -> Path:
+    """Env override → per-tenant path → ``<KORA_HOME>/kora_audit_log.jsonl``.
+
+    Path-resolution rules:
+      * ``KORA_AUDIT_LOG_PATH`` env override always wins (test hook).
+      * ``tenant_id`` is ``None`` or ``"default"`` → legacy single-file
+        path ``<KORA_HOME>/kora_audit_log.jsonl`` (existing readers
+        keep working unchanged on single-tenant deployments).
+      * Any other ``tenant_id`` → per-tenant subdirectory:
+        ``<KORA_HOME>/audit/<tenant_id>/kora_audit_log.jsonl``. The
+        subdir is created on first write by ``_write_entries_sync``'s
+        ``parent.mkdir(parents=True, exist_ok=True)``.
 
     Mirrors the resolver pattern used by ``slack_dm_handler``'s log
     path + the ST2 conversation context loader. Honors ``KORA_HOME``
@@ -349,7 +372,22 @@ def _resolve_log_path() -> Path:
         return Path(override)
     from kora_constants import get_kora_home
 
-    return get_kora_home() / AUDIT_LOG_FILENAME
+    kora_home = get_kora_home()
+    if tenant_id is None or tenant_id == DEFAULT_TENANT_ID:
+        return kora_home / AUDIT_LOG_FILENAME
+    # Defense against a caller passing a path-traversal-shaped tenant
+    # (e.g. ``"../foo"`` or ``"foo/../bar"``) — refuse the per-tenant
+    # routing entirely and fall back to the legacy default path. The
+    # eventual upstream is ``IdentitySpec.identity_metadata["tenant_id"]``
+    # which is operator-controlled at plugin registration time, but
+    # defense in depth here keeps the audit/ subtree's filesystem
+    # surface a flat one-dir-per-tenant tree.
+    raw = tenant_id.strip()
+    if not raw or raw in {".", ".."}:
+        return kora_home / AUDIT_LOG_FILENAME
+    if "/" in raw or "\\" in raw or ".." in raw or raw.startswith("."):
+        return kora_home / AUDIT_LOG_FILENAME
+    return kora_home / "audit" / raw / AUDIT_LOG_FILENAME
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +424,7 @@ def emit_audit(
     caller_session_id: Optional[str] = None,
     source: Optional[str] = None,
     log_path: Optional[Path] = None,
+    tenant_id: Optional[str] = None,
 ) -> None:
     """Append one JSONL audit row.
 
@@ -409,7 +448,14 @@ def emit_audit(
       source: One of :data:`SourceName` literals. ``None`` allowed
         when the seam is source-agnostic (rare).
       log_path: Override for tests. ``None`` resolves via env →
-        kora_home.
+        kora_home → per-tenant subdir.
+      tenant_id: Optional tenant scope. ``None`` or ``"default"``
+        writes to the legacy single-file path (backward-compat:
+        existing readers see the same file). Any other value routes
+        to ``<KORA_HOME>/audit/<tenant_id>/kora_audit_log.jsonl``.
+        Path source is the IdentitySpec metadata in the eventual
+        KR-PER-TENANT-IDENTITY-WIRE bucket; this signature accepts
+        the kwarg today so call sites can opt in once that lands.
 
     Behavior:
       - Best-effort writes the JSONL row to ``log_path``. OSError
@@ -439,7 +485,7 @@ def emit_audit(
         )
         return
 
-    path = log_path or _resolve_log_path()
+    path = log_path or _resolve_log_path(tenant_id=tenant_id)
     # KR-CHEAP-AUDIT-BATCHING (R3-4 #9) — route through the batched
     # sink when batching is enabled (default). The per-emit write
     # path stays available as the fallback (BATCH_SIZE_ENV=0) and

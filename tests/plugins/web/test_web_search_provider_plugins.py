@@ -77,6 +77,9 @@ class TestBundledPluginsRegister:
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
+        # xAI was added as the eighth bundled provider after the original
+        # "seven" name landed; keep this assertion in sync with the
+        # registered set rather than the historical count.
         assert names == [
             "brave-free",
             "ddgs",
@@ -85,6 +88,7 @@ class TestBundledPluginsRegister:
             "parallel",
             "searxng",
             "tavily",
+            "xai",
         ]
 
     @pytest.mark.parametrize(

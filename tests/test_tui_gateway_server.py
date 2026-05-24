@@ -3960,6 +3960,14 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "kora_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
+            # manual_chrome_debug_command has a Darwin fallback that returns
+            # an `open -a "Google Chrome"` command even when no candidates
+            # are on disk. Force None so the launch-hint branch fires on
+            # any host.
+            patch(
+                "kora_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
         ):
             resp = server.handle_request(
                 {

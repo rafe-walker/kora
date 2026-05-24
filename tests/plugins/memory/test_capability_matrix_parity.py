@@ -199,10 +199,11 @@ def test_python_mirror_matches_ts_source_for_every_kora_column_value(
 
 
 def test_python_mirror_has_expected_subset_counts():
-    """24 SEA + 25 KORA_BROADER = 49 (post-cap_unbless_convention add)."""
-    assert len(SEA_CAPABILITIES_KORA_COLUMN) == 24
-    assert len(KORA_BROADER_CAPABILITIES_KORA_COLUMN) == 25
-    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 49
+    """25 SEA + 30 KORA_BROADER = 55 (post-cap_sea_assign_ticket + K-13 +
+    Sea_Ticket claim + Kronicle author/edit additions)."""
+    assert len(SEA_CAPABILITIES_KORA_COLUMN) == 25
+    assert len(KORA_BROADER_CAPABILITIES_KORA_COLUMN) == 30
+    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 55
     # No overlap between subsets.
     overlap = set(SEA_CAPABILITIES_KORA_COLUMN) & set(
         KORA_BROADER_CAPABILITIES_KORA_COLUMN

@@ -390,8 +390,9 @@ def test_read_kora_policy_registry_passes_codec_decoded_values_through():
 def test_capability_mirror_loads_with_expected_shape():
     """The mirror is a non-empty dict with the right keys + boolean values."""
     assert isinstance(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN, dict)
-    # 24 SEA + 25 KORA_BROADER = 49 entries (cap_unbless_convention added 2026-05-20).
-    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 49
+    # 25 SEA + 30 KORA_BROADER = 55 entries (Sea v1.5 cap_sea_assign_ticket +
+    # K-13 + Sea_Ticket claim cycle + Kronicle author/edit additions).
+    assert len(ACTOR_CAPABILITY_MATRIX_KORA_COLUMN) == 55
     # Values are booleans (not strings, not ints).
     assert all(
         isinstance(v, bool) for v in ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.values()
@@ -405,11 +406,12 @@ def test_read_kora_capability_row_returns_typed_kora_row():
     row = asyncio.run(read_kora_capability_row())
     assert isinstance(row, KoraCapabilityRow)
     assert row.actor_kind == "kora"
-    # Kora has 22 granted caps (3 sea + 19 kora-broader) of the 49 total.
-    # cap_unbless_convention is operator-only → denied for Kora.
-    assert len(row.granted) == 22
+    # Kora has 28 granted caps (4 sea + 24 kora-broader) of 55 total.
+    # The 6 K-13/Sea-claim/Kronicle additions are all Kora=true plus the
+    # new SEA cap_sea_assign_ticket is Kora=true.
+    assert len(row.granted) == 28
     assert len(row.denied) == 27
-    assert len(row.granted) + len(row.denied) == 49
+    assert len(row.granted) + len(row.denied) == 55
 
 
 def test_kora_capability_row_has_lookup_is_fail_closed():

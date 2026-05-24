@@ -4995,7 +4995,7 @@ def _project_webhook_dead_letter(
 
 
 @app.get("/api/webhooks/events/recent")
-async def list_recent_webhook_events(limit: int = 50):
+async def list_recent_webhook_events(limit: int = 50, tenant_id: Optional[str] = None):
     """Return recent public-webhook events for the operator-facing lens.
 
     Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to
@@ -5030,7 +5030,7 @@ async def list_recent_webhook_events(limit: int = 50):
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 
-    all_rows = read_audit_entries(seam="webhook.dead_letter")
+    all_rows = read_audit_entries(seam="webhook.dead_letter", tenant_id=tenant_id)
     projected = [
         _project_webhook_dead_letter(e, lineno=i + 1)
         for i, e in enumerate(all_rows)
@@ -5097,7 +5097,7 @@ def _project_mcp_tool_called(entry: "AuditEntry", lineno: int) -> Dict[str, Any]
 
 
 @app.get("/api/agent-activity/recent")
-async def list_recent_agent_activity(limit: int = 50):
+async def list_recent_agent_activity(limit: int = 50, tenant_id: Optional[str] = None):
     """Return recent agent-driven MCP tool calls for the operator lens.
 
     Reads ``${KORA_HOME}/kora_audit_log.jsonl`` (written by
@@ -5108,6 +5108,15 @@ async def list_recent_agent_activity(limit: int = 50):
     Query params:
       limit — number of newest entries to return; default 50,
               capped at 200.
+      tenant_id — KR-PER-TENANT-AUDIT-JSONL: when present and not
+              ``"default"``, the read scopes to that tenant's
+              per-tenant JSONL file under
+              ``<KORA_HOME>/audit/<tenant_id>/``. Default behavior
+              (no param / ``default``) reads the legacy single-file
+              path so existing single-tenant deployments are
+              unchanged. Param name pinned to
+              :data:`TENANT_ID_QUERY_PARAM_NAME` (3-source drift
+              guard with the FE constant + test pin).
     """
     from datetime import datetime, timedelta, timezone
     from kora_cli.audit.jsonl_reader import read_audit_entries
@@ -5116,7 +5125,7 @@ async def list_recent_agent_activity(limit: int = 50):
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 
-    all_rows = read_audit_entries(seam="mcp.tool_called")
+    all_rows = read_audit_entries(seam="mcp.tool_called", tenant_id=tenant_id)
     projected = [
         _project_mcp_tool_called(e, lineno=i + 1)
         for i, e in enumerate(all_rows)
@@ -5843,7 +5852,7 @@ async def list_recent_email(limit: int = _EMAIL_DEFAULT_LIMIT):
 
 
 @app.get("/api/reasoning/recent")
-async def list_recent_reasoning(limit: int = 50):
+async def list_recent_reasoning(limit: int = 50, tenant_id: Optional[str] = None):
     """Return recent Kora ReasoningEngine calls for the operator lens.
 
     Reads ``${KORA_HOME}/kora_audit_log.jsonl`` filtered to
@@ -5880,7 +5889,7 @@ async def list_recent_reasoning(limit: int = 50):
     # Per-status aggregate (individual rows). Re-read audit since
     # the xref helper returns groups; we count INDIVIDUAL rows
     # within the 24h window for the headline (per PR #141 rationale).
-    audit_rows = read_audit_entries(seam="reasoning.tool_called")
+    audit_rows = read_audit_entries(seam="reasoning.tool_called", tenant_id=tenant_id)
     by_status: Dict[str, int] = {"ok": 0, "failed": 0, "halted": 0}
     for e in audit_rows:
         if e.emitted_at < cutoff_24h:

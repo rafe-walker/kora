@@ -148,9 +148,19 @@ def _is_blocked_device(filepath: str) -> bool:
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
+#
+# macOS note: `/var` is a symlink to `/private/var`, so realpath resolves
+# user temp dirs (mkdtemp / NSTemporaryDirectory) to `/private/var/folders/…`.
+# The /private/var/ prefix is therefore broken into specific dangerous
+# subdirs rather than blanket-blocking the whole tree — otherwise every
+# temp-file-based test on macOS gets a false-positive sensitive-path
+# refusal.  /private/var/folders/ (user temp) is intentionally NOT listed.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
+    "/private/var/db/", "/private/var/log/",
+    "/private/var/root/", "/private/var/at/",
+    "/private/var/spool/", "/private/var/mail/",
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 

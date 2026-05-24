@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1093,17 +1094,16 @@ class TestHermesHomeIsolation:
         assert hermes_home is not None, "HERMES_HOME should be set by conftest"
         assert "hermes_test" in hermes_home, "Should point to test temp dir"
 
-    def test_get_kora_home_fallback(self):
-        """Without HERMES_HOME set, falls back to the active OS home."""
+    def test_get_kora_home_fallback(self, tmp_path, monkeypatch):
+        """Without KORA_HOME/HERMES_HOME set and no legacy ~/.hermes dir on
+        the host, falls back to ~/.kora. Patches Path.home() so dev hosts
+        that DO have ~/.hermes don't trip the BC fallback."""
         from tools.tirith_security import _get_kora_home
-        with patch.dict(os.environ, {}, clear=True):
-            # Remove HERMES_HOME entirely. With HOME also absent, expanduser
-            # falls back to the account database; compute expected under the
-            # same environment instead of after patch.dict restores HOME.
-            os.environ.pop("HERMES_HOME", None)
-            expected = os.path.join(os.path.expanduser("~"), ".kora")
-            result = _get_kora_home()
-        assert result == expected
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("KORA_HOME", raising=False)
+        expected = str(tmp_path / ".kora")
+        assert _get_kora_home() == expected
 
 
 # ---------------------------------------------------------------------------

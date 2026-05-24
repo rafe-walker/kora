@@ -41,6 +41,37 @@ from plugins.memory.isokron.tools.iso_node import (
 WORKSPACE_ID = "org_test_iso_node"
 
 
+@pytest.fixture(autouse=True)
+def _restore_capability_matrix():
+    """Force ``ACTOR_CAPABILITY_MATRIX_KORA_COLUMN`` back to the
+    hand-mirrored ``SEA + KORA_BROADER`` union BEFORE each test.
+
+    Other tests (``test_provider_end_to_end``, the parity tests,
+    ``test_capability_matrix_mirror``) exercise the MCP-populate
+    path by calling ``populate_capability_matrix_from_mcp`` with
+    a small synthetic dict, which then ``.clear()`` + ``.update()``
+    the module-level mirror in place. Under xdist that mutation can
+    land on the same worker before tests here run, so the canonical
+    55-entry baseline ``assert_kora_can_perform`` expects gets
+    replaced with a 1-entry stub and lookups raise KeyError instead
+    of the documented CapabilityDeniedError. Rebuilding from the
+    static SEA + KORA_BROADER subset dicts (the documented source
+    of truth at module load) makes every test in this file
+    self-contained regardless of xdist scheduling.
+    """
+    from plugins.memory.isokron import capability_matrix_mirror as _mm
+
+    canonical = {
+        **_mm.SEA_CAPABILITIES_KORA_COLUMN,
+        **_mm.KORA_BROADER_CAPABILITIES_KORA_COLUMN,
+    }
+    _mm.ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.clear()
+    _mm.ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.update(canonical)
+    yield
+    _mm.ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.clear()
+    _mm.ACTOR_CAPABILITY_MATRIX_KORA_COLUMN.update(canonical)
+
+
 # ---------------------------------------------------------------------------
 # Fake provider — owns only the bits the tools touch
 # ---------------------------------------------------------------------------
@@ -92,6 +123,16 @@ class _FakeMcpClient:
             return {"event_id": f"evt-{self._counter:03d}"}
         if tool_name == "kora__read_kora_capability_row":
             return {"capability_matrix": {"cap_write_agent_scratchpad": True}}
+        if tool_name == "kora__create_relationlink":
+            # K-13 added iso_link_create → kora__create_relationlink; tests
+            # in this module don't assert on the relationlink payload, just
+            # that the call doesn't crash. Return a canonical-shape ack
+            # matching plugins/memory/isokron/relationlink.py's expected
+            # response (link_id + chain_event_id, both UUID strings).
+            return {
+                "link_id": f"rl-{self._counter:03d}",
+                "chain_event_id": f"evt-{self._counter:03d}",
+            }
         raise AssertionError(f"unexpected tool {tool_name!r}")
 
 

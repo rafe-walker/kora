@@ -84,7 +84,26 @@ class _FakeConn:
         self._pool = pool
 
     async def fetchrow(self, _sql: str, *_args: Any) -> Any:
+        # KoraControlReader's pre-claim SELECT against public.kora_control
+        # isn't seeded by these tests — return None so "no active STOP"
+        # lets the claim path proceed without consuming the queued rows
+        # meant for actor/ticket queries.
+        if "FROM public.kora_control" in _sql:
+            return None
         return self._pool.rows.pop(0) if self._pool.rows else None
+
+    async def execute(self, _sql: str, *_args: Any) -> str:
+        return "SELECT 1"
+
+    def transaction(self) -> Any:
+        class _Tx:
+            async def __aenter__(self_inner) -> Any:
+                return None
+
+            async def __aexit__(self_inner, *exc: Any) -> bool:
+                return False
+
+        return _Tx()
 
 
 class _FakeConnection:

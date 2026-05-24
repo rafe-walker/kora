@@ -379,7 +379,7 @@ class TestDaytonaBulkDownload:
         env._daytona_bulk_download(dest)
 
         tar_cmd = env._sandbox.process.exec.call_args_list[0][0][0]
-        assert "home/daytona/.hermes" in tar_cmd
+        assert "home/daytona/.kora" in tar_cmd
 
 
 class TestDaytonaCleanup:

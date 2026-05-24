@@ -353,11 +353,14 @@ def test_panel_inventory_count_matches_expected():
     # KR-TEST-STABILITY (#202): bumped 34 → 46. CC#2's PromotionReview
     # multi-loop extend (#423) + alert investigations viewer (#427) +
     # multi-tenant nav restructure (#428) + email-intent/snapshot-expand
-    # panels each added 1-3 pages. Update alongside any page-set
-    # change so the pin stays accurate.
-    assert len(pages) == 46, (
+    # panels each added 1-3 pages.
+    # #206+#207 megabucket: first-run wizard chrome (CC#2 #205) +
+    # tenant-picker cockpit prep landed CronPage.tsx for #207 work,
+    # bumping 46 → 47. Update alongside any page-set change so the pin
+    # stays accurate.
+    assert len(pages) == 47, (
         f"top-level page count drifted: found {len(pages)}, "
-        f"expected 46 (KR-PANEL-USE-INSTRUMENTATION snapshot). "
+        f"expected 47 (KR-PANEL-USE-INSTRUMENTATION snapshot). "
         f"Update this assertion when adding/removing pages so the "
         f"instrumentation audit stays accurate."
     )

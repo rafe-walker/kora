@@ -38,6 +38,12 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
+# Marvin POC plugin (KR-PIP-PACKAGING-FOUNDATION) bundles its identity
+# markdown files inside the wheel; un-ignore that specific data dir so
+# the pyproject.toml ``[tool.setuptools.package-data] marvin = ["data/*.md"]``
+# wheel manifest has source files to include.
+!plugins/marvin/src/marvin/data/
+!plugins/marvin/src/marvin/data/*
 node_modules/
 browser-use/
 agent-browser/

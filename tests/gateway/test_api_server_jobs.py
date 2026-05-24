@@ -151,6 +151,7 @@ class TestCreateJob:
                     "name": "test-job",
                     "schedule": "*/5 * * * *",
                     "prompt": "do something",
+                    "work_class": "local_only",
                 })
                 assert resp.status == 200
                 data = await resp.json()

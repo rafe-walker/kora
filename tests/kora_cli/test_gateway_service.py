@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,6 +15,18 @@ from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+)
+
+
+# Several test classes below exercise systemd / systemctl behavior that
+# the gateway only supports on Linux. macOS has no systemd, no user D-Bus
+# socket, and no systemctl binary — production raises
+# UserSystemdUnavailableError immediately. Skip those classes on darwin
+# so the suite stays green on a developer mac; CI runs on Linux and
+# exercises them in full.
+_LINUX_ONLY_SYSTEMD = pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="systemd surface is Linux-only; macOS has no systemctl/D-Bus",
 )
 
 
@@ -37,6 +50,7 @@ class TestUserSystemdPrivateSocketPreflight:
         assert calls == ["env"]
 
 
+@_LINUX_ONLY_SYSTEMD
 class TestSystemdServiceRefresh:
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
@@ -736,6 +750,7 @@ class TestGatewayServiceDetection:
 
         assert gateway_cli._is_service_running() is False
 
+@_LINUX_ONLY_SYSTEMD
 class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
@@ -1179,6 +1194,7 @@ class TestDetectVenvDir:
         assert result is None
 
 
+@_LINUX_ONLY_SYSTEMD
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 

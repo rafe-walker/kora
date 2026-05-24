@@ -36,7 +36,7 @@ class TestGetHermesHomeProfileWarning:
         """Classic mode: no active_profile file → silent, returns ~/.kora."""
         result = fresh_constants.get_kora_home()
         assert result == tmp_path / ".kora"
-        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+        assert "KORA_HOME fallback" not in capsys.readouterr().err
 
     def test_default_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
@@ -47,7 +47,7 @@ class TestGetHermesHomeProfileWarning:
         (hermes_dir / "active_profile").write_text("default\n")
         result = fresh_constants.get_kora_home()
         assert result == tmp_path / ".kora"
-        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+        assert "KORA_HOME fallback" not in capsys.readouterr().err
 
     def test_named_profile_unset_home_warns_once(
         self, fresh_constants, tmp_path, capsys
@@ -63,7 +63,7 @@ class TestGetHermesHomeProfileWarning:
         assert result == tmp_path / ".kora"
         # 2. Stderr got the warning exactly once
         err = capsys.readouterr().err
-        assert err.count("HERMES_HOME fallback") == 1
+        assert err.count("KORA_HOME fallback") == 1
         assert "'coder'" in err
         assert "#18594" in err
 
@@ -71,7 +71,7 @@ class TestGetHermesHomeProfileWarning:
         fresh_constants.get_kora_home()
         fresh_constants.get_kora_home()
         err2 = capsys.readouterr().err
-        assert "HERMES_HOME fallback" not in err2
+        assert "KORA_HOME fallback" not in err2
 
     def test_hermes_home_set_suppresses_warning(
         self, fresh_constants, tmp_path, capsys, monkeypatch
@@ -85,7 +85,7 @@ class TestGetHermesHomeProfileWarning:
         result = fresh_constants.get_kora_home()
 
         assert result == profile_dir
-        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+        assert "KORA_HOME fallback" not in capsys.readouterr().err
 
     def test_unreadable_active_profile_no_crash(
         self, fresh_constants, tmp_path, capsys
@@ -100,7 +100,7 @@ class TestGetHermesHomeProfileWarning:
 
         assert result == tmp_path / ".kora"
         # Shouldn't crash; shouldn't warn either (can't tell what profile was intended)
-        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+        assert "KORA_HOME fallback" not in capsys.readouterr().err
 
     def test_empty_active_profile_no_warning(
         self, fresh_constants, tmp_path, capsys
@@ -113,4 +113,4 @@ class TestGetHermesHomeProfileWarning:
         result = fresh_constants.get_kora_home()
 
         assert result == tmp_path / ".kora"
-        assert "HERMES_HOME fallback" not in capsys.readouterr().err
+        assert "KORA_HOME fallback" not in capsys.readouterr().err
