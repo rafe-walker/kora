@@ -151,6 +151,19 @@ VALID_HOOKS: Set[str] = {
     # override wins. Enables route-specific tool manifests
     # without mutating ``agent.tools`` (which is process-wide).
     "pre_tool_list_finalized",
+    # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — fires inside
+    # ``model_tools.handle_function_call`` AFTER the
+    # ``pre_tool_call`` block-check and BEFORE Hermes's default
+    # ``registry.dispatch``. Plugins return ``{"result":
+    # "<tool_result_str>"}`` to short-circuit Hermes dispatch
+    # with a plugin-provided result. First non-None ``result``
+    # wins. Returning ``None`` (or non-dict / missing
+    # ``result`` key) falls through to other plugins, then
+    # Hermes default. Fail-safe: plugin exception → log + fall
+    # through. Enables fork-specific tool registries (e.g.
+    # Kora's reasoning tools) to dispatch via plugin code
+    # without registering them as Hermes-native tools.
+    "pre_tool_call_can_provide_result",
     # Transform LLM output before it's returned to the user.
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.

@@ -351,7 +351,15 @@ async def test_respond_via_gateway_end_to_end(
     assert ctor_kwargs["quiet_mode"] is True
 
     # Post-construction tool override + route set.
-    assert fake_agent.tools == []
+    # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B — agent.tools is
+    # now populated from Kora's reasoning registry (no longer
+    # the toolless ``[]``). Verify shape: list of Hermes-shaped
+    # tool dicts ``{"type": "function", "function": {...}}``.
+    assert isinstance(fake_agent.tools, list)
+    assert len(fake_agent.tools) >= 1
+    for t in fake_agent.tools:
+        assert t["type"] == "function"
+        assert "name" in t["function"]
     assert fake_agent.route == "slack_dm"
 
     # Result projection.

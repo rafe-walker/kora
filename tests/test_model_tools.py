@@ -54,9 +54,21 @@ class TestHandleFunctionCall:
             )
 
         assert result == '{"ok":true}'
+        # KR-REASONING-ROUTE-THROUGH-GATEWAY-ST2B added the new
+        # ``pre_tool_call_can_provide_result`` hook between
+        # pre_tool_call's block-check and Hermes's
+        # registry.dispatch. Updated to reflect the new sequence.
         assert mock_invoke_hook.call_args_list == [
             call(
                 "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+            ),
+            call(
+                "pre_tool_call_can_provide_result",
                 tool_name="web_search",
                 args={"q": "test"},
                 task_id="task-1",
