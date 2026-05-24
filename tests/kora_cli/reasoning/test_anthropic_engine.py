@@ -426,8 +426,13 @@ async def test_system_prompt_passed_to_sdk(
         system_prompt_path=system_prompt_path, client=client
     )
     await engine.respond(_msg(), _ctx())
+    # KR-CHEAP-PROMPT-CACHING — system is now a content-block list
+    # (not a bare string) so cache_control: ephemeral can attach.
+    # See test_anthropic_engine_caching.py for the full cache-shape
+    # contract; this test just verifies the prompt text is reachable.
     system = client.messages.create.await_args.kwargs["system"]
-    assert "Kora" in system
+    assert isinstance(system, list)
+    assert "Kora" in system[0]["text"]
 
 
 # ---------------------------------------------------------------------------
