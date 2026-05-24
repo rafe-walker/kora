@@ -1,0 +1,279 @@
+<!--
+  Static visual preview of CostTelemetryPage in 3 window states.
+  Mirrors the JSX produced by web/src/pages/CostTelemetryPage.tsx
+  with the same Tailwind-equivalent classes so reviewers see what
+  the operator will see. Open in any browser; the screenshot
+  rendered from this file is committed at states.png.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Kora — CostTelemetryPage (KR-FE-COST-TELEMETRY-PANEL)</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --fg: #ededed;
+      --muted: #8b8b8b;
+      --muted-bg: #1a1a1a;
+      --card: #131313;
+      --border: #2a2a2a;
+      --success: #4ade80;
+      --warning: #facc15;
+      --destructive: #f87171;
+      --primary: #60a5fa;
+      --blue: #3b82f6;
+    }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, ui-sans-serif, system-ui, sans-serif;
+      padding: 32px;
+      max-width: 1200px;
+    }
+    h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+    h2 { font-size: 13px; font-weight: 500; color: var(--muted);
+         margin: 32px 0 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .preamble { color: var(--muted); font-size: 12px; max-width: 720px; line-height: 1.5; }
+    .card { background: var(--card); border: 1px solid var(--border);
+            border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .card .title { font-size: 13px; font-weight: 500; margin-bottom: 12px; }
+    .tab-row { display: inline-flex; border: 1px solid var(--border);
+               border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+    .tab { padding: 6px 12px; font-size: 11px; background: var(--card);
+           color: var(--fg); cursor: pointer; border: none; border-right: 1px solid var(--border); }
+    .tab:last-child { border-right: none; }
+    .tab.active { background: var(--primary); color: #001; }
+    .source-label { font-size: 11px; color: var(--muted); margin-left: 12px; }
+    .totals { font-size: 11px; color: var(--muted); }
+    .totals .mono { color: var(--fg); font-family: ui-monospace, monospace; }
+
+    .bar { display: flex; height: 8px; border-radius: 4px;
+           border: 1px solid var(--border); overflow: hidden;
+           background: var(--muted-bg); margin-bottom: 8px; }
+    .bar > div { height: 100%; }
+    .legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 11px; }
+    .legend .item { display: flex; align-items: center; gap: 6px; }
+    .legend .swatch { width: 8px; height: 8px; border-radius: 2px; }
+
+    table { width: 100%; font-size: 11px; border-collapse: collapse; }
+    th { text-align: left; font-weight: 500; color: var(--muted);
+         padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+    th.right { text-align: right; }
+    td { padding: 6px 12px 6px 0; border-bottom: 1px solid rgba(42, 42, 42, 0.5); font-family: ui-monospace, monospace; }
+    td.right { text-align: right; }
+    tr.awaiting td { color: var(--muted); }
+    .awaiting-marker { display: inline-flex; align-items: center; gap: 6px; font-style: italic; }
+    .badge-outline { padding: 1px 6px; border: 1px solid var(--border);
+                     border-radius: 4px; font-family: ui-monospace, monospace; font-size: 10px; }
+
+    .text-success { color: var(--success); }
+    .text-warning { color: var(--warning); }
+    .text-destructive { color: var(--destructive); }
+    .text-muted { color: var(--muted); font-style: italic; }
+
+    .escalation-help { font-size: 10px; color: var(--muted);
+                       font-style: italic; margin-top: 8px; }
+
+    .force-btn { display: inline-flex; align-items: center; gap: 4px;
+                 padding: 4px 8px; border: 1px solid var(--border);
+                 border-radius: 4px; background: var(--card); color: var(--fg);
+                 font-size: 11px; cursor: pointer; }
+
+    .header-row { display: flex; justify-content: space-between;
+                  align-items: flex-start; gap: 16px; margin-bottom: 16px;
+                  flex-wrap: wrap; }
+    .header-row .subtitle { font-size: 11px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <h1>KR-FE-COST-TELEMETRY-PANEL — CostTelemetryPage</h1>
+  <p class="preamble">
+    Three windows × three subsections. Cache effectiveness (cache_read /
+    cache_creation / uncached bar), per-route breakdown (table with
+    [Awaiting consumer] markers for reserved routes), model breakdown
+    (cheap→expensive stacked bar). Escalation rate color bands per
+    feedback-opus-escalation-must-be-earned (5–15% green target).
+  </p>
+
+  <!-- ────────────────────────────────────────────────────────── -->
+  <h2>1. Rolling 24h (default — $0 snapshot path)</h2>
+  <div class="header-row">
+    <div>
+      <div style="font-size: 16px; font-weight: 600;">Cost Telemetry</div>
+      <div class="subtitle">Per-route burn, escalation rate, cache effectiveness — the cost-economy thesis made visible.</div>
+    </div>
+    <button class="force-btn">⟳ Force live refresh</button>
+  </div>
+  <div>
+    <div class="tab-row">
+      <button class="tab">Lifetime</button>
+      <button class="tab active">Rolling 24h</button>
+      <button class="tab">Monthly</button>
+    </div>
+    <span class="source-label">Source: $0 snapshot · snapshot from 2m ago</span>
+  </div>
+
+  <div class="card">
+    <div class="title" style="display: flex; justify-content: space-between;">
+      <span>Cache effectiveness</span>
+      <span class="totals">Total spend in window: <span class="mono">$1.23</span> across <span class="mono">1,234</span> calls</span>
+    </div>
+    <div class="bar">
+      <div style="width: 72%; background: var(--success);"></div>
+      <div style="width: 18%; background: var(--warning);"></div>
+      <div style="width: 10%; background: rgba(139, 139, 139, 0.4);"></div>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background: var(--success);"></span>Cache reads: 72% of input</span>
+      <span class="item"><span class="swatch" style="background: var(--warning);"></span>Cache writes: 18%</span>
+      <span class="item"><span class="swatch" style="background: rgba(139, 139, 139, 0.4);"></span>Uncached: 10%</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">Per-route breakdown</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Route</th>
+          <th class="right">Calls</th>
+          <th class="right">Tokens (in / out)</th>
+          <th class="right">Cost</th>
+          <th class="right">Escalation rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>slack_dm</td><td class="right">1,234</td><td class="right">234.0k / 45.0k</td><td class="right">$1.23</td><td class="right text-success">8.3%</td></tr>
+        <tr class="awaiting"><td>email_inbound</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-EMAIL-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>email_outbound_compose</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-EMAIL-OUTBOUND-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>mcp_tool</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-MCP-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>alert_investigation</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-ALERT-INVESTIGATION-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>probe_investigation</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-PROBE-INVESTIGATION-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>tool_loop_iteration</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-TOOL-LOOP-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>scheduled_task</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-SCHEDULED-TASK-COST-BILL</span></span></td></tr>
+        <tr><td>unknown <span style="font-size: 10px; color: var(--muted); font-style: italic;">(agent-side fallback)</span></td><td class="right">123</td><td class="right">23.0k / 4.0k</td><td class="right">$0.12</td><td class="right text-muted">—</td></tr>
+      </tbody>
+    </table>
+    <div class="escalation-help">Escalation rate target: 5–15% green · &lt;5% or 15–30% yellow · &gt;30% red (per feedback-opus-escalation-must-be-earned). "pre-router" until KR-HAIKU-ROUTER ships.</div>
+  </div>
+
+  <div class="card">
+    <div class="title">Model breakdown</div>
+    <div class="bar">
+      <div style="width: 7%; background: var(--primary);"></div>
+      <div style="width: 78%; background: var(--success);"></div>
+      <div style="width: 0%; background: var(--warning);"></div>
+      <div style="width: 15%; background: var(--blue);"></div>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background: var(--primary);"></span><code class="mono">short_circuit</code><span style="color: var(--muted);">7%</span></span>
+      <span class="item"><span class="swatch" style="background: var(--success);"></span><code class="mono">claude-haiku-4-5</code><span style="color: var(--muted);">78%</span></span>
+      <span class="item"><span class="swatch" style="background: var(--blue);"></span><code class="mono">claude-opus-4-7</code><span style="color: var(--muted);">15%</span></span>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────── -->
+  <h2>2. Lifetime (process_lifetime — endpoint-only, always live)</h2>
+  <div>
+    <div class="tab-row">
+      <button class="tab active">Lifetime</button>
+      <button class="tab">Rolling 24h</button>
+      <button class="tab">Monthly</button>
+    </div>
+    <span class="source-label">Source: live (endpoint)</span>
+  </div>
+
+  <div class="card">
+    <div class="title" style="display: flex; justify-content: space-between;">
+      <span>Cache effectiveness</span>
+      <span class="totals">Total spend in window: <span class="mono">$45.67</span> across <span class="mono">38,291</span> calls</span>
+    </div>
+    <div class="bar">
+      <div style="width: 81%; background: var(--success);"></div>
+      <div style="width: 12%; background: var(--warning);"></div>
+      <div style="width: 7%; background: rgba(139, 139, 139, 0.4);"></div>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background: var(--success);"></span>Cache reads: 81% of input</span>
+      <span class="item"><span class="swatch" style="background: var(--warning);"></span>Cache writes: 12%</span>
+      <span class="item"><span class="swatch" style="background: rgba(139, 139, 139, 0.4);"></span>Uncached: 7%</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">Per-route breakdown</div>
+    <table>
+      <thead>
+        <tr><th>Route</th><th class="right">Calls</th><th class="right">Tokens (in / out)</th><th class="right">Cost</th><th class="right">Escalation rate</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>slack_dm</td><td class="right">38,140</td><td class="right">7.84M / 1.42M</td><td class="right">$44.12</td><td class="right text-warning">22.4%</td></tr>
+        <tr class="awaiting"><td>email_inbound</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-EMAIL-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>mcp_tool</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-MCP-COST-BILL</span></span></td></tr>
+        <tr><td>unknown <span style="font-size: 10px; color: var(--muted); font-style: italic;">(agent-side fallback)</span></td><td class="right">151</td><td class="right">28.0k / 4.8k</td><td class="right">$1.55</td><td class="right text-muted">—</td></tr>
+      </tbody>
+    </table>
+    <div class="escalation-help">Escalation rate target: 5–15% green · &lt;5% or 15–30% yellow · &gt;30% red. "pre-router" until KR-HAIKU-ROUTER ships.</div>
+  </div>
+
+  <div class="card">
+    <div class="title">Model breakdown</div>
+    <div class="bar">
+      <div style="width: 9%; background: var(--primary);"></div>
+      <div style="width: 68%; background: var(--success);"></div>
+      <div style="width: 1%; background: var(--warning);"></div>
+      <div style="width: 22%; background: var(--blue);"></div>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background: var(--primary);"></span><code class="mono">short_circuit</code><span style="color: var(--muted);">9%</span></span>
+      <span class="item"><span class="swatch" style="background: var(--success);"></span><code class="mono">claude-haiku-4-5</code><span style="color: var(--muted);">68%</span></span>
+      <span class="item"><span class="swatch" style="background: var(--warning);"></span><code class="mono">claude-sonnet-4-6</code><span style="color: var(--muted);">1%</span></span>
+      <span class="item"><span class="swatch" style="background: var(--blue);"></span><code class="mono">claude-opus-4-7</code><span style="color: var(--muted);">22%</span></span>
+    </div>
+  </div>
+
+  <!-- ────────────────────────────────────────────────────────── -->
+  <h2>3. Monthly (snapshot path + pre-router state demo)</h2>
+  <div>
+    <div class="tab-row">
+      <button class="tab">Lifetime</button>
+      <button class="tab">Rolling 24h</button>
+      <button class="tab active">Monthly</button>
+    </div>
+    <span class="source-label">Source: $0 snapshot · snapshot from 2m ago</span>
+  </div>
+
+  <div class="card">
+    <div class="title" style="display: flex; justify-content: space-between;">
+      <span>Cache effectiveness</span>
+      <span class="totals">Total spend in window: <span class="mono">$3.41</span> across <span class="mono">2,847</span> calls</span>
+    </div>
+    <div class="bar">
+      <div style="width: 65%; background: var(--success);"></div>
+      <div style="width: 25%; background: var(--warning);"></div>
+      <div style="width: 10%; background: rgba(139, 139, 139, 0.4);"></div>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="swatch" style="background: var(--success);"></span>Cache reads: 65% of input</span>
+      <span class="item"><span class="swatch" style="background: var(--warning);"></span>Cache writes: 25%</span>
+      <span class="item"><span class="swatch" style="background: rgba(139, 139, 139, 0.4);"></span>Uncached: 10%</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">Per-route breakdown — pre-router state (escalation logic not shipped yet)</div>
+    <table>
+      <thead>
+        <tr><th>Route</th><th class="right">Calls</th><th class="right">Tokens (in / out)</th><th class="right">Cost</th><th class="right">Escalation rate</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>slack_dm</td><td class="right">2,847</td><td class="right">534.0k / 89.0k</td><td class="right">$3.41</td><td class="right text-muted">pre-router</td></tr>
+        <tr class="awaiting"><td>email_inbound</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-EMAIL-COST-BILL</span></span></td></tr>
+        <tr class="awaiting"><td>mcp_tool</td><td colspan="4"><span class="awaiting-marker">ⓘ [Awaiting consumer] <span class="badge-outline">KR-MCP-COST-BILL</span></span></td></tr>
+      </tbody>
+    </table>
+    <div class="escalation-help">Escalation rate target: 5–15% green · &lt;5% or 15–30% yellow · &gt;30% red. "pre-router" until KR-HAIKU-ROUTER ships.</div>
+  </div>
+</body>
+</html>
