@@ -164,6 +164,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            # KR-HERMES-LOCAL-EXTENSIONS — route field.
+            route=getattr(agent, "route", "") or "",
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
@@ -511,6 +513,11 @@ def run_conversation(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # KR-HERMES-LOCAL-EXTENSIONS — route taxonomy for
+            # per-route telemetry / decision-making. Defaults to
+            # "" when caller hasn't set ``agent.route`` (preserves
+            # backward compat with legacy CLI invocations).
+            route=getattr(agent, "route", "") or "",
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:
@@ -989,6 +996,43 @@ def run_conversation(
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                # KR-HERMES-LOCAL-EXTENSIONS — mutable
+                # pre-API-request hook. Fires BEFORE the
+                # observer-only ``pre_api_request`` so the
+                # observer sees the final (possibly-overridden)
+                # api_kwargs. Plugins return ``{"override": {...}}``
+                # to replace specific keys (e.g. ``"model"``).
+                # Multiple plugin returns merge left-to-right —
+                # last write wins for conflicting keys.
+                try:
+                    from kora_cli.plugins import invoke_hook as _invoke_hook_mutable
+                    _mutable_results = _invoke_hook_mutable(
+                        "pre_api_request_mutable",
+                        task_id=effective_task_id,
+                        session_id=agent.session_id or "",
+                        user_message=original_user_message,
+                        platform=agent.platform or "",
+                        model=api_kwargs.get("model", agent.model),
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        api_call_count=api_call_count,
+                        api_kwargs=dict(api_kwargs),  # defensive copy
+                        route=getattr(agent, "route", "") or "",
+                    )
+                    for _mutable_result in _mutable_results:
+                        if not isinstance(_mutable_result, dict):
+                            continue
+                        _override = _mutable_result.get("override")
+                        if isinstance(_override, dict):
+                            api_kwargs.update(_override)
+                except Exception as _hook_exc:
+                    logger.warning(
+                        "pre_api_request_mutable hook failed: %s — "
+                        "continuing with un-modified api_kwargs",
+                        _hook_exc,
+                    )
+
                 try:
                     from kora_cli.plugins import invoke_hook as _invoke_hook
                     request_messages = api_kwargs.get("messages")
@@ -1020,6 +1064,8 @@ def run_conversation(
                         approx_input_tokens=approx_tokens,
                         request_char_count=total_chars,
                         max_tokens=agent.max_tokens,
+                        # KR-HERMES-LOCAL-EXTENSIONS — route field.
+                        route=getattr(agent, "route", "") or "",
                     )
                 except Exception:
                     pass
@@ -3003,6 +3049,8 @@ def run_conversation(
                     assistant_message=assistant_message,
                     assistant_content_chars=len(_assistant_text),
                     assistant_tool_call_count=len(_assistant_tool_calls),
+                    # KR-HERMES-LOCAL-EXTENSIONS — route field.
+                    route=getattr(agent, "route", "") or "",
                 )
             except Exception:
                 pass
@@ -3977,6 +4025,8 @@ def run_conversation(
                 session_id=agent.session_id or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                # KR-HERMES-LOCAL-EXTENSIONS — route field.
+                route=getattr(agent, "route", "") or "",
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
@@ -4000,6 +4050,8 @@ def run_conversation(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                # KR-HERMES-LOCAL-EXTENSIONS — route field.
+                route=getattr(agent, "route", "") or "",
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -4114,6 +4166,8 @@ def run_conversation(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            # KR-HERMES-LOCAL-EXTENSIONS — route field.
+            route=getattr(agent, "route", "") or "",
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

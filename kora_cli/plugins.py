@@ -130,6 +130,27 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "transform_terminal_output",
     "transform_tool_result",
+    # KR-HERMES-LOCAL-EXTENSIONS — mutable counterpart to
+    # ``pre_api_request``. Fires at the api_kwargs construction
+    # site (after ``_build_api_kwargs`` returns + before the
+    # observer-only ``pre_api_request`` hook). Plugins return a
+    # dict ``{"override": {<kwarg_name>: <value>, ...}}`` to
+    # replace specific keys in the api_kwargs dict before it
+    # reaches the SDK (e.g. ``{"model": "claude-haiku-4-5-..."}``).
+    # Multiple plugins → overrides merge left-to-right (last
+    # write wins for conflicting keys). Backward-compat: an
+    # existing plugin that ignores ``pre_api_request_mutable``
+    # sees no behavior change; the observer ``pre_api_request``
+    # hook still fires after the mutable one applies.
+    "pre_api_request_mutable",
+    # KR-HERMES-LOCAL-EXTENSIONS — fires inside
+    # ``chat_completion_helpers.build_api_kwargs`` right after
+    # ``agent.tools`` is read. Plugins return a dict
+    # ``{"override": [<tool>, ...]}`` to filter / replace the
+    # tool list for that single API call. First non-None
+    # override wins. Enables route-specific tool manifests
+    # without mutating ``agent.tools`` (which is process-wide).
+    "pre_tool_list_finalized",
     # Transform LLM output before it's returned to the user.
     # Plugins return a string to replace the response text, or None/empty to leave unchanged.
     # First non-None string wins. Useful for vocabulary/personality transformation.
@@ -692,6 +713,66 @@ class PluginContext:
         self._manager._plugin_platform_names.add(name)
         logger.debug(
             "Plugin %s registered platform: %s",
+            self.manifest.name,
+            name,
+        )
+
+    # -- background-daemon registration (KR-HERMES-LOCAL-EXTENSIONS) -------
+
+    def register_background_daemon(
+        self,
+        name: str,
+        startup: Callable,
+        shutdown: Callable,
+        *,
+        periodic_task: Optional[Any] = None,
+        shutdown_timeout: float = 5.0,
+    ) -> None:
+        """Register a background-daemon plugin entry.
+
+        Distinct from :meth:`register_platform` (which is for
+        interactive chat-platform adapters bound to a session-
+        driven main loop) and from :meth:`register_hook` (which
+        is for event-driven lifecycle callbacks). Background
+        daemons run from process boot to shutdown, independent
+        of any chat session.
+
+        Args:
+          name: unique identifier (raises if already registered).
+          startup: callable invoked once at consumer-driven
+            start; receives the consumer's coordinator object.
+            May be sync or async.
+          shutdown: callable invoked once at consumer-driven
+            shutdown. May be sync or async.
+          periodic_task: optional ``PeriodicTaskSpec`` for
+            interval-based callbacks. ``None`` → event-driven only.
+          shutdown_timeout: max seconds to wait on ``shutdown()``
+            before force-cancel. Default 5s.
+
+        The actual lifecycle execution (running startup, driving
+        periodic_task, calling shutdown) is the consumer's
+        responsibility — see
+        ``agent.background_daemon_registry`` module docstring.
+        Today's primary consumer is Kora's ``DaemonCoordinator``;
+        the gateway's consumer wiring lands in a follow-on
+        bucket (KR-REASONING-ROUTE-THROUGH-GATEWAY).
+        """
+        from agent.background_daemon_registry import (
+            BackgroundDaemonEntry,
+            background_daemon_registry,
+        )
+
+        entry = BackgroundDaemonEntry(
+            name=name,
+            startup=startup,
+            shutdown=shutdown,
+            periodic_task=periodic_task,
+            shutdown_timeout=shutdown_timeout,
+            plugin_name=self.manifest.name,
+        )
+        background_daemon_registry().register(entry)
+        logger.debug(
+            "Plugin %s registered background daemon: %s",
             self.manifest.name,
             name,
         )
