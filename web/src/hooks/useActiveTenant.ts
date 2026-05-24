@@ -39,6 +39,15 @@ export const TENANT_ID_QUERY_PARAM = "tenant" as const;
 export const DEFAULT_TENANT_ID = "default" as const;
 export const ALL_TENANTS_SENTINEL = "__all__" as const;
 
+// KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — operator's most-
+// recent picks (most-recent-first), capped at 5 entries. Drives
+// the TenantPicker's "Recent" section that surfaces fast-access
+// switching for operators who toggle between 2-3 tenants. Empty
+// on single-tenant deployments. Updated on every setActiveTenant
+// call (including aggregate sentinel and "default").
+export const RECENT_TENANTS_STORAGE_KEY = "kora_recent_tenants" as const;
+export const RECENT_TENANTS_CAP = 5 as const;
+
 // KR-FE-MULTI-TENANT-COCKPIT-AGGREGATE-AND-DEEPLINK — operator-friendly
 // alias accepted in URL deep-links: ``?tenant=all`` resolves to the
 // ALL_TENANTS_SENTINEL pseudo-id. Keeps shareable URLs readable
@@ -75,6 +84,61 @@ function writeStored(value: string): void {
   }
 }
 
+// KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — recent-tenants
+// localStorage read. Returns a sanitized list: only string
+// entries, deduped, capped. Corrupt JSON / wrong shape silently
+// resets to []; the picker then renders without the Recent
+// section. A subsequent setActiveTenant call rebuilds the list
+// cleanly.
+function readRecent(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_TENANTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of parsed) {
+      if (typeof entry !== "string") continue;
+      if (!entry.trim()) continue;
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      out.push(entry);
+      if (out.length >= RECENT_TENANTS_CAP) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function writeRecent(next: string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      RECENT_TENANTS_STORAGE_KEY,
+      JSON.stringify(next),
+    );
+    window.dispatchEvent(new Event("kora:recent-tenants-changed"));
+  } catch {
+    // Best-effort.
+  }
+}
+
+/**
+ * Push ``picked`` onto the head of the recent list; dedupe; cap.
+ * Pure helper so the test in the picker test-doubles can exercise
+ * the order semantics without round-tripping through localStorage.
+ */
+export function pushRecentTenant(
+  current: readonly string[],
+  picked: string,
+): string[] {
+  const next = [picked, ...current.filter((t) => t !== picked)];
+  return next.slice(0, RECENT_TENANTS_CAP);
+}
+
 export interface UseActiveTenantResult {
   /** "default", another tenant_id, or ALL_TENANTS_SENTINEL for aggregate view. */
   activeTenant: string;
@@ -87,6 +151,14 @@ export interface UseActiveTenantResult {
   isMultiTenant: boolean;
   /** True until the initial /api/tenants/list resolves. */
   loadingTenants: boolean;
+  /**
+   * Operator's most-recent picks (most-recent-first, deduped, capped
+   * at RECENT_TENANTS_CAP). Filtered to entries still present in
+   * availableTenants — a corrupt localStorage entry or a
+   * since-deleted tenant won't leak into the picker. Includes the
+   * ALL_TENANTS_SENTINEL when the operator has picked aggregate.
+   */
+  recentTenants: string[];
 }
 
 /**
@@ -132,6 +204,11 @@ function useResolvedTenant(): [string, (next: string) => void] {
     if (readUrlToggle()) {
       updateUrlTenantParam(next);
     }
+    // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — track the recent
+    // list. Read fresh from localStorage to avoid stale closure
+    // capture (cross-tab activity may have updated it). pushRecentTenant
+    // handles dedupe + cap.
+    writeRecent(pushRecentTenant(readRecent(), next));
   }, []);
 
   return [resolved, setActiveTenant];
@@ -258,6 +335,19 @@ export function useActiveTenant(): UseActiveTenantResult {
     DEFAULT_TENANT_ID,
   ]);
   const [loadingTenants, setLoadingTenants] = useState(true);
+  // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — recent-tenants
+  // state. Live-synced via the same custom-event pattern as the
+  // active-tenant store so two picker instances stay coherent.
+  const [recentRaw, setRecentRaw] = useState<string[]>(() => readRecent());
+  useEffect(() => {
+    const reread = () => setRecentRaw(readRecent());
+    window.addEventListener("storage", reread);
+    window.addEventListener("kora:recent-tenants-changed", reread);
+    return () => {
+      window.removeEventListener("storage", reread);
+      window.removeEventListener("kora:recent-tenants-changed", reread);
+    };
+  }, []);
 
   const fetchTenants = useCallback(async () => {
     try {
@@ -288,6 +378,16 @@ export function useActiveTenant(): UseActiveTenantResult {
     return () => window.removeEventListener("focus", onFocus);
   }, [fetchTenants]);
 
+  // KR-FE-A11Y-AUDIT-AND-MULTI-TENANT-POLISH — filter recents to
+  // entries that still exist in availableTenants (a since-deleted
+  // tenant_id in localStorage must not leak into the picker). The
+  // ALL_TENANTS_SENTINEL is always valid in multi-tenant mode.
+  const recentTenants = useMemo(() => {
+    const allowed = new Set<string>(availableTenants);
+    allowed.add(ALL_TENANTS_SENTINEL);
+    return recentRaw.filter((t) => allowed.has(t));
+  }, [recentRaw, availableTenants]);
+
   return {
     activeTenant,
     setActiveTenant,
@@ -297,5 +397,6 @@ export function useActiveTenant(): UseActiveTenantResult {
     // default tenant has ever been observed.
     isMultiTenant: availableTenants.length >= 2,
     loadingTenants,
+    recentTenants,
   };
 }
