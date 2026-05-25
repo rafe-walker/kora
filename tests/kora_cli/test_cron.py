@@ -102,6 +102,7 @@ class TestCronCommandLifecycle:
                 skill=None,
                 skills=["blogwatcher", "maps"],
                 profile="default",
+                work_class="local_only",
             )
         )
         out = capsys.readouterr().out

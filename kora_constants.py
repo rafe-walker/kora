@@ -142,26 +142,23 @@ def get_kora_home() -> Path:
         return Path(val)
 
     kora_home = Path.home() / ".kora"
-    if kora_home.exists():
-        return kora_home
-
     hermes_home = Path.home() / ".hermes"
-    if hermes_home.exists():
-        _warn_hermes_home_dir_bc_once()
-        return hermes_home
 
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
+    # Fires BEFORE returning the resolved home, regardless of whether
+    # ~/.kora or ~/.hermes exists — the wrongness is about KORA_HOME
+    # being missing, not about which fallback dir we land in.
     global _profile_fallback_warned
     if not _profile_fallback_warned:
         try:
             # Inline the default-root resolution from get_default_kora_root()
             # to stay import-safe (this function is called from module scope
             # in 30+ files; we cannot afford to trigger logging setup here).
-            active_path = (Path.home() / ".kora" / "active_profile")
+            active_path = kora_home / "active_profile"
             if not active_path.exists():
                 # Check legacy location too — operator may not have migrated yet.
-                active_path = (Path.home() / ".hermes" / "active_profile")
+                active_path = hermes_home / "active_profile"
             active = active_path.read_text().strip() if active_path.exists() else ""
         except (UnicodeDecodeError, OSError):
             active = ""
@@ -180,6 +177,13 @@ def get_kora_home() -> Path:
                 sys.stderr.flush()
             except Exception:
                 pass
+
+    if kora_home.exists():
+        return kora_home
+
+    if hermes_home.exists():
+        _warn_hermes_home_dir_bc_once()
+        return hermes_home
 
     return kora_home
 

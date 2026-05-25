@@ -28,6 +28,21 @@ from agent.anthropic_adapter import (
 from agent.transports import get_transport
 
 
+@pytest.fixture(autouse=True)
+def _stub_macos_keychain_lookup(monkeypatch):
+    # read_claude_code_credentials() probes the macOS Keychain first on
+    # Darwin (`security find-generic-password -s "Claude Code-credentials"`).
+    # Tests in this module use patch("subprocess.run") with an unspecified
+    # stdout, which makes the keychain helper try to json.loads() a
+    # MagicMock and crash. Default-stub the keychain reader to None so
+    # every test resolves through the file/env paths it actually exercises;
+    # tests that specifically want to assert keychain behavior can re-patch.
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Auth helpers
 # ---------------------------------------------------------------------------

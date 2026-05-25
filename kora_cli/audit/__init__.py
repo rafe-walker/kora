@@ -21,6 +21,16 @@ distinction explicit. A back-compat shim at
 so existing callers keep working unchanged.
 """
 
-from kora_cli.audit.local_jsonl_sink import AuditEntry, emit_audit
+from kora_cli.audit.local_jsonl_sink import (
+    AuditEntry,
+    DEFAULT_TENANT_ID,
+    TENANT_ID_QUERY_PARAM_NAME,
+    emit_audit,
+)
 
-__all__ = ["AuditEntry", "emit_audit"]
+__all__ = [
+    "AuditEntry",
+    "DEFAULT_TENANT_ID",
+    "TENANT_ID_QUERY_PARAM_NAME",
+    "emit_audit",
+]

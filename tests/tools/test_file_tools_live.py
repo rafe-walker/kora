@@ -196,7 +196,7 @@ class TestReadFile:
         _assert_clean(result.content)
 
     def test_tilde_expansion(self, ops):
-        test_path = Path.home() / ".hermes_test_tilde_9f8a7b"
+        test_path = Path.home() / ".kora_test_tilde_9f8a7b"
         try:
             test_path.write_text("TILDE_EXPANSION_OK\n")
             result = ops.read_file("~/.kora_test_tilde_9f8a7b")

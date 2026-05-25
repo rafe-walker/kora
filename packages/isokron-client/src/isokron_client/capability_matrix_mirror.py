@@ -91,6 +91,10 @@ SEA_CAPABILITIES_KORA_COLUMN: dict[str, bool] = {
     # REV5.1 additions (UBC-R5-B, UBC-R5-C)
     "cap_cancel_advisory_pass": False,
     "cap_resume_rollback": False,
+
+    # Sea v1.5 (ADR-0054) — durable assignee routing. Kora can re-route work
+    # she's been delegated; sits above Critic+Oracle in the routing seam.
+    "cap_sea_assign_ticket": True,
 }
 
 
@@ -134,6 +138,21 @@ KORA_BROADER_CAPABILITIES_KORA_COLUMN: dict[str, bool] = {
 
     # Pre-screen runner cap (Plan 11 PM-Q2)
     "cap_run_pre_screen": True,
+
+    # K-13 — chain emit + RelationLink write surface (kora's primary
+    # author tools: kora__append_event + kora__create_relationlink)
+    "cap_emit_chain_event": True,
+    "cap_write_relationlink": True,
+
+    # Sea_Ticket claim cycle (KR-P2-E) — consumer-loop verb covering
+    # claim / refresh / release; one capability gates all three.
+    "cap_kora_claim_sea_ticket": True,
+
+    # Kronicle direct-write document surface (2026-05-21 half-b
+    # self-hosting goal). author + edit are intentionally split so a
+    # future role could grant author-only or edit-only.
+    "cap_kronicle_document_author": True,
+    "cap_kronicle_document_edit": True,
 
     # Operator-direct admin caps (operator-ONLY)
     "cap_operator_approve_policy_change": False,

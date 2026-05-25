@@ -176,7 +176,11 @@ class TestEmailSubjectIdentity:
 
             with patch("smtplib.SMTP") as mock_smtp:
                 mock_smtp.return_value = MagicMock()
-                asyncio.run(adapter.send_multiple_images("user@test.com", tmp_paths, "caption"))
+                asyncio.run(adapter.send_multiple_images(
+                    "user@test.com",
+                    [(p, "") for p in tmp_paths],
+                    "caption",
+                ))
 
             subject = _captured_subject(mock_smtp)
             assert "Kora Agent" in subject
@@ -323,6 +327,17 @@ def _build_discord_adapter(display_name: str) -> DiscordAdapter:
         user=SimpleNamespace(id=99999, name="KoraBot"),
     )
     adapter._text_batch_delay_seconds = 0
+    # _register_skill_group bails early when no skills are discoverable on
+    # disk, so /skill never reaches tree.add_command and the description
+    # never lands. Stub the catalog scan to seed one synthetic entry so
+    # the command is registered and its display-name interpolation can be
+    # asserted.
+    def _stubbed_refresh(self):
+        self._skill_entries = [("noop", f"stub for {display_name} test", "noop")]
+        self._skill_lookup = {"noop": ("stub", "noop")}
+        self._skill_group_reserved_names = set()
+        self._skill_group_hidden_count = 0
+    adapter._refresh_skill_catalog_state = _stubbed_refresh.__get__(adapter, DiscordAdapter)
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 

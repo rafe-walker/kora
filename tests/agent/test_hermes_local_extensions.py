@@ -71,12 +71,32 @@ def test_existing_hooks_unchanged():
 
 @pytest.fixture
 def clean_registry():
-    """Reset the process-global registry before + after each test."""
+    """Reset the process-global registry before + after each test.
+
+    Snapshots the production registrations (populated at
+    ``kora_cli.listeners`` import time) and restores them after the
+    test so subsequent tests sharing this xdist worker still see
+    the live registry. Without this restore, downstream tests like
+    ``test_daemon_fatal_on_startup_failure`` that depend on the
+    full listener catalog fail intermittently — Python's module
+    cache means re-importing ``kora_cli.listeners`` won't re-run
+    the module-level register() calls."""
     from agent.background_daemon_registry import background_daemon_registry
 
+    saved_entries = list(background_daemon_registry().list_entries())
     background_daemon_registry().reset_for_tests()
-    yield background_daemon_registry()
-    background_daemon_registry().reset_for_tests()
+    try:
+        yield background_daemon_registry()
+    finally:
+        background_daemon_registry().reset_for_tests()
+        for entry in saved_entries:
+            try:
+                background_daemon_registry().register(entry)
+            except ValueError:
+                # Duplicate-name guard — should not happen since we
+                # just cleared, but stay fail-soft so a misbehaving
+                # earlier test doesn't cascade.
+                pass
 
 
 def test_registry_starts_empty(clean_registry):

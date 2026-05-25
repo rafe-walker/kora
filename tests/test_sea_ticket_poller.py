@@ -74,8 +74,34 @@ class _FakeConn:
         self._pool = pool
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
+        # KoraControlReader's pre-claim SELECT against public.kora_control
+        # is a new code path that runs ALONGSIDE the actor/ticket queries
+        # but isn't seeded by these tests — return None so "no active
+        # STOP command" lets the claim path proceed. Other queries still
+        # consume the queued rows in order.
+        if "FROM public.kora_control" in sql:
+            return None
         self._pool.calls.append((sql, args))
         return self._pool.rows.pop(0) if self._pool.rows else None
+
+    async def execute(self, sql: str, *args: Any) -> str:
+        # KoraControlReader sets the workspace GUC via SELECT set_config(...)
+        # inside its transaction; fake just records + returns the asyncpg
+        # status-string shape so the caller's code path stays valid.
+        return "SELECT 1"
+
+    def transaction(self) -> Any:
+        # KoraControlReader wraps its SELECT in `async with conn.transaction():`.
+        # Fake is a no-op async context manager — the test isn't exercising
+        # real transactional behavior, only that the read path completes.
+        class _Tx:
+            async def __aenter__(self_inner) -> Any:
+                return None
+
+            async def __aexit__(self_inner, *exc: Any) -> bool:
+                return False
+
+        return _Tx()
 
 
 class _FakeConnection:

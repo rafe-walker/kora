@@ -34,9 +34,18 @@ except (ModuleNotFoundError, ImportError):
     def display_kora_home() -> str:
         """Return a user-friendly ``~/``-shortened display string.
 
-        Mirrors ``kora_constants.display_kora_home()``."""
+        Mirrors ``kora_constants.display_kora_home()``. Legacy
+        ``~/.hermes/...`` paths get rewritten to ``~/.kora/...`` in
+        the display string so user-facing output stays consistent
+        post-KORA rename even when HERMES_HOME is still set to a
+        legacy ``.hermes`` location."""
         home = get_kora_home()
         try:
-            return "~/" + str(home.relative_to(Path.home()))
+            display = "~/" + str(home.relative_to(Path.home()))
         except ValueError:
             return str(home)
+        if display == "~/.hermes":
+            return "~/.kora"
+        if display.startswith("~/.hermes/"):
+            return "~/.kora/" + display[len("~/.hermes/"):]
+        return display

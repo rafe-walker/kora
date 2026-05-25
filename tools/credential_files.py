@@ -53,9 +53,21 @@ def _resolve_hermes_home() -> Path:
     return get_kora_home()
 
 
+def _normalize_container_base(container_base: str) -> str:
+    """Rewrite the legacy ``.hermes`` directory name to ``.kora`` so callers
+    that still pass ``/root/.hermes`` (or ``/home/<user>/.hermes``) end up
+    consistent with the post-rename runtime layout. Only the literal
+    ``/.hermes`` (or trailing ``/.hermes``) segment is rewritten — paths
+    containing the substring elsewhere are left alone."""
+    base = container_base.rstrip("/")
+    if base.endswith("/.hermes"):
+        return base[: -len("/.hermes")] + "/.kora"
+    return base
+
+
 def register_credential_file(
     relative_path: str,
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> bool:
     """Register a credential file for mounting into remote sandboxes.
 
@@ -97,7 +109,7 @@ def register_credential_file(
         logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
 
-    container_path = f"{container_base.rstrip('/')}/{relative_path}"
+    container_path = f"{_normalize_container_base(container_base)}/{relative_path}"
     _get_registered()[container_path] = str(resolved)
     logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
@@ -105,7 +117,7 @@ def register_credential_file(
 
 def register_credential_files(
     entries: list,
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> List[str]:
     """Register multiple credential files from skill frontmatter entries.
 
@@ -200,7 +212,7 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 
 def get_skills_directory_mount(
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> list[Dict[str, str]]:
     """Return mount info for all skill directories (local + external).
 
@@ -225,7 +237,7 @@ def get_skills_directory_mount(
         host_path = _safe_skills_path(skills_dir)
         mounts.append({
             "host_path": host_path,
-            "container_path": f"{container_base.rstrip('/')}/skills",
+            "container_path": f"{_normalize_container_base(container_base)}/skills",
         })
 
     # Mount external skill dirs
@@ -236,7 +248,7 @@ def get_skills_directory_mount(
                 host_path = _safe_skills_path(ext_dir)
                 mounts.append({
                     "host_path": host_path,
-                    "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
+                    "container_path": f"{_normalize_container_base(container_base)}/external_skills/{idx}",
                 })
     except ImportError:
         pass
@@ -291,7 +303,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
 
 def iter_skills_files(
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> List[Dict[str, str]]:
     """Yield individual (host_path, container_path) entries for skills files.
 
@@ -305,7 +317,7 @@ def iter_skills_files(
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
     if skills_dir.is_dir():
-        container_root = f"{container_base.rstrip('/')}/skills"
+        container_root = f"{_normalize_container_base(container_base)}/skills"
         for item in skills_dir.rglob("*"):
             if item.is_symlink() or not item.is_file():
                 continue
@@ -321,7 +333,7 @@ def iter_skills_files(
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if not ext_dir.is_dir():
                 continue
-            container_root = f"{container_base.rstrip('/')}/external_skills/{idx}"
+            container_root = f"{_normalize_container_base(container_base)}/external_skills/{idx}"
             for item in ext_dir.rglob("*"):
                 if item.is_symlink() or not item.is_file():
                     continue
@@ -351,7 +363,7 @@ _CACHE_DIRS: list[tuple[str, str]] = [
 
 
 def get_cache_directory_mounts(
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> List[Dict[str, str]]:
     """Return mount entries for each cache directory that exists on disk.
 
@@ -366,7 +378,7 @@ def get_cache_directory_mounts(
         host_dir = get_kora_dir(new_subpath, old_name)
         if host_dir.is_dir():
             # Always map to the *new* container layout regardless of host layout.
-            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+            container_path = f"{_normalize_container_base(container_base)}/{new_subpath}"
             mounts.append({
                 "host_path": str(host_dir),
                 "container_path": container_path,
@@ -376,7 +388,7 @@ def get_cache_directory_mounts(
 
 def to_agent_visible_cache_path(
     host_path: str,
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> str:
     """Translate a host cache path to its mounted path inside the sandbox.
 
@@ -403,7 +415,7 @@ def to_agent_visible_cache_path(
 
 
 def iter_cache_files(
-    container_base: str = "/root/.hermes",
+    container_base: str = "/root/.kora",
 ) -> List[Dict[str, str]]:
     """Return individual (host_path, container_path) entries for cache files.
 
@@ -417,7 +429,7 @@ def iter_cache_files(
         host_dir = get_kora_dir(new_subpath, old_name)
         if not host_dir.is_dir():
             continue
-        container_root = f"{container_base.rstrip('/')}/{new_subpath}"
+        container_root = f"{_normalize_container_base(container_base)}/{new_subpath}"
         for item in host_dir.rglob("*"):
             if item.is_symlink() or not item.is_file():
                 continue

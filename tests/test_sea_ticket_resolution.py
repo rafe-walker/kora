@@ -193,9 +193,11 @@ async def test_emit_sends_payload_with_minimal_fields():
 
     assert event_id == "evt-1"
     assert len(captured) == 1
-    args = captured[0]["args"]
-    assert args["tool_name"] == "kora__append_event"
-    payload = args["args"]["payload"]
+    assert captured[0]["tool_name"] == "kora__append_event"
+    invoke_args = captured[0]["args"]
+    assert invoke_args["workspace_id"] == "org_test"
+    assert invoke_args["event_type"] == "kora.sea_ticket.resolved"
+    payload = invoke_args["payload"]
     assert payload["sea_ticket_id"] == "11111111-1111-1111-1111-111111111111"
     assert payload["workspace_id"] == "org_test"
     assert payload["resolution"] == "completed"
@@ -218,7 +220,7 @@ async def test_emit_includes_optional_fields_when_provided():
         next_eligible_offset_seconds=600,
     )
 
-    payload = captured[0]["args"]["args"]["payload"]
+    payload = captured[0]["args"]["payload"]
     assert payload["model_tier_used"] == "tier_2"
     assert payload["next_eligible_offset_seconds"] == 600
 

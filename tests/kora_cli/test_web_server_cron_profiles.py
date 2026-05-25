@@ -35,7 +35,7 @@ def test_call_cron_for_profile_routes_storage_and_restores_globals(isolated_prof
         "create_job",
         prompt="run scheduled task",
         schedule="every 1h",
-        name="worker-alpha-scan",
+        name="worker-alpha-scan", work_class="local_only",
     )
 
     assert job["profile"] == "worker_alpha"
@@ -59,14 +59,14 @@ async def test_list_cron_jobs_all_includes_default_and_named_profiles(isolated_p
         "create_job",
         prompt="default heartbeat",
         schedule="every 2h",
-        name="default-heartbeat",
+        name="default-heartbeat", work_class="local_only",
     )
     worker_job = web_server._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="worker heartbeat",
         schedule="every 3h",
-        name="worker-alpha-heartbeat",
+        name="worker-alpha-heartbeat", work_class="local_only",
     )
 
     jobs = await web_server.list_cron_jobs(profile="all")
@@ -90,14 +90,14 @@ async def test_list_cron_jobs_specific_profile_filters_results(isolated_profiles
         "create_job",
         prompt="default only",
         schedule="every 2h",
-        name="default-only",
+        name="default-only", work_class="local_only",
     )
     worker_job = web_server._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="worker only",
         schedule="every 3h",
-        name="worker-only",
+        name="worker-only", work_class="local_only",
     )
 
     jobs = await web_server.list_cron_jobs(profile="worker_alpha")
@@ -115,7 +115,7 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
         "create_job",
         prompt="managed by named profile",
         schedule="every 1h",
-        name="named-profile-job",
+        name="named-profile-job", work_class="local_only",
     )
 
     paused = await web_server.pause_cron_job(worker_job["id"])
@@ -140,14 +140,14 @@ async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_pro
         "create_job",
         prompt="same-ish default",
         schedule="every 1h",
-        name="shared-name",
+        name="shared-name", work_class="local_only",
     )
     worker_job = web_server._call_cron_for_profile(
         "worker_alpha",
         "create_job",
         prompt="same-ish worker",
         schedule="every 1h",
-        name="shared-name-worker",
+        name="shared-name-worker", work_class="local_only",
     )
 
     deleted = await web_server.delete_cron_job(worker_job["id"], profile="worker_alpha")

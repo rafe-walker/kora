@@ -142,7 +142,7 @@ class DaytonaEnvironment(BaseEnvironment):
         logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
         self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.kora"),
             upload_fn=self._daytona_upload,
             delete_fn=self._daytona_delete,
             bulk_upload_fn=self._daytona_bulk_upload,
@@ -181,7 +181,7 @@ class DaytonaEnvironment(BaseEnvironment):
 
     def _daytona_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""
-        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        rel_base = f"{self._remote_home}/.kora".lstrip("/")
         # PID-suffixed remote temp path avoids collisions if sync_back fires
         # concurrently for the same sandbox (e.g. retry after partial failure).
         remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"

@@ -5,9 +5,23 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import kora_cli.providers as providers_mod
 from kora_cli.model_switch import list_authenticated_providers, switch_model
 from kora_cli.providers import resolve_provider_full
+
+
+@pytest.fixture(autouse=True)
+def _stub_live_endpoint_probe(monkeypatch):
+    # list_authenticated_providers probes custom-provider /models endpoints
+    # via kora_cli.models.fetch_api_models when an api_key is set. On a dev
+    # host with a real Ollama at localhost:11434 that probe replaces the
+    # test-declared models list with whatever Ollama actually has installed.
+    # Force the probe to return [] so the configured models are preserved.
+    monkeypatch.setattr(
+        "kora_cli.models.fetch_api_models", lambda *a, **kw: []
+    )
 
 
 _MOCK_VALIDATION = {
