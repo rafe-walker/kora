@@ -1050,26 +1050,126 @@ class AnthropicReasoningEngine:
         triggered_by: str = "unknown",
         caller_session_id: str = "",
     ) -> list:
-        """Run each tool_use block + return the matching
+        """Run all tool_use blocks in PARALLEL + return the matching
         ``tool_result`` blocks for the next user turn.
 
-        KR-FEAT-AGENTIC-REASONING ST2 — every call emits a
-        ``[kora.reasoning.tool_called]`` structured-log entry with
-        tool_name / triggered_by / caller_session_id /
-        tool_duration_ms / tool_status (ok/not_allowed/execution_error).
-        Operator finds these via flyctl logs or the REASONING-PANEL.
+        KR-FEAT-AGENTIC-REASONING-PARALLEL ST1 — when Claude returns
+        multiple ``tool_use`` blocks in one response (the API's default
+        behavior under ``tool_choice=auto`` per
+        https://platform.claude.com/docs/en/agents-and-tools/tool-use/parallel-tool-use),
+        we dispatch them concurrently via :func:`asyncio.gather`
+        rather than serially. The two reasons:
+
+          1. **Latency**: 3 independent reads (operational state +
+             ledger + chain events) finish in roughly the time of
+             the slowest one instead of the sum. Joshua's
+             "show me daemon status AND recent ledger" type DMs
+             benefit.
+          2. **API contract**: per the docs, "Tool calls in a single
+             assistant turn are unordered. You can run them
+             concurrently (Promise.all, asyncio.gather), sequentially,
+             or in any order." Concurrency is the canonical pattern.
+
+        Per-tool error isolation: each block's exception becomes its
+        OWN ``tool_result`` with ``is_error: true``; sibling blocks in
+        the same batch still complete normally. ``return_exceptions=
+        True`` on the gather is **defensive** — the per-task helper
+        :meth:`_execute_single_tool_block` catches and converts every
+        exception internally, so gather should never see one. But if
+        a future helper-edit lets one escape, gather hands back the
+        exception object and we synthesize a generic
+        ``tool_execution_error`` rather than crashing the whole batch.
+
+        Audit emission: each task emits its own
+        ``[kora.reasoning.tool_called]`` row at its own completion
+        time (correct ``tool_duration_ms``). Ordering across tasks is
+        **non-deterministic** — completion order, not block order.
+        The reasoning panel's ``caller_session_id`` grouping (per
+        PR #143) re-aggregates them; per-row ``emitted_at`` orders
+        chronologically.
+
+        ``tools_used`` is mutated by each task on success (in-process
+        single-threaded asyncio — ``list.append`` is safe under
+        concurrent tasks within the same event loop). Order in
+        ``tools_used`` reflects completion order, not block order.
+
+        Return order: matches input ``tool_use_blocks`` order even
+        though completion order may differ. :func:`asyncio.gather`
+        preserves input position in its result list, so the
+        ``tool_result`` blocks line up with their ``tool_use`` blocks
+        structurally. (Strictly the API binds them by ``tool_use_id``,
+        not by position, but matching positions keeps the message
+        history readable.)
+        """
+        import asyncio
+
+        if not tool_use_blocks:
+            return []
+
+        tasks = [
+            self._execute_single_tool_block(
+                block,
+                tools_used=tools_used,
+                triggered_by=triggered_by,
+                caller_session_id=caller_session_id,
+            )
+            for block in tool_use_blocks
+        ]
+
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: list = []
+        for block, outcome in zip(tool_use_blocks, gathered):
+            if isinstance(outcome, BaseException):
+                # Defensive: should be unreachable — the per-task
+                # helper catches every exception class internally and
+                # returns a tool_result error dict. If we ever see
+                # one here it's a helper-bug; synthesize a tool_result
+                # error so the loop can continue rather than abort.
+                logger.exception(
+                    "[kora.reasoning] _execute_single_tool_block "
+                    "leaked exception %r — synthesizing tool_result "
+                    "error so loop can continue",
+                    outcome,
+                )
+                tool_use_id = getattr(block, "id", "")
+                results.append(
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": (
+                            f"tool_execution_error: "
+                            f"{type(outcome).__name__}"
+                        ),
+                        "is_error": True,
+                    }
+                )
+            else:
+                results.append(outcome)
+        return results
+
+    async def _execute_single_tool_block(
+        self,
+        block: Any,
+        *,
+        tools_used: list[str],
+        triggered_by: str,
+        caller_session_id: str,
+    ) -> dict:
+        """Run one ``tool_use`` block and return its ``tool_result``
+        dict. Audit-emits per-call. Catches every exception class
+        internally so the surrounding ``asyncio.gather`` never sees a
+        raised exception (its ``return_exceptions=True`` is defensive
+        belt-and-suspenders against a future helper-edit, not a
+        primary error path).
 
         Failure modes (each becomes a ``tool_result`` with
         ``is_error: true``):
 
           - Tool not in reasoning allowlist → tool_status="not_allowed"
-          - Tool execution exception → tool_status="execution_error"
-          - Tool returned non-serializable result (shouldn't happen
-            with Pydantic models but guarded as execution_error)
-
-        Tool exceptions become tool_result errors — they do NOT
-        propagate. The engine can recover by letting Claude reason
-        about the error in the next iteration.
+          - Any other tool execution exception → tool_status=
+            "execution_error" with the exception class name in the
+            audit row's ``exc_type`` field.
         """
         import json
         import time as _time
@@ -1079,79 +1179,67 @@ class AnthropicReasoningEngine:
             execute_reasoning_tool,
         )
 
-        results: list = []
-        for block in tool_use_blocks:
-            tool_use_id = getattr(block, "id", "")
-            tool_name = getattr(block, "name", "")
-            tool_input = getattr(block, "input", {}) or {}
-            call_started_at = _time.monotonic()
+        tool_use_id = getattr(block, "id", "")
+        tool_name = getattr(block, "name", "")
+        tool_input = getattr(block, "input", {}) or {}
+        call_started_at = _time.monotonic()
 
-            try:
-                result_model = await execute_reasoning_tool(
-                    name=tool_name, tool_input=tool_input
-                )
-                # Pydantic BaseModel → JSON string for tool_result text.
-                result_text = (
-                    result_model.model_dump_json()
-                    if hasattr(result_model, "model_dump_json")
-                    else json.dumps(result_model, default=str)
-                )
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": result_text,
-                    }
-                )
-                tools_used.append(tool_name)
-                _emit_tool_called_audit(
-                    tool_name=tool_name,
-                    triggered_by=triggered_by,
-                    caller_session_id=caller_session_id,
-                    tool_duration_ms=_elapsed_ms(call_started_at),
-                    tool_status="ok",
-                )
-            except ReasoningToolNotAllowed:
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": (
-                            f"tool_not_allowed: {tool_name!r} is not in "
-                            f"the reasoning allowlist"
-                        ),
-                        "is_error": True,
-                    }
-                )
-                _emit_tool_called_audit(
-                    tool_name=tool_name,
-                    triggered_by=triggered_by,
-                    caller_session_id=caller_session_id,
-                    tool_duration_ms=_elapsed_ms(call_started_at),
-                    tool_status="not_allowed",
-                )
-            except Exception as exc:
-                # ANY other exception → tool_result error. Engine
-                # continues; Claude can reason about the failure.
-                results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": (
-                            f"tool_execution_error: {type(exc).__name__}"
-                        ),
-                        "is_error": True,
-                    }
-                )
-                _emit_tool_called_audit(
-                    tool_name=tool_name,
-                    triggered_by=triggered_by,
-                    caller_session_id=caller_session_id,
-                    tool_duration_ms=_elapsed_ms(call_started_at),
-                    tool_status="execution_error",
-                    exc_type=type(exc).__name__,
-                )
-        return results
+        try:
+            result_model = await execute_reasoning_tool(
+                name=tool_name, tool_input=tool_input
+            )
+            result_text = (
+                result_model.model_dump_json()
+                if hasattr(result_model, "model_dump_json")
+                else json.dumps(result_model, default=str)
+            )
+            tools_used.append(tool_name)
+            _emit_tool_called_audit(
+                tool_name=tool_name,
+                triggered_by=triggered_by,
+                caller_session_id=caller_session_id,
+                tool_duration_ms=_elapsed_ms(call_started_at),
+                tool_status="ok",
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": result_text,
+            }
+        except ReasoningToolNotAllowed:
+            _emit_tool_called_audit(
+                tool_name=tool_name,
+                triggered_by=triggered_by,
+                caller_session_id=caller_session_id,
+                tool_duration_ms=_elapsed_ms(call_started_at),
+                tool_status="not_allowed",
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    f"tool_not_allowed: {tool_name!r} is not in "
+                    f"the reasoning allowlist"
+                ),
+                "is_error": True,
+            }
+        except Exception as exc:
+            _emit_tool_called_audit(
+                tool_name=tool_name,
+                triggered_by=triggered_by,
+                caller_session_id=caller_session_id,
+                tool_duration_ms=_elapsed_ms(call_started_at),
+                tool_status="execution_error",
+                exc_type=type(exc).__name__,
+            )
+            return {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": (
+                    f"tool_execution_error: {type(exc).__name__}"
+                ),
+                "is_error": True,
+            }
 
     def _project_final_response(
         self,
